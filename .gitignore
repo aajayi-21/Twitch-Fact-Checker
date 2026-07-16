@@ -1,0 +1,15 @@
+# Secrets — never commit (backend/.env holds the real GEMINI_API_KEY)
+.env
+.env*
+.env.old
+.end.example
+backend/.env
+
+# Python
+backend/.venv/
+**/__pycache__/
+*.pyc
+backend/.pytest_cache/
+
+# Generated test fixtures (scripts/make_fixture_wav.py)
+backend/tests/fixtures/*.wav

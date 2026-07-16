@@ -1,0 +1,55 @@
+{
+  "manifest_version": 3,
+  "name": "Twitch Live Fact-Checker",
+  "version": "0.1.0",
+  "description": "Live fact-checks a Twitch stream: captures tab audio, transcribes it on a local backend, and overlays sourced TRUE/FALSE/MISLEADING/UNVERIFIED verdicts.",
+  "minimum_chrome_version": "116",
+  "permissions": ["tabCapture", "offscreen", "storage", "activeTab"],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*",
+    "https://127.0.0.1/*",
+    "https://localhost/*",
+    "ws://127.0.0.1/*",
+    "ws://localhost/*",
+    "wss://127.0.0.1/*",
+    "wss://localhost/*"
+  ],
+  "background": {
+    "service_worker": "background/service_worker.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Twitch Live Fact-Checker",
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16_off.png",
+      "32": "icons/icon32_off.png",
+      "48": "icons/icon48_off.png",
+      "128": "icons/icon128_off.png"
+    }
+  },
+  "options_ui": {
+    "page": "options/options.html",
+    "open_in_tab": false
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.twitch.tv/*"],
+      "js": ["content/overlay.js", "content/content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["content/overlay.css"],
+      "matches": ["https://www.twitch.tv/*"]
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

@@ -1,0 +1,10 @@
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+# Slow tests download and run the real Whisper model; run them explicitly
+# with:  .venv/bin/python -m pytest -m slow
+addopts = "-m 'not slow'"
+markers = [
+    "slow: needs real whisper model",
+]

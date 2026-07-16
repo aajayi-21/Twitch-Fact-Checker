@@ -1,0 +1,333 @@
+/* Options page — visual language shared with popup/popup.css. */
+
+:root {
+  --bg: #0e0e14;
+  --card: #1b1b26;
+  --field: #14141d;
+  --text: #efeff4;
+  --text-dim: #a3a3b8;
+  --accent: #9147ff;
+  --accent-hover: #a970ff;
+  --green: #22c55e;
+  --red: #ef4444;
+  --grey: #6b7280;
+  --border: rgba(255, 255, 255, 0.1);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  width: 440px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.options {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 20px;
+}
+
+.options-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.options-logo {
+  border-radius: 7px;
+  flex-shrink: 0;
+}
+
+.options-title {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.options-subtitle {
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+#settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* ---------------------------------------------------------------- field -- */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  background: var(--card);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 10px;
+  padding: 14px;
+}
+
+.field-label {
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.field-help {
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+.field-help code {
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 10.5px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  padding: 1px 5px;
+  color: var(--text);
+}
+
+.field-error {
+  font-size: 11.5px;
+  color: #fca5a5;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+/* --------------------------------------------------------------- inputs -- */
+
+input[type="text"],
+input[type="number"] {
+  appearance: none;
+  width: 100%;
+  background: var(--field);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 11px;
+  color: var(--text);
+  font: inherit;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+
+input[type="text"]:focus,
+input[type="number"]:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(145, 71, 255, 0.25);
+}
+
+input[type="text"][aria-invalid="true"] {
+  border-color: var(--red);
+  box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.2);
+}
+
+input[type="number"] {
+  width: 110px;
+}
+
+/* ---------------------------------------------------- segmented control -- */
+
+.segmented {
+  display: flex;
+  gap: 3px;
+  background: var(--field);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 3px;
+}
+
+.segment {
+  flex: 1;
+  position: relative;
+}
+
+.segment input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.segment span {
+  display: block;
+  text-align: center;
+  padding: 7px 0;
+  border-radius: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: background 150ms ease, color 150ms ease;
+}
+
+.segment span:hover {
+  color: var(--text);
+}
+
+.segment input:checked + span {
+  background: var(--accent);
+  color: #ffffff;
+}
+
+.segment input:focus-visible + span {
+  outline: 2px solid var(--accent-hover);
+  outline-offset: 1px;
+}
+
+/* -------------------------------------------------- corner position grid -- */
+
+.corner-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+
+.corner-tile {
+  cursor: pointer;
+}
+
+.corner-tile input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.corner-mini {
+  display: block;
+  height: 46px;
+  border-radius: 8px;
+  background: var(--field);
+  border: 1px solid var(--border);
+  position: relative;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+
+.corner-mini::after {
+  content: "";
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+  background: var(--grey);
+  transition: background 150ms ease;
+}
+
+.corner-mini[data-corner="top-left"]::after {
+  top: 6px;
+  left: 6px;
+}
+
+.corner-mini[data-corner="top-right"]::after {
+  top: 6px;
+  right: 6px;
+}
+
+.corner-mini[data-corner="bottom-left"]::after {
+  bottom: 6px;
+  left: 6px;
+}
+
+.corner-mini[data-corner="bottom-right"]::after {
+  bottom: 6px;
+  right: 6px;
+}
+
+.corner-tile input:checked + .corner-mini {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.corner-tile input:checked + .corner-mini::after {
+  background: var(--accent);
+}
+
+.corner-tile input:focus-visible + .corner-mini {
+  outline: 2px solid var(--accent-hover);
+  outline-offset: 2px;
+}
+
+.corner-name {
+  display: block;
+  margin-top: 6px;
+  font-size: 11px;
+  text-align: center;
+  color: var(--text-dim);
+  transition: color 150ms ease;
+}
+
+.corner-tile input:checked ~ .corner-name {
+  color: var(--text);
+}
+
+/* ------------------------------------------------------------- checkbox -- */
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.checkbox-row input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* --------------------------------------------------------------- footer -- */
+
+.form-footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.button-save {
+  appearance: none;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 26px;
+  font: inherit;
+  font-weight: 700;
+  color: #ffffff;
+  background: var(--accent);
+  cursor: pointer;
+  transition: background 120ms ease, transform 80ms ease;
+}
+
+.button-save:hover {
+  background: var(--accent-hover);
+}
+
+.button-save:active {
+  transform: scale(0.98);
+}
+
+.save-confirmation {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--green);
+  opacity: 0;
+  transition: opacity 200ms ease;
+}
+
+.save-confirmation.visible {
+  opacity: 1;
+}
+
+.save-confirmation.error {
+  color: #fca5a5;
+}

@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Twitch Live Fact-Checker — Settings</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main class="options">
+      <header class="options-header">
+        <img
+          class="options-logo"
+          src="../icons/icon32.png"
+          width="32"
+          height="32"
+          alt=""
+        />
+        <div>
+          <h1 class="options-title">Twitch Live Fact-Checker</h1>
+          <p class="options-subtitle">Settings sync with your Chrome profile.</p>
+        </div>
+      </header>
+
+      <form id="settings-form" novalidate>
+        <section class="field">
+          <label class="field-label" for="backend-url">Backend WebSocket URL</label>
+          <input
+            id="backend-url"
+            name="backendUrl"
+            type="text"
+            spellcheck="false"
+            autocomplete="off"
+            placeholder="ws://127.0.0.1:8710/ws/audio"
+          />
+          <p class="field-help">
+            Must start with <code>ws://</code> or <code>wss://</code>. Applies
+            the next time capture starts.
+          </p>
+          <p class="field-error" id="backend-url-error" hidden></p>
+        </section>
+
+        <section class="field">
+          <span class="field-label" id="sensitivity-label">Claim sensitivity</span>
+          <div
+            class="segmented"
+            role="radiogroup"
+            aria-labelledby="sensitivity-label"
+          >
+            <label class="segment">
+              <input type="radio" name="sensitivity" value="low" />
+              <span>Low</span>
+            </label>
+            <label class="segment">
+              <input type="radio" name="sensitivity" value="medium" />
+              <span>Medium</span>
+            </label>
+            <label class="segment">
+              <input type="radio" name="sensitivity" value="high" />
+              <span>High</span>
+            </label>
+          </div>
+          <p class="field-help">
+            Higher sensitivity fact-checks more borderline claims and uses more
+            API quota. Applies live to a running session.
+          </p>
+        </section>
+
+        <section class="field">
+          <span class="field-label" id="position-label">Popup position</span>
+          <div
+            class="corner-grid"
+            role="radiogroup"
+            aria-labelledby="position-label"
+          >
+            <label class="corner-tile">
+              <input type="radio" name="popupPosition" value="top-left" />
+              <span class="corner-mini" data-corner="top-left" aria-hidden="true"></span>
+              <span class="corner-name">Top left</span>
+            </label>
+            <label class="corner-tile">
+              <input type="radio" name="popupPosition" value="top-right" />
+              <span class="corner-mini" data-corner="top-right" aria-hidden="true"></span>
+              <span class="corner-name">Top right</span>
+            </label>
+            <label class="corner-tile">
+              <input type="radio" name="popupPosition" value="bottom-left" />
+              <span class="corner-mini" data-corner="bottom-left" aria-hidden="true"></span>
+              <span class="corner-name">Bottom left</span>
+            </label>
+            <label class="corner-tile">
+              <input type="radio" name="popupPosition" value="bottom-right" />
+              <span class="corner-mini" data-corner="bottom-right" aria-hidden="true"></span>
+              <span class="corner-name">Bottom right</span>
+            </label>
+          </div>
+          <p class="field-help">
+            Where verdict popups appear over the stream. Applies immediately.
+          </p>
+        </section>
+
+        <section class="field">
+          <label class="field-label" for="popup-duration">
+            Popup duration (seconds)
+          </label>
+          <input
+            id="popup-duration"
+            name="popupDurationS"
+            type="number"
+            min="4"
+            max="60"
+            step="1"
+            inputmode="numeric"
+          />
+          <p class="field-help">
+            How long each verdict stays on screen (4–60 s). Hovering a popup
+            pauses its timer. Applies immediately.
+          </p>
+        </section>
+
+        <section class="field">
+          <label class="checkbox-row">
+            <input id="show-transcript" name="showTranscript" type="checkbox" />
+            <span>Show live transcript on the stream</span>
+          </label>
+          <p class="field-help">
+            Displays what the fact-checker hears as a subtle caption. Applies
+            the next time capture starts.
+          </p>
+        </section>
+
+        <footer class="form-footer">
+          <button type="submit" class="button-save">Save</button>
+          <span
+            class="save-confirmation"
+            id="save-confirmation"
+            role="status"
+            aria-live="polite"
+          ></span>
+        </footer>
+      </form>
+    </main>
+    <script type="module" src="options.js"></script>
+  </body>
+</html>

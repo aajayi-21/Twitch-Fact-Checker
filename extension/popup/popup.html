@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Twitch Live Fact-Checker</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="popup">
+      <header class="popup-header">
+        <img class="popup-logo" src="../icons/icon48.png" alt="" width="28" height="28" />
+        <div class="popup-header-text">
+          <h1 class="popup-title">Live Fact-Checker</h1>
+          <p class="backend-line" id="backend-line" data-state="checking">
+            Checking backend…
+          </p>
+        </div>
+      </header>
+
+      <section class="status-card">
+        <span class="status-dot" id="status-dot" data-state="idle"></span>
+        <span class="status-text" id="status-text">Idle</span>
+      </section>
+
+      <p class="error-line" id="error-line" hidden></p>
+      <p class="hint-line" id="hint-line" hidden></p>
+      <p class="hint-line" id="offline-hint" hidden>
+        Start the backend:
+        <code>uvicorn app.main:app --host 127.0.0.1 --port 8710</code> in
+        <code>/backend</code>
+      </p>
+
+      <div class="actions">
+        <button class="button button-start" id="start-button" disabled>
+          Start fact-checking
+        </button>
+        <button class="button button-stop" id="stop-button" hidden>Stop</button>
+      </div>
+    </main>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>
