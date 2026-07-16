@@ -11,8 +11,10 @@ and surfaced as an error frame or close 1011):
                     -> run_in_executor(stt_executor) -> filtered segments ->
                     gate.add_transcript() + optional transcript frames.
     _gate_loop   ── 1 s tick; gate.should_run() -> gate.run() -> sensitivity
-                    threshold -> dedupe -> verify_queue.put (maxsize 3, drop
-                    OLDEST if full) -> status stage:"verifying" frame.
+                    threshold -> topic filter (disabled topic -> status
+                    stage:"topic_skipped" frame, claim dropped) -> dedupe ->
+                    verify_queue.put (maxsize 3, drop OLDEST if full) ->
+                    status stage:"verifying" frame.
     _verify_loop ── verify_queue -> cooldown check -> bucket.acquire() ->
                     checker.check() -> verdict frame. Per-item try/except:
                     an LLM failure is a non-fatal error frame + continue —
@@ -50,6 +52,7 @@ from app.models import (
     StatusFrame,
     TranscriptFrame,
     VerdictFrame,
+    resolve_enabled_topics,
 )
 from app.rate_limit import QuotaCooldown, TokenBucket
 from app.transcriber import AudioRingBuffer, SessionTextState, Transcriber
@@ -97,6 +100,10 @@ class SessionPipeline:
         self._bucket = verify_bucket
         self._cooldown = quota_cooldown
         self._sensitivity: Sensitivity = hello.sensitivity
+        # Seeded from hello, updated by config frames; "other" always enabled.
+        self._enabled_topics: frozenset[str] = resolve_enabled_topics(
+            hello.enabled_topics
+        )
         # The server-side SEND_TRANSCRIPTS setting is the master switch; the
         # hello flag opts a client in beneath it.
         self._send_transcripts = settings.send_transcripts and hello.send_transcripts
@@ -106,7 +113,7 @@ class SessionPipeline:
             high_wm_s=settings.audio_high_watermark_s,
             low_wm_s=settings.audio_low_watermark_s,
         )
-        self._verify_queue: asyncio.Queue[str] = asyncio.Queue(
+        self._verify_queue: asyncio.Queue[GateClaim] = asyncio.Queue(
             maxsize=VERIFY_QUEUE_MAXSIZE
         )
         self._outbound: asyncio.Queue[dict[str, Any]] = asyncio.Queue(
@@ -239,20 +246,20 @@ class SessionPipeline:
             except GateError as exc:
                 logger.warning("gate pass failed (batch dropped): %s", exc)
                 continue
-            for claim_text in self._filter_claims(claims):
-                self._enqueue_claim(claim_text)
-                await self._emit_queued(StatusFrame(claim=claim_text))
+            for claim in await self._filter_claims(claims, self._emit_queued):
+                self._enqueue_claim(claim)
+                await self._emit_queued(StatusFrame(claim=claim.claim_text))
 
     async def _verify_loop(self) -> None:
         """Serially verify queued claims; per-item failures never kill us."""
         while not self._stop_requested.is_set():
             try:
-                claim_text = await asyncio.wait_for(
+                claim = await asyncio.wait_for(
                     self._verify_queue.get(), timeout=QUEUE_POLL_S
                 )
             except TimeoutError:
                 continue
-            await self._verify_claim(claim_text, self._emit_queued)
+            await self._verify_claim(claim, self._emit_queued)
 
     async def _send_loop(self) -> None:
         """Drain the outbound queue onto the socket — the single writer."""
@@ -308,8 +315,16 @@ class SessionPipeline:
             except ValidationError as exc:
                 logger.warning("ignoring invalid config frame: %s", exc)
                 return
-            self._sensitivity = config.sensitivity
-            logger.info("sensitivity updated to %s", config.sensitivity)
+            # Each field is optional and applied independently: an absent
+            # field must never reset the other setting.
+            if config.sensitivity is not None:
+                self._sensitivity = config.sensitivity
+                logger.info("sensitivity updated to %s", config.sensitivity)
+            if config.enabled_topics is not None:
+                self._enabled_topics = resolve_enabled_topics(config.enabled_topics)
+                logger.info(
+                    "enabled topics updated to %s", sorted(self._enabled_topics)
+                )
         elif frame_type == "stop":
             logger.info("client requested graceful stop; flushing")
             self._graceful_stop = True
@@ -354,10 +369,18 @@ class SessionPipeline:
                     )
                 )
 
-    def _filter_claims(self, claims: list[GateClaim]) -> list[str]:
-        """Apply the sensitivity threshold, then check-and-register dedupe."""
+    async def _filter_claims(
+        self, claims: list[GateClaim], emit: FrameEmitter
+    ) -> list[GateClaim]:
+        """Sensitivity threshold -> topic filter -> check-and-register dedupe.
+
+        The topic filter sits BEFORE dedupe so a skipped claim never registers
+        in the dedupe memory; each topic-dropped claim emits one
+        ``topic_skipped`` status frame (transparency: the client can show
+        what was suppressed) and no verdict follows.
+        """
         threshold = SENSITIVITY_THRESHOLDS[self._sensitivity]
-        accepted: list[str] = []
+        accepted: list[GateClaim] = []
         for claim in claims:
             if claim.check_worthiness < threshold:
                 logger.info(
@@ -368,13 +391,27 @@ class SessionPipeline:
                     claim.claim_text,
                 )
                 continue
+            if claim.topic not in self._enabled_topics:
+                logger.info(
+                    "claim topic %r disabled by filter: %r",
+                    claim.topic,
+                    claim.claim_text,
+                )
+                await emit(
+                    StatusFrame(
+                        stage="topic_skipped",
+                        claim=claim.claim_text,
+                        topic=claim.topic,
+                    )
+                )
+                continue
             if self._checker.is_duplicate(claim.claim_text):
                 logger.info("dropping duplicate claim: %r", claim.claim_text)
                 continue
-            accepted.append(claim.claim_text)
+            accepted.append(claim)
         return accepted
 
-    def _enqueue_claim(self, claim_text: str) -> None:
+    def _enqueue_claim(self, claim: GateClaim) -> None:
         """Put on the verify queue; when full, drop the OLDEST claim.
 
         The newest claim is the most relevant to the live conversation.
@@ -383,17 +420,19 @@ class SessionPipeline:
         """
         if self._verify_queue.full():
             dropped = self._verify_queue.get_nowait()
-            logger.warning("verify queue full; dropped oldest claim: %r", dropped)
-        self._verify_queue.put_nowait(claim_text)
+            logger.warning(
+                "verify queue full; dropped oldest claim: %r", dropped.claim_text
+            )
+        self._verify_queue.put_nowait(claim)
 
-    async def _verify_claim(self, claim_text: str, emit: FrameEmitter) -> None:
+    async def _verify_claim(self, claim: GateClaim, emit: FrameEmitter) -> None:
         """Cooldown check -> token bucket -> grounded check -> verdict frame."""
         if self._cooldown.active:
             remaining_s = self._cooldown.remaining_s
             logger.warning(
                 "quota cooldown active (%.0fs left); dropping claim: %r",
                 remaining_s,
-                claim_text,
+                claim.claim_text,
             )
             await emit(
                 ErrorFrame(
@@ -411,16 +450,18 @@ class SessionPipeline:
             return
         await self._bucket.acquire()
         if self._preempted or self._client_disconnected:
-            logger.info("session ended while throttled; dropping claim %r", claim_text)
+            logger.info(
+                "session ended while throttled; dropping claim %r", claim.claim_text
+            )
             return
         try:
-            verdict = await self._checker.check(claim_text)
+            verdict = await self._checker.check(claim.claim_text, topic=claim.topic)
         except QuotaExceededError as exc:
             logger.warning("quota exceeded: %s", exc)
             await emit(ErrorFrame(code="quota_cooldown", message=str(exc), fatal=False))
             return
         except VerificationError as exc:
-            logger.warning("verification failed for %r: %s", claim_text, exc)
+            logger.warning("verification failed for %r: %s", claim.claim_text, exc)
             await emit(
                 ErrorFrame(
                     code="llm_failure",
@@ -442,9 +483,9 @@ class SessionPipeline:
             await self._flush_stt()
             pending_claims = self._drain_verify_queue()
             pending_claims.extend(await self._final_gate_pass())
-            for claim_text in pending_claims:
-                await self._send_direct(StatusFrame(claim=claim_text))
-                await self._verify_claim(claim_text, self._send_direct)
+            for claim in pending_claims:
+                await self._send_direct(StatusFrame(claim=claim.claim_text))
+                await self._verify_claim(claim, self._send_direct)
         except WebSocketDisconnect:
             logger.info("client disconnected during final flush")
             return
@@ -469,22 +510,22 @@ class SessionPipeline:
                 loop, audio, window_start_s, self._send_direct
             )
 
-    def _drain_verify_queue(self) -> list[str]:
-        claims: list[str] = []
+    def _drain_verify_queue(self) -> list[GateClaim]:
+        claims: list[GateClaim] = []
         while True:
             try:
                 claims.append(self._verify_queue.get_nowait())
             except asyncio.QueueEmpty:
                 return claims
 
-    async def _final_gate_pass(self) -> list[str]:
+    async def _final_gate_pass(self) -> list[GateClaim]:
         """One unconditional gate run over any not-yet-gated transcript text."""
         try:
             claims = await self._gate.run()
         except GateError as exc:
             logger.warning("final gate pass failed (batch dropped): %s", exc)
             return []
-        return self._filter_claims(claims)
+        return await self._filter_claims(claims, self._send_direct)
 
     # ------------------------------------------------------------------ #
     # Emission + small utilities

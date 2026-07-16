@@ -1,12 +1,13 @@
 /**
- * FactCheckOverlay — the on-stream UI for the Twitch Live Fact-Checker.
+ * FactCheckOverlay — the on-stream UI for the Live Stream Fact-Checker.
  *
  * CLASSIC (non-module) content script, loaded BEFORE content/content.js via
  * manifest order; it defines the global FactCheckOverlay class that
  * content.js constructs and drives. All UI lives inside an open Shadow DOM
- * so Twitch page CSS can never restyle it (and our CSS never leaks out).
- * Styles are fetched from content/overlay.css (a web-accessible resource)
- * and injected as a <style> element inside the shadow root.
+ * so host-page CSS (Twitch, YouTube, Kick, Rumble) can never restyle it
+ * (and our CSS never leaks out). Styles are fetched from content/overlay.css
+ * (a web-accessible resource) and injected as a <style> element inside the
+ * shadow root.
  *
  * Components:
  *  - Verdict toasts: max 2 stacked (a third evicts the oldest — stale
@@ -16,13 +17,42 @@
  *    "verifying"; hidden when a verdict lands or after a safety timeout.
  *  - History panel: corner pill "Fact-check · N" with a connection status
  *    dot, toggling a scrollable list of this session's verdicts (entries
- *    expand on click to show explanation + sources).
+ *    expand on click to show explanation + sources). Each verdict carries a
+ *    topic color dot; a footer aggregates claims skipped by the topic filter
+ *    with an "Edit topics" link (opens the options page via content.js).
  *  - Transient extras: non-fatal backend notice chip, optional live
  *    transcript line.
  *
  * All dynamic text is set via textContent (never innerHTML) and source URLs
  * are validated as http(s) before an anchor is created.
  */
+
+// Mirrors shared/settings.js TOPIC_COLORS / TOPIC_LABELS (classic scripts
+// cannot import modules; the topic slugs are the shared wire contract) —
+// keep in sync. Unknown or missing slugs render with the "other" entry.
+const TOPIC_COLORS = Object.freeze({
+  politics: "#e74c3c",
+  health: "#2ecc71",
+  science_tech: "#3498db",
+  money: "#f1c40f",
+  history: "#9b59b6",
+  sports: "#e67e22",
+  gaming: "#1abc9c",
+  entertainment: "#e84393",
+  other: "#95a5a6",
+});
+
+const TOPIC_LABELS = Object.freeze({
+  politics: "Politics & current events",
+  health: "Health & medicine",
+  science_tech: "Science & technology",
+  money: "Money & economy",
+  history: "History",
+  sports: "Sports",
+  gaming: "Gaming",
+  entertainment: "Entertainment & pop culture",
+  other: "Everything else",
+});
 
 class FactCheckOverlay {
   static MAX_STACKED_TOASTS = 2;
@@ -62,6 +92,16 @@ class FactCheckOverlay {
   #chipTimerId = null;
   #noticeTimerId = null;
   #transcriptTimerId = null;
+  #topicSkipCount = 0;
+  #toastsSuppressed = false;
+
+  /**
+   * Called when the user clicks "Edit topics" in the history-panel footer.
+   * Assigned by content.js (which relays OPEN_OPTIONS to the service worker
+   * — content scripts cannot open the options page themselves).
+   * @type {(() => void)|null}
+   */
+  onEditTopics = null;
 
   /**
    * @param {object} settings - shape of shared/settings.js DEFAULT_SETTINGS;
@@ -78,10 +118,15 @@ class FactCheckOverlay {
 
   /**
    * Create the shadow host on first call and attach it under parentElement.
-   * Safe to call again after Twitch SPA navigation replaces the player: the
-   * existing host — with live toasts, panel state and history — is simply
-   * re-appended (appendChild moves the node). Positioning is `absolute`
-   * inside the player element and `fixed` on the document.body fallback.
+   * Safe to call again after an SPA navigation replaces the player (or a
+   * fullscreen re-parent): the existing host — with live toasts, panel state
+   * and history — is simply re-appended (appendChild moves the node).
+   * Positioning is `absolute` inside the player element and `fixed` on the
+   * document.body fallback. If the player container is not itself positioned
+   * (computed position "static", possible on non-Twitch platforms), it is
+   * guardedly promoted to position:relative so the absolute host anchors to
+   * it; if that promotion does not stick (e.g. an !important stylesheet
+   * rule), the host falls back to viewport-fixed positioning.
    *
    * @param {Element} parentElement
    */
@@ -91,16 +136,18 @@ class FactCheckOverlay {
     }
     if (!this.#host) {
       this.#host = document.createElement("div");
-      this.#host.id = "twitch-fact-checker-overlay";
+      this.#host.id = "stream-fact-checker-overlay";
       this.#shadow = this.#host.attachShadow({mode: "open"});
       this.#injectStyles();
       this.#buildSkeleton();
     }
-    const useFixedPositioning = parentElement === document.body;
+    const useFixedPositioning =
+      parentElement === document.body ||
+      !FactCheckOverlay.#ensurePositionedAncestor(parentElement);
     Object.assign(this.#host.style, {
       position: useFixedPositioning ? "fixed" : "absolute",
       inset: "0",
-      zIndex: "9999",
+      zIndex: "2147483646",
       pointerEvents: "none",
     });
     if (this.#host.parentElement !== parentElement) {
@@ -173,6 +220,9 @@ class FactCheckOverlay {
       return;
     }
     this.hideChecking();
+    if (this.#toastsSuppressed) {
+      return; // fullscreened bare <video>: history still records the verdict
+    }
     while (this.#activeToasts.length >= FactCheckOverlay.MAX_STACKED_TOASTS) {
       this.#dismissToast(this.#activeToasts[0], {immediate: true});
     }
@@ -206,6 +256,39 @@ class FactCheckOverlay {
     for (const verdict of [...this.#historyEntries].reverse()) {
       list.appendChild(this.#buildHistoryEntry(verdict));
     }
+  }
+
+  /**
+   * Update the history-panel footer with the aggregate number of claims the
+   * backend dropped via the topic filter (server `status` frames, stage
+   * "topic_skipped" — counted by content.js). Hidden while the count is 0;
+   * deliberately no per-skip toasts.
+   *
+   * @param {number} count
+   */
+  setTopicSkipCount(count) {
+    const skipped =
+      Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
+    this.#topicSkipCount = skipped;
+    if (!this.#refs) {
+      return;
+    }
+    this.#refs.panelFooter.hidden = skipped === 0;
+    const noun = skipped === 1 ? "claim" : "claims";
+    this.#refs.skipText.textContent =
+      `${skipped} ${noun} skipped by topic filters`;
+  }
+
+  /**
+   * Suppress (or re-allow) verdict toasts. content.js enables this while a
+   * bare <video> element is fullscreened — no DOM overlay can render over it
+   * — so verdicts accumulate silently in the history panel instead of
+   * bursting as stale toasts on fullscreen exit.
+   *
+   * @param {boolean} suppressed
+   */
+  setToastsSuppressed(suppressed) {
+    this.#toastsSuppressed = Boolean(suppressed);
   }
 
   /**
@@ -360,6 +443,11 @@ class FactCheckOverlay {
             </span>
           </header>
           <div class="fc-panel-list"></div>
+          <footer class="fc-panel-footer" hidden>
+            <span class="fc-skip-text"></span>
+            <span aria-hidden="true">·</span>
+            <button class="fc-edit-topics" type="button">Edit topics</button>
+          </footer>
         </section>
         <div class="fc-chip" hidden>
           <span class="fc-spinner"></span>
@@ -380,6 +468,9 @@ class FactCheckOverlay {
       panelList: query(".fc-panel-list"),
       panelDot: query(".fc-panel-status .fc-dot"),
       panelStatusText: query(".fc-panel-status-text"),
+      panelFooter: query(".fc-panel-footer"),
+      skipText: query(".fc-skip-text"),
+      editTopics: query(".fc-edit-topics"),
       chip: query(".fc-chip"),
       chipText: query(".fc-chip-text"),
       notice: query(".fc-notice"),
@@ -387,8 +478,12 @@ class FactCheckOverlay {
       toasts: query(".fc-toasts"),
     };
     this.#refs.pill.addEventListener("click", () => this.#togglePanel());
+    this.#refs.editTopics.addEventListener("click", () => {
+      this.onEditTopics?.();
+    });
     this.renderHistory(this.#historyEntries);
     this.setConnectionState(this.#running);
+    this.setTopicSkipCount(this.#topicSkipCount);
   }
 
   #togglePanel() {
@@ -411,6 +506,7 @@ class FactCheckOverlay {
     const head = document.createElement("div");
     head.className = "fc-toast-head";
     head.appendChild(FactCheckOverlay.#buildLabelPill(label));
+    head.appendChild(FactCheckOverlay.#buildTopicDot(verdict.topic));
     const time = document.createElement("span");
     time.className = "fc-toast-time";
     time.textContent = FactCheckOverlay.#formatTime(verdict.checked_at);
@@ -521,6 +617,7 @@ class FactCheckOverlay {
         FactCheckOverlay.#normalizeLabel(verdict.label)
       )
     );
+    head.appendChild(FactCheckOverlay.#buildTopicDot(verdict.topic));
     const time = document.createElement("span");
     time.className = "fc-entry-time";
     time.textContent = FactCheckOverlay.#formatTime(verdict.checked_at);
@@ -601,6 +698,34 @@ class FactCheckOverlay {
       : FactCheckOverlay.DEFAULT_DURATION_MS;
   }
 
+  /**
+   * Make sure an absolute-positioned host will anchor to parentElement.
+   * Twitch's player container is already positioned; on other platforms the
+   * chosen container may be `static`, which would make the host anchor to
+   * some distant ancestor. Guardedly promote it to position:relative and
+   * verify the promotion stuck (a page stylesheet with !important can win
+   * over an inline style).
+   *
+   * @param {Element} parentElement
+   * @returns {boolean} true when parentElement is (now) a positioned
+   *   ancestor; false → caller should use viewport-fixed positioning.
+   */
+  static #ensurePositionedAncestor(parentElement) {
+    try {
+      if (getComputedStyle(parentElement).position !== "static") {
+        return true;
+      }
+      parentElement.style.position = "relative";
+      return getComputedStyle(parentElement).position !== "static";
+    } catch (error) {
+      console.warn(
+        "[fact-checker] could not verify mount-target positioning:",
+        error
+      );
+      return false;
+    }
+  }
+
   static #normalizeLabel(label) {
     return FactCheckOverlay.VALID_LABELS.has(label) ? label : "UNVERIFIED";
   }
@@ -611,6 +736,28 @@ class FactCheckOverlay {
     pill.dataset.label = label;
     pill.textContent = label;
     return pill;
+  }
+
+  /** Unknown or missing verdict.topic slugs coerce to the "other" catch-all. */
+  static #normalizeTopic(topic) {
+    return Object.prototype.hasOwnProperty.call(TOPIC_COLORS, topic)
+      ? topic
+      : "other";
+  }
+
+  /**
+   * Small colored category dot shown beside the verdict label pill; the
+   * topic's display label is exposed as the hover tooltip.
+   *
+   * @param {string|undefined} topic - verdict.topic slug
+   */
+  static #buildTopicDot(topic) {
+    const slug = FactCheckOverlay.#normalizeTopic(topic);
+    const dot = document.createElement("span");
+    dot.className = "fc-topic-dot";
+    dot.style.background = TOPIC_COLORS[slug];
+    dot.title = TOPIC_LABELS[slug];
+    return dot;
   }
 
   static #formatTime(isoTimestamp) {

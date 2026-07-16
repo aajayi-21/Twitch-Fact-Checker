@@ -34,6 +34,7 @@ export const MSG = Object.freeze({
   SESSION_STATE: "SESSION_STATE",
   // content script -> service worker
   CONTENT_READY: "CONTENT_READY",
+  OPEN_OPTIONS: "OPEN_OPTIONS",
 });
 
 /**

@@ -140,14 +140,19 @@ export class BackendSocket {
 
   /**
    * Forward a mid-session config change ({"type":"config", ...}). Updated
-   * sensitivity is also folded into the hello so reconnects carry it.
+   * values (sensitivity, enabled_topics) are also folded into the hello so
+   * reconnects carry them.
    *
-   * @param {object} config - e.g. {sensitivity: "high"}
+   * @param {object} config - e.g. {sensitivity: "high",
+   *   enabled_topics: ["politics", "other"]}
    * @returns {boolean} true if delivered now, false if the socket was down
    */
   sendConfig(config) {
     if (config.sensitivity !== undefined) {
       this.hello.sensitivity = config.sensitivity;
+    }
+    if (config.enabled_topics !== undefined) {
+      this.hello.enabled_topics = config.enabled_topics;
     }
     if (this.socket?.readyState !== WebSocket.OPEN) {
       return false;

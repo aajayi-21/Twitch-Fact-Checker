@@ -22,6 +22,7 @@ from app.models import (
     DebugTextResponse,
     Verdict,
     VerdictFrame,
+    resolve_enabled_topics,
 )
 from app.rate_limit import QuotaCooldown, TokenBucket
 
@@ -82,6 +83,7 @@ async def inject_text(body: DebugTextRequest, request: Request) -> DebugTextResp
         ) from exc
 
     threshold = SENSITIVITY_THRESHOLDS[body.sensitivity]
+    enabled_topics = resolve_enabled_topics(body.enabled_topics)
     verdicts: list[Verdict] = []
     try:
         for claim in claims:
@@ -91,6 +93,17 @@ async def inject_text(body: DebugTextRequest, request: Request) -> DebugTextResp
                     body.sensitivity,
                     claim.check_worthiness,
                     threshold,
+                    claim.claim_text,
+                )
+                continue
+            # Same semantics as the live pipeline's topic filter: the claim
+            # stays in the response's ``claims`` (gate output is always
+            # reported) but produces no verdict, and never registers in the
+            # dedupe memory.
+            if claim.topic not in enabled_topics:
+                logger.info(
+                    "claim topic %r disabled by filter: %r",
+                    claim.topic,
                     claim.claim_text,
                 )
                 continue
@@ -106,7 +119,9 @@ async def inject_text(body: DebugTextRequest, request: Request) -> DebugTextResp
                 continue
             await bucket.acquire()
             try:
-                verdicts.append(await checker.check(claim.claim_text))
+                verdicts.append(
+                    await checker.check(claim.claim_text, topic=claim.topic)
+                )
             except QuotaExceededError as exc:
                 # Cooldown is now active; remaining claims will be dropped
                 # above, mirroring the live pipeline's drop-during-cooldown.

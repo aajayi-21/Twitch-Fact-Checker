@@ -116,6 +116,41 @@ body {
   font-weight: 600;
 }
 
+.topics-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: var(--card);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 10px;
+  padding: 8px 14px;
+}
+
+.topics-summary {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.topics-edit {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--accent-hover);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 6px;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.topics-edit:hover {
+  color: #e5d7ff;
+  background: rgba(145, 71, 255, 0.16);
+}
+
 .error-line {
   color: #fca5a5;
   background: rgba(239, 68, 68, 0.1);

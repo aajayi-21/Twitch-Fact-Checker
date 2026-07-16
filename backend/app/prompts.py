@@ -27,6 +27,13 @@ bother?"). Sensitivity is applied *server-side* as a numeric threshold
 keeps gating deterministic and unit-testable. The few-shots cover the exact
 leak classes above so threshold tuning stays meaningful.
 
+``topic`` follows the same doctrine: the model *labels* every claim with one
+of the nine canonical slugs (:data:`app.models.TOPICS`) and the server
+*filters* against the session's enabled set — the prompt never changes with
+the user's topic selection. Unverifiable philosophical positions are not
+claims at all (the gate returns ``[]``); the verifiable residue about
+philosophers/texts ("Nietzsche wrote X in 1886") is labelled ``history``.
+
 **Verify prompt.** Anti-hallucination is structural, not rhetorical: the
 model must decide strictly from retrieved sources, ``UNVERIFIED`` is the
 explicit default for weak/inconclusive results, and the requested output is a
@@ -70,11 +77,26 @@ RULES:
 4. Score each claim's check_worthiness from 0 to 1: would a professional
    fact-checker bother checking this? Substantial, contestable, real-world
    assertions score high; trivia and near-tautologies score low.
-5. If you are unsure, return an empty claims list. Missing a claim is fine;
+5. Classify each claim's topic as EXACTLY ONE of these slugs:
+   - "politics": elections, legislation, geopolitics, breaking-news claims.
+   - "health": medicine, nutrition, fitness, disease.
+   - "science_tech": science, space, climate, technology, AI.
+   - "money": prices, markets, salaries, company and crypto facts.
+   - "history": historical events, dates, figures.
+   - "sports": records, results, athlete facts.
+   - "gaming": VERIFIABLE game-industry facts only — patch numbers, sales
+     figures, esports/speedrun records, developer history. In-game strategy,
+     stats, and jargon remain hard exclusions, never claims.
+   - "entertainment": movies, music, celebrities, charts.
+   - "other": everything that fits none of the above.
+   Unverifiable philosophical positions ("free will is an illusion") are NOT
+   claims at all; verifiable claims about philosophers or their texts are
+   "history".
+6. If you are unsure, return an empty claims list. Missing a claim is fine;
    inventing one is not.
 
 Return JSON matching the schema: {{"claims": [{{"claim_text": str,
-"check_worthiness": float}}]}}.
+"check_worthiness": float, "topic": str}}]}}.
 
 EXAMPLES:
 
@@ -96,20 +118,20 @@ Output: {{"claims": []}}
 
 Example 5 (real-world sports fact):
 NEW TRANSCRIPT: you know Messi has won eight Ballon d'Or awards right no other player is close
-Output: {{"claims": [{{"claim_text": "Lionel Messi has won eight Ballon d'Or awards.", "check_worthiness": 0.8}}]}}
+Output: {{"claims": [{{"claim_text": "Lionel Messi has won eight Ballon d'Or awards.", "check_worthiness": 0.8, "topic": "sports"}}]}}
 
 Example 6 (current event):
 NEW TRANSCRIPT: did you see the news the EU just fined Apple five hundred million euros over the App Store thing
-Output: {{"claims": [{{"claim_text": "The European Union fined Apple 500 million euros over App Store practices.", "check_worthiness": 0.9}}]}}
+Output: {{"claims": [{{"claim_text": "The European Union fined Apple 500 million euros over App Store practices.", "check_worthiness": 0.9, "topic": "politics"}}]}}
 
-Example 7 (history/science, completes in NEW, pronoun resolved from CONTEXT):
+Example 7 (geography trivia, completes in NEW, pronoun resolved from CONTEXT):
 CONTEXT (reference resolution only): so we were talking about the Eiffel Tower earlier and someone in chat said
 NEW TRANSCRIPT: that it's actually taller than four hundred and fifty meters which sounds wrong to me but whatever
-Output: {{"claims": [{{"claim_text": "The Eiffel Tower is taller than 450 meters.", "check_worthiness": 0.9}}]}}
+Output: {{"claims": [{{"claim_text": "The Eiffel Tower is taller than 450 meters.", "check_worthiness": 0.9, "topic": "other"}}]}}
 
 Example 8 (opinion-wrapped fact):
 NEW TRANSCRIPT: I think the earth is like six thousand years old that's just facts chat look it up
-Output: {{"claims": [{{"claim_text": "The Earth is approximately 6,000 years old.", "check_worthiness": 0.9}}]}}
+Output: {{"claims": [{{"claim_text": "The Earth is approximately 6,000 years old.", "check_worthiness": 0.9, "topic": "science_tech"}}]}}
 
 Now process the real input.
 

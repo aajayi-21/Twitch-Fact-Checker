@@ -58,7 +58,7 @@ from app.fact_checker import (
     _FallbackNeeded,
     _today,
 )
-from app.models import GateClaim, GateResult, Source, VerdictPayload
+from app.models import TOPICS, GateClaim, GateResult, Source, VerdictPayload
 from app.prompts import (
     build_gate_prompt,
     build_verdict_extraction_prompt,
@@ -143,8 +143,9 @@ GATE_JSON_SCHEMA: dict[str, Any] = {
                     "properties": {
                         "claim_text": {"type": "string"},
                         "check_worthiness": {"type": "number"},
+                        "topic": {"type": "string", "enum": list(TOPICS)},
                     },
-                    "required": ["claim_text", "check_worthiness"],
+                    "required": ["claim_text", "check_worthiness", "topic"],
                     "additionalProperties": False,
                 },
             }

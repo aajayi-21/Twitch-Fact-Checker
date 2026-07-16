@@ -202,12 +202,21 @@ class FakeGenerateContentResponse:
 
 
 def make_gate_response(
-    claims: Sequence[tuple[str, float]],
+    claims: Sequence[tuple[str, float] | tuple[str, float, str]],
 ) -> FakeGenerateContentResponse:
-    """A ``generate_content`` response whose ``parsed`` is a real GateResult."""
+    """A ``generate_content`` response whose ``parsed`` is a real GateResult.
+
+    Each claim is ``(text, score)`` (topic defaults to ``"other"``) or
+    ``(text, score, topic)``.
+    """
     result = GateResult(
         claims=[
-            GateClaim(claim_text=text, check_worthiness=score) for text, score in claims
+            GateClaim(
+                claim_text=claim[0],
+                check_worthiness=claim[1],
+                topic=claim[2] if len(claim) == 3 else "other",  # type: ignore[arg-type]
+            )
+            for claim in claims
         ]
     )
     return FakeGenerateContentResponse(parsed=result, text=result.model_dump_json())

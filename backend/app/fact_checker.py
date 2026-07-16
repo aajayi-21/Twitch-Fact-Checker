@@ -37,7 +37,7 @@ from typing import Any
 from pydantic import ValidationError
 from rapidfuzz import fuzz
 
-from app.models import Source, Verdict, VerdictPayload
+from app.models import Source, Topic, Verdict, VerdictPayload
 from app.rate_limit import QuotaCooldown
 
 logger = logging.getLogger(__name__)
@@ -126,8 +126,12 @@ class FactChecker(ABC):
         self._seen_normalized_claims.append(normalized)
         return False
 
-    async def check(self, claim: str) -> Verdict:
+    async def check(self, claim: str, topic: Topic = "other") -> Verdict:
         """Verify one claim; one retry on timeout; invariants always enforced.
+
+        ``topic`` is the gate's classification for the claim; it is carried
+        through onto the assembled :class:`Verdict` untouched (verification
+        itself is topic-agnostic).
 
         Raises:
             QuotaExceededError: on a quota failure (cooldown already tripped).
@@ -155,6 +159,7 @@ class FactChecker(ABC):
         payload = self._enforce_invariants(payload, sources)
         return Verdict(
             claim=claim,
+            topic=topic,
             label=payload.label,
             explanation=payload.explanation,
             sources=sources,

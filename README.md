@@ -1,11 +1,13 @@
-# Twitch Live Fact-Checker
+# Live Stream Fact-Checker
 
-A Chrome extension (Manifest V3) plus a local Python backend that fact-checks a live
-Twitch stream in real time. The extension captures the tab's audio and streams it to a
-local FastAPI server, which transcribes it with `faster-whisper`, extracts verifiable
-claims with an LLM "claim gate", verifies them with a web-search-grounded LLM call, and
-pushes **TRUE / FALSE / MISLEADING / UNVERIFIED** verdicts (with sources) back to a
-Shadow-DOM overlay rendered over the Twitch player.
+A Chrome extension (Manifest V3, named **"Live Stream Fact-Checker"**) plus a local
+Python backend that fact-checks a live stream in real time. Supported sites: **Twitch,
+YouTube (watch pages and live), Kick, and Rumble**. The extension captures the tab's
+audio and streams it to a local FastAPI server, which transcribes it with
+`faster-whisper`, extracts verifiable claims with an LLM "claim gate", verifies them
+with a web-search-grounded LLM call, and pushes
+**TRUE / FALSE / MISLEADING / UNVERIFIED** verdicts (with sources) back to a
+Shadow-DOM overlay rendered over the player.
 
 The LLM layer is provider-switchable: **OpenRouter** (default — free model + the `web`
 search plugin) or **Gemini** (requires a paid-tier key for search grounding). Set
@@ -26,7 +28,7 @@ Chrome (extension)                              Local backend (127.0.0.1:8710)
 │   → Int16 PCM ─────────────────────WebSocket──→ claim gate (LLM, ungrounded)│
 │   ← JSON verdict frames ────────────────────←─ grounded verify (LLM + web  │
 │   │                             │           │     search) → verdict        │
-│ content script (twitch.tv)      │           │  POST /debug/text (test path)│
+│ content script (supported sites)│           │  POST /debug/text (test path)│
 │   Shadow-DOM toast + history    │           │  GET  /healthz               │
 └─────────────────────────────────┘           └───────────────────────────────┘
 ```
@@ -112,7 +114,9 @@ paid-tier Gemini key, which is why OpenRouter is the default.
 
 ## Usage
 
-1. Start the backend, then open a Twitch live stream (`https://www.twitch.tv/...`).
+1. Start the backend, then open a stream on a supported site: Twitch
+   (`https://www.twitch.tv/...`), YouTube (`/watch?v=` or `/live/...`), Kick
+   (`https://kick.com/<channel>`), or Rumble (a `/v...` watch page).
 2. Click the extension's toolbar icon and press **Start** (the click is the required
    user gesture for tab capture). The tab stays audible while captured.
 3. Verdict toasts appear over the player; sources are clickable links. Hovering a toast
@@ -131,12 +135,25 @@ paid-tier Gemini key, which is why OpenRouter is the default.
 | Error(code) | e.g. `ERR_BACKEND_DOWN`, `ERR_STREAM_ID_EXPIRED` ("Click Start again"), `ERR_CAPTURE_LOST` |
 
 **History panel:** a corner pill ("Fact-check · n") on the player toggles a scrollable
-list of this session's verdicts plus a connection status dot. History is in-memory —
-a page reload clears it.
+list of this session's verdicts plus a connection status dot. A muted footer counts
+claims skipped by your topic filters ("N claims skipped by topic filters · Edit",
+hidden while the count is 0). History is in-memory — a page reload clears it.
 
 **Options** (right-click icon → Options): backend URL (takes effect on next Start),
 sensitivity (low/medium/high — applied live), popup position (4 corners), popup
 duration, and an optional live-transcript toggle.
+
+**Topics to fact-check** (options page): a checkbox per claim category — Politics &
+current events, Health & medicine, Science & technology, Money & economy, History,
+Sports, Gaming, Entertainment & pop culture, and Everything else (claims that don't
+fit a category above) — under a tri-state "Fact-check all topics" master checkbox.
+Claims outside the checked topics are ignored. All topics are on by default;
+"Everything else" is always on. Changes apply instantly — even mid-stream.
+
+**Platform notes:** Kick's DOM churns fastest of the supported sites (obfuscated,
+frequently changing class names), so expect the Kick player selectors to need
+occasional maintenance. On Rumble, if the raw `<video>` element itself is fullscreened,
+no overlay can render on top of it — verdicts go to the history panel instead.
 
 ## Testing recipes
 
@@ -149,12 +166,23 @@ pytest -m "not slow"
 ```
 
 **No-audio end-to-end** — exercise gate → dedupe → grounded verify; if a WS session is
-open, the verdict also pops on the Twitch tab:
+open, the verdict also pops on the captured tab:
 
 ```bash
 curl -X POST http://127.0.0.1:8710/debug/text \
   -H "Content-Type: application/json" \
   -d '{"text": "The Great Wall of China is visible from space with the naked eye"}'
+```
+
+The optional `enabled_topics` parameter (list of topic slugs) tests the topic filter
+with the same semantics as the live pipeline: filtered claims still appear in the
+response's `claims` but produce no verdict. E.g. a sports claim with sports disabled:
+
+```bash
+curl -X POST http://127.0.0.1:8710/debug/text \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Brazil has won five FIFA World Cups",
+       "enabled_topics": ["politics", "health", "other"]}'
 ```
 
 **Audio pipeline without a browser** — build a TTS fixture (requires `espeak-ng`) and

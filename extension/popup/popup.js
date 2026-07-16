@@ -11,7 +11,11 @@
  */
 
 import {ERR, MSG, TARGET, makeMsg} from "../shared/messages.js";
-import {loadSettings} from "../shared/settings.js";
+import {
+  TOPIC_SLUGS,
+  getEnabledTopicSlugs,
+  loadSettings,
+} from "../shared/settings.js";
 
 const CAPTURE_SESSION_KEY = "captureSession";
 const HEALTH_TIMEOUT_MS = 1500;
@@ -57,6 +61,8 @@ const elements = {
   offlineHint: document.getElementById("offline-hint"),
   startButton: document.getElementById("start-button"),
   stopButton: document.getElementById("stop-button"),
+  topicsSummary: document.getElementById("topics-summary"),
+  topicsEdit: document.getElementById("topics-edit"),
 };
 
 const state = {
@@ -147,7 +153,8 @@ const render = () => {
   if (!active && backendOnline && !capturable) {
     elements.hintLine.hidden = false;
     elements.hintLine.textContent =
-      "This page can't be captured — switch to a Twitch stream (or any audible tab).";
+      "This page can't be captured — open a stream on Twitch, YouTube, Kick, " +
+      "or Rumble (or any audible tab).";
   } else {
     elements.hintLine.hidden = true;
   }
@@ -191,6 +198,21 @@ const handleStartClick = async () => {
   }
 };
 
+/** Read-only "Topics: N of 9 on" summary; editing lives on the options page. */
+const renderTopicsSummary = (settings) => {
+  const enabledCount = getEnabledTopicSlugs(settings.topics).length;
+  elements.topicsSummary.textContent =
+    `Topics: ${enabledCount} of ${TOPIC_SLUGS.length} on`;
+};
+
+const handleEditTopicsClick = async () => {
+  try {
+    await chrome.runtime.openOptionsPage();
+  } catch (error) {
+    console.error("[fact-checker] opening options page failed:", error);
+  }
+};
+
 const handleStopClick = async () => {
   try {
     elements.stopButton.disabled = true;
@@ -214,10 +236,16 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 
 elements.startButton.addEventListener("click", handleStartClick);
 elements.stopButton.addEventListener("click", handleStopClick);
+elements.topicsEdit.addEventListener("click", () => {
+  handleEditTopicsClick().catch((error) => {
+    console.error("[fact-checker] edit-topics click failed:", error);
+  });
+});
 
 const init = async () => {
   const settings = await loadSettings();
   state.healthUrl = deriveHealthUrl(settings.backendUrl);
+  renderTopicsSummary(settings);
   const [tab] = await chrome.tabs.query({active: true, currentWindow: true});
   state.activeTab = tab ?? null;
   const stored = await chrome.storage.session.get(CAPTURE_SESSION_KEY);

@@ -30,7 +30,7 @@ from app.llm_openrouter import (
     _openrouter_error_message,
     _ReasoningSupport,
 )
-from app.models import Source, TranscriptSegment
+from app.models import TOPICS, Source, TranscriptSegment
 from app.rate_limit import QuotaCooldown
 from tests.conftest import (
     FakeOpenRouterClient,
@@ -140,6 +140,15 @@ class TestGateJsonSchemaMode:
             "type": "json_schema",
             "json_schema": GATE_JSON_SCHEMA,
         }
+        # The strict schema the provider receives must demand the topic enum.
+        claim_schema = call["response_format"]["json_schema"]["schema"]["properties"][
+            "claims"
+        ]["items"]
+        assert claim_schema["properties"]["topic"] == {
+            "type": "string",
+            "enum": list(TOPICS),
+        }
+        assert claim_schema["required"] == ["claim_text", "check_worthiness", "topic"]
         # require_parameters keeps routing on providers that honor the schema;
         # response healing repairs near-miss JSON; low reasoning bounds latency.
         assert call["extra_body"]["provider"] == {"require_parameters": True}
@@ -150,6 +159,22 @@ class TestGateJsonSchemaMode:
         timeout = fake_openrouter_client.with_options_calls[0]["timeout"]
         assert timeout.read == 5.0
         assert timeout.connect == 3.0
+
+    async def test_topic_parses_through_and_unknown_coerces_to_other(
+        self, gate: OpenRouterClaimGate, fake_openrouter_client: FakeOpenRouterClient
+    ) -> None:
+        content = (
+            '{"claims": ['
+            '{"claim_text": "A sports claim.", "check_worthiness": 0.9,'
+            ' "topic": "sports"},'
+            '{"claim_text": "A mystery claim.", "check_worthiness": 0.9,'
+            ' "topic": "astrology"},'
+            '{"claim_text": "A bare claim.", "check_worthiness": 0.9}'
+            "]}"
+        )
+        fake_openrouter_client.completion_results.append(make_chat_completion(content))
+        claims = await gate.extract_claims("", "some transcript text")
+        assert [c.topic for c in claims] == ["sports", "other", "other"]
 
     async def test_fenced_json_with_prose_is_tolerated(
         self, gate: OpenRouterClaimGate, fake_openrouter_client: FakeOpenRouterClient

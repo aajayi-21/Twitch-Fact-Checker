@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>Twitch Live Fact-Checker</title>
+    <title>Live Stream Fact-Checker</title>
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
@@ -20,6 +20,11 @@
       <section class="status-card">
         <span class="status-dot" id="status-dot" data-state="idle"></span>
         <span class="status-text" id="status-text">Idle</span>
+      </section>
+
+      <section class="topics-line">
+        <span class="topics-summary" id="topics-summary">Topics: …</span>
+        <button type="button" class="topics-edit" id="topics-edit">Edit</button>
       </section>
 
       <p class="error-line" id="error-line" hidden></p>

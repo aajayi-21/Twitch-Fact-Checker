@@ -3,9 +3,9 @@
  *
  * Fetched by content/overlay.js via chrome.runtime.getURL (declared as a
  * web-accessible resource in manifest.json) and injected as a <style>
- * element INSIDE the shadow root — these rules never touch the Twitch page,
- * and Twitch's stylesheets never touch this UI (`:host { all: initial }`
- * additionally blocks inherited properties from leaking in).
+ * element INSIDE the shadow root — these rules never touch the host page,
+ * and the host page's stylesheets never touch this UI (`:host { all:
+ * initial }` additionally blocks inherited properties from leaking in).
  */
 
 :host {
@@ -211,6 +211,18 @@
   color: #d1d5db;
   background: rgba(156, 163, 175, 0.14);
   border: 1px solid rgba(156, 163, 175, 0.3);
+}
+
+/* ------------------------------------------------------------ topic dot -- */
+
+/* Category color dot beside the label pill (background color set inline by
+   overlay.js from its TOPIC_COLORS map; the topic name is the tooltip). */
+.fc-topic-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.2);
 }
 
 /* --------------------------------------------------------------- toast -- */
@@ -449,6 +461,39 @@
   text-align: center;
   color: var(--fc-dim);
   font-size: 12px;
+}
+
+.fc-panel-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 7px 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 11px;
+  color: var(--fc-dim);
+}
+
+.fc-panel-footer[hidden] {
+  display: none !important;
+}
+
+.fc-edit-topics {
+  appearance: none;
+  border: none;
+  background: transparent;
+  padding: 0;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  color: #c4a7ff;
+  cursor: pointer;
+  transition: color 120ms ease;
+}
+
+.fc-edit-topics:hover {
+  color: #e5d7ff;
+  text-decoration: underline;
 }
 
 .fc-entry {

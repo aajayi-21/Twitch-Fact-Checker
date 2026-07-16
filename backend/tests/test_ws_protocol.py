@@ -166,10 +166,13 @@ class TestDebugText:
         )
         assert response.status_code == 200
         body = response.json()
-        assert body["claims"] == [{"claim_text": CLAIM, "check_worthiness": 0.9}]
+        assert body["claims"] == [
+            {"claim_text": CLAIM, "check_worthiness": 0.9, "topic": "other"}
+        ]
         assert len(body["verdicts"]) == 1
         verdict = body["verdicts"][0]
         assert verdict["label"] == "FALSE"
+        assert verdict["topic"] == "other"
         assert verdict["used_fallback"] is False
         assert verdict["sources"] == [
             {"url": "https://www.toureiffel.paris/x", "title": "Key figures"}
@@ -213,6 +216,59 @@ class TestDebugText:
         body = response.json()
         assert len(body["claims"]) == 2  # gate output is always reported
         assert len(body["verdicts"]) == expected_verified
+
+    def test_enabled_topics_filters_claims_before_verification(
+        self, client, fake_genai_client: FakeGenAIClient
+    ) -> None:
+        fake_genai_client.generate_results.append(
+            make_gate_response(
+                [
+                    ("A claim about an election.", 0.9, "politics"),
+                    ("A claim about a vaccine.", 0.9, "health"),
+                ]
+            )
+        )
+        # Only ONE verdict scripted: the politics claim must never reach the
+        # verify call.
+        fake_genai_client.interaction_results.append(
+            make_verdict_interaction("TRUE", "Confirmed.")
+        )
+        response = client.post(
+            "/debug/text",
+            json={"text": "two claims here", "enabled_topics": ["health"]},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        # Gate output is always reported, including topic-skipped claims...
+        assert [(c["claim_text"], c["topic"]) for c in body["claims"]] == [
+            ("A claim about an election.", "politics"),
+            ("A claim about a vaccine.", "health"),
+        ]
+        # ...but only enabled-topic claims are verified.
+        assert [v["claim"] for v in body["verdicts"]] == ["A claim about a vaccine."]
+        assert body["verdicts"][0]["topic"] == "health"
+        assert len(fake_genai_client.interaction_calls) == 1
+
+    def test_other_topic_cannot_be_disabled(
+        self, client, fake_genai_client: FakeGenAIClient
+    ) -> None:
+        fake_genai_client.generate_results.append(
+            make_gate_response([("Some general trivia claim.", 0.9, "other")])
+        )
+        fake_genai_client.interaction_results.append(
+            make_verdict_interaction("TRUE", "Confirmed.")
+        )
+        # "other" absent from the enabled list, unknown slug thrown in too:
+        # both are tolerated; "other" is force-enabled server-side.
+        response = client.post(
+            "/debug/text",
+            json={
+                "text": "trivia text",
+                "enabled_topics": ["politics", "astrology"],
+            },
+        )
+        assert response.status_code == 200
+        assert len(response.json()["verdicts"]) == 1
 
     def test_paraphrase_deduped_across_requests(
         self, client, fake_genai_client: FakeGenAIClient
@@ -528,6 +584,7 @@ class TestAudioToVerdict:
         assert by_type["status"][0]["stage"] == "verifying"
         (verdict,) = by_type["verdict"]
         assert verdict["claim"] == CLAIM
+        assert verdict["topic"] == "other"
         assert verdict["label"] == "FALSE"
         assert verdict["used_fallback"] is False
         assert verdict["sources"] == [
@@ -582,6 +639,145 @@ class TestAudioToVerdict:
 
         assert close_code == 1000
         assert any(frame["type"] == "verdict" for frame in frames)
+
+    def test_topic_filter_drops_claim_and_emits_topic_skipped(
+        self,
+        client,
+        fake_genai_client: FakeGenAIClient,
+        fake_transcriber: FakeTranscriber,
+    ) -> None:
+        fake_transcriber.segments_script.append([SEVEN_WORD_SEGMENT])
+        fake_genai_client.generate_results.append(
+            make_gate_response([("An election claim.", 0.9, "politics")])
+        )
+        # No interaction scripted: the claim must be dropped BEFORE the
+        # bucket/verify step ever runs.
+        with client.websocket_connect("/ws/audio") as session:
+            session.send_json(make_hello(enabled_topics=["health"]))
+            assert session.receive_json()["type"] == "ready"
+            for _ in range(4):
+                session.send_bytes(pcm_silence(0.25))
+            session.send_json({"type": "stop"})
+            frames, close_code = collect_frames_until_close(session)
+
+        assert close_code == 1000
+        status_frames = [f for f in frames if f["type"] == "status"]
+        assert status_frames == [
+            {
+                "type": "status",
+                "stage": "topic_skipped",
+                "claim": "An election claim.",
+                "topic": "politics",
+            }
+        ]
+        assert not any(frame["type"] == "verdict" for frame in frames)
+        assert fake_genai_client.interaction_calls == []
+
+    def test_mid_session_config_flips_topics(
+        self,
+        client,
+        fake_genai_client: FakeGenAIClient,
+        fake_transcriber: FakeTranscriber,
+    ) -> None:
+        # The hello disables politics; the mid-session config re-enables it
+        # before the claim is gated, so verification proceeds.
+        fake_transcriber.segments_script.append([SEVEN_WORD_SEGMENT])
+        fake_genai_client.generate_results.append(
+            make_gate_response([("An election claim.", 0.9, "politics")])
+        )
+        fake_genai_client.interaction_results.append(
+            make_verdict_interaction("TRUE", "Confirmed.")
+        )
+        with client.websocket_connect("/ws/audio") as session:
+            session.send_json(make_hello(enabled_topics=["health"]))
+            assert session.receive_json()["type"] == "ready"
+            session.send_json(
+                {"type": "config", "enabled_topics": ["health", "politics"]}
+            )
+            for _ in range(4):
+                session.send_bytes(pcm_silence(0.25))
+            session.send_json({"type": "stop"})
+            frames, close_code = collect_frames_until_close(session)
+
+        assert close_code == 1000
+        verdicts = [f for f in frames if f["type"] == "verdict"]
+        assert [v["topic"] for v in verdicts] == ["politics"]
+        assert not any(f.get("stage") == "topic_skipped" for f in frames)
+
+    def test_topics_only_config_leaves_sensitivity_untouched(
+        self,
+        client,
+        fake_genai_client: FakeGenAIClient,
+        fake_transcriber: FakeTranscriber,
+    ) -> None:
+        # Worthiness 0.6 fails the hello's "low" (0.75); the topics-only
+        # config frame must NOT reset sensitivity, so it still fails.
+        fake_transcriber.segments_script.append([SEVEN_WORD_SEGMENT])
+        fake_genai_client.generate_results.append(make_gate_response([(CLAIM, 0.6)]))
+        with client.websocket_connect("/ws/audio") as session:
+            session.send_json(make_hello(sensitivity="low"))
+            assert session.receive_json()["type"] == "ready"
+            session.send_json({"type": "config", "enabled_topics": ["politics"]})
+            for _ in range(4):
+                session.send_bytes(pcm_silence(0.25))
+            session.send_json({"type": "stop"})
+            frames, close_code = collect_frames_until_close(session)
+
+        assert close_code == 1000
+        assert not any(frame["type"] == "verdict" for frame in frames)
+        assert fake_genai_client.interaction_calls == []
+
+    def test_other_topic_cannot_be_disabled(
+        self,
+        client,
+        fake_genai_client: FakeGenAIClient,
+        fake_transcriber: FakeTranscriber,
+    ) -> None:
+        fake_transcriber.segments_script.append([SEVEN_WORD_SEGMENT])
+        fake_genai_client.generate_results.append(
+            make_gate_response([("Some general trivia claim.", 0.9, "other")])
+        )
+        fake_genai_client.interaction_results.append(
+            make_verdict_interaction("TRUE", "Confirmed.")
+        )
+        with client.websocket_connect("/ws/audio") as session:
+            # "other" deliberately absent from the enabled list.
+            session.send_json(make_hello(enabled_topics=["sports"]))
+            assert session.receive_json()["type"] == "ready"
+            for _ in range(4):
+                session.send_bytes(pcm_silence(0.25))
+            session.send_json({"type": "stop"})
+            frames, close_code = collect_frames_until_close(session)
+
+        assert close_code == 1000
+        verdicts = [f for f in frames if f["type"] == "verdict"]
+        assert [v["topic"] for v in verdicts] == ["other"]
+
+    def test_hello_without_enabled_topics_enables_all(
+        self,
+        client,
+        fake_genai_client: FakeGenAIClient,
+        fake_transcriber: FakeTranscriber,
+    ) -> None:
+        fake_transcriber.segments_script.append([SEVEN_WORD_SEGMENT])
+        fake_genai_client.generate_results.append(
+            make_gate_response([("A sports record claim.", 0.9, "sports")])
+        )
+        fake_genai_client.interaction_results.append(
+            make_verdict_interaction("TRUE", "Confirmed.")
+        )
+        with client.websocket_connect("/ws/audio") as session:
+            session.send_json(make_hello())  # no enabled_topics key at all
+            assert session.receive_json()["type"] == "ready"
+            for _ in range(4):
+                session.send_bytes(pcm_silence(0.25))
+            session.send_json({"type": "stop"})
+            frames, close_code = collect_frames_until_close(session)
+
+        assert close_code == 1000
+        verdicts = [f for f in frames if f["type"] == "verdict"]
+        assert [v["topic"] for v in verdicts] == ["sports"]
+        assert not any(f.get("stage") == "topic_skipped" for f in frames)
 
     def test_malformed_frames_are_ignored_not_fatal(
         self,

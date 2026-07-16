@@ -287,6 +287,92 @@ input[type="number"] {
   cursor: pointer;
 }
 
+/* ----------------------------------------------------------- topic list -- */
+
+.topic-list {
+  display: flex;
+  flex-direction: column;
+  background: var(--field);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px;
+}
+
+.topic-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.topic-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 7px 9px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+.topic-row:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.topic-row input {
+  width: 15px;
+  height: 15px;
+  margin-top: 1px;
+  accent-color: var(--accent);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.topic-row input:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.topic-row-disabled {
+  cursor: default;
+}
+
+.topic-row-disabled:hover {
+  background: transparent;
+}
+
+.topic-master-row {
+  font-weight: 700;
+}
+
+.topic-divider {
+  height: 1px;
+  margin: 4px 9px;
+  background: var(--border);
+}
+
+.topic-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-top: 5px;
+}
+
+.topic-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.topic-name {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.topic-sublabel {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
 /* --------------------------------------------------------------- footer -- */
 
 .form-footer {

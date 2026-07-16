@@ -216,6 +216,10 @@ const handleStart = async ({streamId, tabId, settings}) => {
       sample_rate: AUDIO_SAMPLE_RATE,
       channels: 1,
       sensitivity: sessionSettings.sensitivity,
+      // Enabled-topic slugs; null (or omitted) means all topics enabled.
+      enabled_topics: Array.isArray(sessionSettings.topics)
+        ? [...sessionSettings.topics]
+        : null,
       send_transcripts: Boolean(sessionSettings.sendTranscripts),
     },
     onEvent: handleServerFrame,
@@ -279,23 +283,37 @@ const handleStop = async ({reason = "user_stop"} = {}) => {
 };
 
 /**
- * OFFSCREEN_CONFIG: live sensitivity change, relayed by the service worker
- * (offscreen documents cannot observe chrome.storage.onChanged themselves).
- * Forward as a WS config frame mid-session; BackendSocket also folds it into
- * the hello so a later reconnect handshakes with the current value.
- * (backendUrl changes take effect on the next start — documented behavior.)
+ * OFFSCREEN_CONFIG: live sensitivity/topic changes, relayed by the service
+ * worker (offscreen documents cannot observe chrome.storage.onChanged
+ * themselves). Each field is optional and applied independently. Forward as
+ * one WS config frame ({sensitivity?, enabled_topics?}) mid-session;
+ * BackendSocket also folds the values into the hello so a later reconnect
+ * handshakes with the current ones. (backendUrl changes take effect on the
+ * next start — documented behavior.)
  */
-const handleConfigChange = ({sensitivity} = {}) => {
+const handleConfigChange = ({sensitivity, topics} = {}) => {
   // Guard socket === null: a config message can race session teardown.
-  if (!socket || !sensitivity || sensitivity === sessionSettings?.sensitivity) {
+  if (!socket) {
     return;
   }
-  sessionSettings = {...sessionSettings, sensitivity};
-  const delivered = socket.sendConfig({sensitivity});
+  const configFrame = {};
+  if (sensitivity && sensitivity !== sessionSettings?.sensitivity) {
+    sessionSettings = {...sessionSettings, sensitivity};
+    configFrame.sensitivity = sensitivity;
+  }
+  if (Array.isArray(topics)) {
+    sessionSettings = {...sessionSettings, topics: [...topics]};
+    configFrame.enabled_topics = [...topics];
+  }
+  if (Object.keys(configFrame).length === 0) {
+    return;
+  }
+  const delivered = socket.sendConfig(configFrame);
+  const changedFields = Object.keys(configFrame).join(", ");
   console.info(
-    `[fact-checker] sensitivity -> ${sensitivity} (${
+    `[fact-checker] config change (${changedFields}) ${
       delivered ? "sent now" : "will apply via reconnect hello"
-    })`
+    }`
   );
 };
 

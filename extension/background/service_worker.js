@@ -17,11 +17,12 @@
  *  - persisting the offscreen document's SESSION_UPDATE state to
  *    chrome.storage.session (offscreen docs cannot access chrome.storage),
  *  - forwarding sync-settings changes to the offscreen doc (OFFSCREEN_CONFIG),
+ *  - opening the options page for content scripts (OPEN_OPTIONS),
  *  - closing the offscreen document on CAPTURE_ENDED.
  */
 
 import {ERR, MSG, TARGET, makeMsg} from "../shared/messages.js";
-import {loadSettings} from "../shared/settings.js";
+import {getEnabledTopicSlugs, loadSettings} from "../shared/settings.js";
 
 const OFFSCREEN_DOCUMENT_PATH = "offscreen/offscreen.html";
 const CAPTURED_TAB_KEY = "capturedTabId";
@@ -126,8 +127,8 @@ const closeOffscreenDocument = async () => {
 
 /**
  * Notify the captured tab's content script of session start/stop. The tab
- * may not be a Twitch page (no content script) or may have navigated, so
- * delivery failure is expected and non-fatal.
+ * may not be a supported stream page (no content script) or may have
+ * navigated, so delivery failure is expected and non-fatal.
  */
 const notifySessionState = async (tabId, running) => {
   try {
@@ -176,6 +177,7 @@ const handleCaptureStart = async (tabId) => {
   const offscreenSettings = {
     backendUrl: settings.backendUrl,
     sensitivity: settings.sensitivity,
+    topics: getEnabledTopicSlugs(settings.topics),
     sendTranscripts: settings.showTranscript,
   };
   try {
@@ -256,7 +258,8 @@ const relayBackendEvent = async (payload) => {
       payload: {event: payload.event},
     });
   } catch (error) {
-    // Expected when the captured tab is not a Twitch page or has navigated.
+    // Expected when the captured tab has no content script (unsupported
+    // page) or has navigated.
     console.debug("[fact-checker] OVERLAY_EVENT not delivered:", error);
   }
 };
@@ -310,6 +313,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case MSG.CAPTURE_ENDED:
         await handleCaptureEnded(message.payload?.reason);
         break;
+      case MSG.OPEN_OPTIONS:
+        // Content scripts cannot call chrome.runtime.openOptionsPage().
+        await chrome.runtime.openOptionsPage();
+        break;
       default:
         console.warn(`[fact-checker] unhandled message type: ${message.type}`);
     }
@@ -327,15 +334,31 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 });
 
 /**
- * Relay live sensitivity changes from the options page to the offscreen
- * document (offscreen docs cannot observe chrome.storage.onChanged), which
- * forwards them as a WS config frame. No offscreen document — i.e. no active
+ * Relay live sensitivity and topic-filter changes from the options page to
+ * the offscreen document (offscreen docs cannot observe
+ * chrome.storage.onChanged), which forwards them as a WS config frame.
+ * Topics travel as the enabled-slug array (the OFFSCREEN_CONFIG payload
+ * shape: {sensitivity?, topics?}). No offscreen document — i.e. no active
  * session — is the common case for options changes, not an error.
  */
 const relaySettingsChange = async (changes) => {
-  const newSensitivity = changes.settings.newValue?.sensitivity;
-  const oldSensitivity = changes.settings.oldValue?.sensitivity;
-  if (!newSensitivity || newSensitivity === oldSensitivity) {
+  const newSettings = changes.settings.newValue ?? {};
+  const oldSettings = changes.settings.oldValue ?? {};
+  const configPatch = {};
+  if (
+    newSettings.sensitivity &&
+    newSettings.sensitivity !== oldSettings.sensitivity
+  ) {
+    configPatch.sensitivity = newSettings.sensitivity;
+  }
+  if (newSettings.topics) {
+    const newEnabledTopics = getEnabledTopicSlugs(newSettings.topics);
+    const oldEnabledTopics = getEnabledTopicSlugs(oldSettings.topics);
+    if (newEnabledTopics.join(",") !== oldEnabledTopics.join(",")) {
+      configPatch.topics = newEnabledTopics;
+    }
+  }
+  if (Object.keys(configPatch).length === 0) {
     return;
   }
   if (!(await chrome.offscreen.hasDocument())) {
@@ -343,9 +366,7 @@ const relaySettingsChange = async (changes) => {
   }
   try {
     await chrome.runtime.sendMessage(
-      makeMsg(TARGET.OFFSCREEN, MSG.OFFSCREEN_CONFIG, {
-        sensitivity: newSensitivity,
-      })
+      makeMsg(TARGET.OFFSCREEN, MSG.OFFSCREEN_CONFIG, configPatch)
     );
   } catch (error) {
     // The document can close between hasDocument() and delivery.

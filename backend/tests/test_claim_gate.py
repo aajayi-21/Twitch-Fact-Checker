@@ -13,7 +13,7 @@ import pytest
 
 from app.claim_gate import ClaimGate, GateError
 from app.llm_gemini import GeminiClaimGate
-from app.models import TranscriptSegment
+from app.models import TOPICS, GateResult, TranscriptSegment
 from tests.conftest import (
     FakeGenAIClient,
     FakeGenerateContentResponse,
@@ -187,12 +187,27 @@ class TestExtractClaims:
 
     async def test_falls_back_to_raw_text_json(self, fake_genai_client) -> None:
         gate = make_gate(fake_genai_client)
-        raw = '{"claims": [{"claim_text": "The sun is a star.", "check_worthiness": 0.6}]}'
+        raw = (
+            '{"claims": [{"claim_text": "The sun is a star.", '
+            '"check_worthiness": 0.6, "topic": "science_tech"}]}'
+        )
         fake_genai_client.generate_results.append(
             FakeGenerateContentResponse(parsed=None, text=raw)
         )
         claims = await gate.extract_claims("", "some transcript text")
         assert claims[0].check_worthiness == 0.6
+        assert claims[0].topic == "science_tech"
+
+    async def test_missing_topic_in_raw_json_defaults_to_other(
+        self, fake_genai_client
+    ) -> None:
+        gate = make_gate(fake_genai_client)
+        raw = '{"claims": [{"claim_text": "The sun is a star.", "check_worthiness": 0.6}]}'
+        fake_genai_client.generate_results.append(
+            FakeGenerateContentResponse(parsed=None, text=raw)
+        )
+        claims = await gate.extract_claims("", "some transcript text")
+        assert claims[0].topic == "other"
 
     async def test_unparseable_text_raises_gate_error(self, fake_genai_client) -> None:
         gate = make_gate(fake_genai_client)
@@ -219,3 +234,13 @@ class TestExtractClaims:
         config = call["config"]
         assert config.response_mime_type == "application/json"
         assert config.temperature == 0.0
+        # response_schema is the Pydantic model itself, so the gate schema
+        # gains the topic enum automatically from GateClaim.
+        assert config.response_schema is GateResult
+        gate_claim_schema = GateResult.model_json_schema()["$defs"]["GateClaim"]
+        topic_schema = gate_claim_schema["properties"]["topic"]
+        assert topic_schema["enum"] == list(TOPICS)
+        # topic must be REQUIRED: Gemini's controlled generation may legally
+        # omit any non-required property, silently dumping claims into the
+        # unfilterable "other" bucket (mirrors the OpenRouter strict schema).
+        assert "topic" in gate_claim_schema["required"]
