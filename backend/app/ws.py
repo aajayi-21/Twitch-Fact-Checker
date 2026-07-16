@@ -20,9 +20,13 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 
 from app.config import SERVER_VERSION, Settings
-from app.llm_provider import create_claim_gate, create_fact_checker
+from app.llm_provider import LLMRuntime, create_claim_gate, create_fact_checker
 from app.models import ClientHello, ErrorFrame, ReadyFrame
 from app.pipeline import SessionPipeline
+
+NOT_CONFIGURED_MESSAGE = (
+    "Backend has no API key yet — add one in the extension options."
+)
 
 logger = logging.getLogger(__name__)
 
@@ -70,26 +74,43 @@ async def _receive_hello(websocket: WebSocket) -> ClientHello | None:
     return None
 
 
+async def _reject_not_configured(websocket: WebSocket) -> None:
+    """Error frame + close 1011 for a hello on an unconfigured backend."""
+    logger.warning("rejecting /ws/audio connection: backend not configured")
+    try:
+        await websocket.send_json(
+            ErrorFrame(
+                code="not_configured", message=NOT_CONFIGURED_MESSAGE, fatal=True
+            ).model_dump()
+        )
+        await websocket.close(code=1011)
+    except Exception as exc:
+        logger.debug("could not deliver not_configured rejection: %s", exc)
+
+
 def _build_pipeline(websocket: WebSocket, hello: ClientHello) -> SessionPipeline:
     """Assemble a session pipeline from process-wide state.
 
     The claim gate and fact checker are constructed FRESH per session (via
     the provider factory, so the transcript buffer and the dedupe memory are
-    session-scoped); the LLM client, token bucket, quota cooldown,
-    transcriber, and STT executor are shared process-wide (``app.state``,
-    built in lifespan).
+    session-scoped) around the CURRENT ``llm_runtime``'s shared client — a
+    setup hot-swap preempts any live session (fatal ``credentials_updated``
+    frame) and applies to every session from then on. The token bucket,
+    quota cooldown, transcriber, and STT executor are shared process-wide
+    (``app.state``, built in lifespan).
     """
     state = websocket.app.state
-    settings: Settings = state.settings
+    runtime: LLMRuntime = state.llm_runtime
+    settings: Settings = runtime.settings
     return SessionPipeline(
         websocket=websocket,
         hello=hello,
         settings=settings,
         transcriber=state.transcriber,
         stt_executor=state.stt_executor,
-        claim_gate=create_claim_gate(settings, state.llm_client),
+        claim_gate=create_claim_gate(settings, runtime.client),
         fact_checker=create_fact_checker(
-            settings, state.llm_client, state.quota_cooldown
+            settings, runtime.client, state.quota_cooldown
         ),
         verify_bucket=state.verify_bucket,
         quota_cooldown=state.quota_cooldown,
@@ -109,6 +130,13 @@ async def audio_ws(websocket: WebSocket) -> None:
 
     hello = await _receive_hello(websocket)
     if hello is None:
+        return
+
+    # Contract §setup: while unconfigured, a valid hello is answered with a
+    # fatal not_configured error frame and a 1011 close — no session starts.
+    runtime: LLMRuntime = websocket.app.state.llm_runtime
+    if not runtime.configured:
+        await _reject_not_configured(websocket)
         return
 
     async with _registration_lock:

@@ -14,9 +14,10 @@ import logging
 
 from fastapi import APIRouter, HTTPException, Request
 
-from app.claim_gate import ClaimGate, GateError
+from app.claim_gate import GateError
 from app.config import SENSITIVITY_THRESHOLDS, Settings
-from app.fact_checker import FactChecker, QuotaExceededError, VerificationError
+from app.fact_checker import QuotaExceededError, VerificationError
+from app.llm_provider import LLMRuntime
 from app.models import (
     DebugTextRequest,
     DebugTextResponse,
@@ -59,8 +60,9 @@ def _push_verdicts_to_live_session(verdicts: list[Verdict]) -> None:
 async def inject_text(body: DebugTextRequest, request: Request) -> DebugTextResponse:
     """Run the full gate -> dedupe -> verify path synchronously on raw text.
 
-    Responses: 400 on empty text, 404 when DEBUG_ENDPOINTS=false, 502 with a
-    descriptive detail on LLM failure — never a bare 500.
+    Responses: 400 on empty text, 404 when DEBUG_ENDPOINTS=false, 409 while
+    the backend has no API key yet, 502 with a descriptive detail on LLM
+    failure — never a bare 500.
     """
     settings: Settings = request.app.state.settings
     if not settings.debug_endpoints:
@@ -70,8 +72,17 @@ async def inject_text(body: DebugTextRequest, request: Request) -> DebugTextResp
     if not text:
         raise HTTPException(status_code=400, detail="text must be non-empty")
 
-    gate: ClaimGate = request.app.state.claim_gate
-    checker: FactChecker = request.app.state.fact_checker
+    # Fetched through the hot-swappable runtime per request, so a setup
+    # credentials POST takes effect immediately.
+    runtime: LLMRuntime = request.app.state.llm_runtime
+    gate = runtime.gate
+    checker = runtime.checker
+    if gate is None or checker is None:
+        raise HTTPException(
+            status_code=409,
+            detail="backend not configured — add an API key via the "
+            "extension options",
+        )
     bucket: TokenBucket = request.app.state.verify_bucket
     cooldown: QuotaCooldown = request.app.state.quota_cooldown
 

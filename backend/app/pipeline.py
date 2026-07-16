@@ -171,23 +171,29 @@ class SessionPipeline:
             raise RuntimeError("session is shutting down; frame not enqueued")
         self._outbound.put_nowait(frame)
 
-    async def preempt(self) -> None:
-        """Kick this session out in favor of a newer connection (§2.1)."""
+    async def preempt(
+        self,
+        code: str = "superseded",
+        message: str = "A newer connection replaced this session.",
+    ) -> None:
+        """Kick this session out with a fatal error frame + 1000 close.
+
+        The defaults describe the §2.1 new-connection preemption; other
+        preemptors override them for honest client copy — the setup
+        credentials hot-swap passes ``code="credentials_updated"`` so the
+        extension can say "key updated" instead of "a newer connection".
+        """
         if self._preempted:
             return
         self._preempted = True
         self._stop_requested.set()
-        logger.info("session preempted by a new connection")
+        logger.info("session preempted (%s)", code)
         try:
             await self._websocket.send_json(
-                ErrorFrame(
-                    code="superseded",
-                    message="A newer connection replaced this session.",
-                    fatal=True,
-                ).model_dump()
+                ErrorFrame(code=code, message=message, fatal=True).model_dump()
             )
         except Exception as exc:
-            logger.debug("could not send superseded frame: %s", exc)
+            logger.debug("could not send %s frame: %s", code, exc)
         await self._close_quietly(code=1000)
 
     def close(self) -> None:

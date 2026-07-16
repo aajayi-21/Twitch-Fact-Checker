@@ -21,6 +21,95 @@
         </div>
       </header>
 
+      <!-- Provider key onboarding. Its own form (never nested in the
+           settings form): the key is POSTed once to the local backend and
+           is NEVER written to chrome.storage. -->
+      <form id="provider-form" class="field provider-card" novalidate>
+        <span class="field-label" id="provider-title">Connect your AI provider</span>
+
+        <!-- Compact connected summary: shown instead of the form body when
+             the backend reports a configured key. -->
+        <div class="provider-connected" id="provider-connected" hidden>
+          <span class="provider-connected-check" aria-hidden="true">✓</span>
+          <span
+            class="provider-connected-summary"
+            id="provider-connected-summary"
+          ></span>
+          <button type="button" class="key-change-button" id="change-key-button">
+            Change key
+          </button>
+        </div>
+
+        <div class="provider-form-body" id="provider-form-body">
+          <p class="field-help">
+            The fact-checker needs an LLM API key. It is sent once to your
+            local backend and stored in its <code>.env</code> file — never in
+            the browser.
+          </p>
+          <div
+            class="segmented segmented-provider"
+            role="radiogroup"
+            aria-labelledby="provider-title"
+          >
+            <label class="segment">
+              <input type="radio" name="apiProvider" value="openrouter" checked />
+              <span class="segment-multi">
+                <span class="segment-name">OpenRouter</span>
+                <span class="segment-sub">recommended · free models</span>
+              </span>
+            </label>
+            <label class="segment">
+              <input type="radio" name="apiProvider" value="gemini" />
+              <span class="segment-multi">
+                <span class="segment-name">Gemini</span>
+                <span class="segment-sub">requires paid-tier key for search</span>
+              </span>
+            </label>
+          </div>
+          <div class="key-input-row">
+            <input
+              id="api-key-input"
+              class="key-input"
+              type="password"
+              spellcheck="false"
+              autocomplete="off"
+              placeholder="Paste your API key"
+              aria-label="API key"
+            />
+            <button
+              type="button"
+              class="key-toggle"
+              id="key-visibility-toggle"
+              aria-pressed="false"
+            >
+              Show
+            </button>
+          </div>
+          <div class="provider-actions">
+            <button type="submit" class="button-save" id="save-key-button">
+              Save &amp; verify
+            </button>
+            <button
+              type="button"
+              class="key-cancel-link"
+              id="cancel-change-button"
+              hidden
+            >
+              Cancel
+            </button>
+          </div>
+          <p
+            class="provider-status"
+            id="provider-status"
+            role="status"
+            aria-live="polite"
+            data-state="checking"
+          >
+            Checking backend…
+          </p>
+        </div>
+      </form>
+
       <form id="settings-form" novalidate>
         <section class="field">
           <label class="field-label" for="backend-url">Backend WebSocket URL</label>

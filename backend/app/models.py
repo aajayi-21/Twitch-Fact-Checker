@@ -71,11 +71,15 @@ def resolve_enabled_topics(enabled_topics: list[str] | None) -> frozenset[str]:
 
 ErrorCode = Literal[
     "bad_hello",
+    "not_configured",
     "stt_overload",
     "llm_failure",
     "rate_limited",
     "quota_cooldown",
     "superseded",
+    # Fatal: a setup credentials hot-swap ended this session so the new
+    # provider/key takes effect; the client should prompt a fresh Start.
+    "credentials_updated",
 ]
 
 

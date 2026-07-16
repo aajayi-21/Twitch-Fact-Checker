@@ -175,6 +175,30 @@ body {
   color: var(--text);
 }
 
+.setup-card {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  background: rgba(145, 71, 255, 0.1);
+  border: 1px solid rgba(145, 71, 255, 0.35);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+
+.setup-text {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.button-settings {
+  background: var(--accent);
+  color: #fff;
+}
+
+.button-settings:hover {
+  background: var(--accent-hover);
+}
+
 .actions {
   display: flex;
   gap: 8px;

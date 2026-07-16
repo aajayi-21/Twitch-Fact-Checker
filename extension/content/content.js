@@ -27,7 +27,10 @@
  *  - handle OVERLAY_EVENT (verbatim backend frames: verdict / status /
  *    error / transcript / ready) and SESSION_STATE;
  *  - own the in-memory session verdict history (cleared on page reload —
- *    accepted and documented in the plan).
+ *    accepted and documented in the plan), including user-initiated removal:
+ *    the overlay's per-row "×" and header "Clear all" buttons call back into
+ *    onRemoveVerdict / onClearHistory here, which mutate the array and
+ *    re-render (the topic-skip footer counter is unaffected).
  */
 
 (() => {
@@ -466,6 +469,26 @@
         .catch((error) => {
           console.debug("[fact-checker] OPEN_OPTIONS send failed:", error);
         });
+    };
+    // "×" on a history row: this script owns the history array, so the
+    // overlay only reports the verdict id; re-rendering from the mutated
+    // array removes the row and updates the pill count in one pass.
+    state.overlay.onRemoveVerdict = (verdictId) => {
+      const index = state.history.findIndex(
+        (verdict) => verdict.id === verdictId
+      );
+      if (index === -1) {
+        return;
+      }
+      state.history.splice(index, 1);
+      state.overlay.renderHistory(state.history);
+    };
+    // "Clear all" in the panel header: empty the session history; the
+    // overlay shows "Fact-check · 0" and its existing empty state. The
+    // topic-skip counter is page-lifetime and intentionally untouched.
+    state.overlay.onClearHistory = () => {
+      state.history.length = 0;
+      state.overlay.renderHistory(state.history);
     };
     ensureMounted(); // no-ops quietly on non-player pages
     document.addEventListener("fullscreenchange", handleFullscreenChange);

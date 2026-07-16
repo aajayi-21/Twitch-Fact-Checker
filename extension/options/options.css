@@ -184,6 +184,199 @@ input[type="number"] {
   outline-offset: 1px;
 }
 
+/* ---------------------------------------------------- provider key card -- */
+
+/* Two-line provider segments (name + sublabel). Overrides the generic
+   `.segment span` block rules for the inner text spans. */
+.segmented-provider .segment-multi {
+  padding: 7px 4px;
+}
+
+.segmented-provider .segment-name,
+.segmented-provider .segment-sub {
+  padding: 0;
+}
+
+.segmented-provider .segment-name {
+  font-size: 12.5px;
+  font-weight: 700;
+}
+
+.segmented-provider .segment-sub {
+  font-size: 10.5px;
+  font-weight: 500;
+}
+
+.segment input:checked + .segment-multi .segment-name {
+  color: #ffffff;
+}
+
+.segment input:checked + .segment-multi .segment-sub {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.key-input-row {
+  position: relative;
+}
+
+.key-input {
+  appearance: none;
+  width: 100%;
+  background: var(--field);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 62px 9px 11px;
+  color: var(--text);
+  font: inherit;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+
+.key-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(145, 71, 255, 0.25);
+}
+
+.key-toggle {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  appearance: none;
+  border: none;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 4px 9px;
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease;
+}
+
+.key-toggle:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.provider-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.button-save:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.provider-status {
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+/* Full form body vs. compact connected summary: exactly one is visible at a
+   time (the other carries [hidden]); each fades in subtly when swapped in. */
+.provider-form-body {
+  display: flex;
+  flex-direction: column;
+  gap: 7px; /* mirror .field so wrapping the controls changes no spacing */
+}
+
+.provider-form-body:not([hidden]),
+.provider-connected:not([hidden]) {
+  animation: provider-swap-in 180ms ease;
+}
+
+@keyframes provider-swap-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.provider-connected {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.provider-connected-check {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: rgba(34, 197, 94, 0.16);
+  color: var(--green);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.provider-connected-summary {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.key-change-button {
+  appearance: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 4px 9px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color 120ms ease, background 120ms ease;
+}
+
+.key-change-button:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.key-cancel-link {
+  appearance: none;
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  text-decoration: underline;
+  cursor: pointer;
+  transition: color 120ms ease;
+}
+
+.key-cancel-link:hover {
+  color: var(--text);
+}
+
+.provider-status[data-state="connected"] {
+  color: var(--green);
+  font-weight: 600;
+}
+
+.provider-status[data-state="error"] {
+  color: #fca5a5;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
 /* -------------------------------------------------- corner position grid -- */
 
 .corner-grid {

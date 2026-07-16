@@ -47,6 +47,12 @@ export const ERR = Object.freeze({
   ERR_CAPTURE_FAILED: "ERR_CAPTURE_FAILED",
   ERR_CAPTURE_LOST: "ERR_CAPTURE_LOST",
   ERR_TAB_CLOSED: "ERR_TAB_CLOSED",
+  // Backend is up but has no API key yet (healthz configured:false / WS
+  // fatal error frame {"code":"not_configured"}).
+  ERR_NOT_CONFIGURED: "ERR_NOT_CONFIGURED",
+  // The backend hot-swapped to a freshly saved API key/provider and closed
+  // the session (WS fatal error frame {"code":"credentials_updated"}).
+  ERR_CREDENTIALS_UPDATED: "ERR_CREDENTIALS_UPDATED",
 });
 
 /**

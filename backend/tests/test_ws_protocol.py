@@ -26,6 +26,7 @@ from tests.conftest import (
     FakeGenAIClient,
     FakeInteractionsError,
     FakeTranscriber,
+    make_fake_llm_runtime,
     make_gate_response,
     make_hello,
     make_test_settings,
@@ -90,6 +91,7 @@ class TestHealthz:
             "status": "ok",
             "server_version": "0.1.0",
             "whisper_model": "fake-whisper.en",
+            "configured": True,
             "llm_provider": "gemini",
             "gate_model": "fake-gate-model",
             "verify_model": "fake-verify-model",
@@ -438,13 +440,15 @@ class RaceWebSocket:
 
 def make_fake_ws_app(executor: ThreadPoolExecutor) -> Any:
     """An ``app.state`` lookalike with the process-wide fakes ws.py expects."""
+    settings = make_test_settings()
+    cooldown = QuotaCooldown()
     state = SimpleNamespace(
-        settings=make_test_settings(),
+        settings=settings,
         transcriber=FakeTranscriber(),
         stt_executor=executor,
-        llm_client=FakeGenAIClient(),
+        llm_runtime=make_fake_llm_runtime(settings, FakeGenAIClient(), cooldown),
         verify_bucket=TokenBucket(rate_per_min=6000.0, burst=10),
-        quota_cooldown=QuotaCooldown(),
+        quota_cooldown=cooldown,
     )
     return SimpleNamespace(state=state)
 

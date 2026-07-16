@@ -1,22 +1,76 @@
 """Provider factory: build the LLM client + gate/checker pair from Settings.
 
 The rest of the app never mentions a concrete provider. ``app.main``'s
-lifespan builds ONE process-wide client for the active provider
-(``settings.llm_provider``) and the process-wide gate/checker used by the
-debug endpoints; ``app.ws`` builds a FRESH gate/checker per session (so the
-transcript buffer and dedupe memory are session-scoped) around that same
-shared client.
+lifespan builds ONE process-wide :class:`LLMRuntime` for the active provider
+(``settings.llm_provider``) holding the shared client plus the process-wide
+gate/checker used by the debug endpoints; ``app.ws`` builds a FRESH
+gate/checker per session (so the transcript buffer and dedupe memory are
+session-scoped) around that same shared client.
+
+The runtime is a single ``app.state.llm_runtime`` slot so that
+``POST /setup/credentials`` can hot-swap the whole provider stack atomically
+(one attribute assignment) — sessions and debug requests read the slot fresh
+each time. An UNCONFIGURED backend (no API key yet) holds a runtime whose
+``client``/``gate``/``checker`` are ``None``.
 
 Provider imports are deliberately lazy: only the active provider's SDK
 machinery is constructed.
 """
 
+from dataclasses import dataclass
 from typing import Any
 
 from app.claim_gate import ClaimGate
 from app.config import Settings
 from app.fact_checker import FactChecker
 from app.rate_limit import QuotaCooldown
+
+
+@dataclass
+class LLMRuntime:
+    """Everything provider-specific, swapped atomically on credential setup.
+
+    ``settings`` is always present (it also carries the provider choice);
+    ``client``/``gate``/``checker`` are ``None`` while the backend is
+    unconfigured. ``gate``/``checker`` here are the PROCESS-WIDE pair used by
+    the debug endpoints; live sessions build fresh pairs around ``client``.
+    """
+
+    settings: Settings
+    client: Any | None = None
+    gate: ClaimGate | None = None
+    checker: FactChecker | None = None
+
+    @property
+    def configured(self) -> bool:
+        """True when a live provider stack is installed."""
+        return (
+            self.client is not None
+            and self.gate is not None
+            and self.checker is not None
+        )
+
+    @property
+    def provider(self) -> str | None:
+        """The active provider name, or ``None`` while unconfigured."""
+        return self.settings.llm_provider if self.configured else None
+
+
+def build_llm_runtime(settings: Settings, cooldown: QuotaCooldown) -> LLMRuntime:
+    """An :class:`LLMRuntime` for ``settings`` — unconfigured when keyless.
+
+    When the active provider's key is missing/placeholder, NO LLM objects are
+    built and the runtime's ``client``/``gate``/``checker`` stay ``None``.
+    """
+    if not settings.is_configured:
+        return LLMRuntime(settings=settings)
+    client = create_llm_client(settings)
+    return LLMRuntime(
+        settings=settings,
+        client=client,
+        gate=create_claim_gate(settings, client),
+        checker=create_fact_checker(settings, client, cooldown),
+    )
 
 
 def create_llm_client(settings: Settings) -> Any:

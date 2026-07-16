@@ -55,6 +55,7 @@ from openai.types.chat import ChatCompletion
 from app import ws as ws_module
 from app.config import Settings
 from app.llm_gemini import GeminiClaimGate, GeminiFactChecker
+from app.llm_provider import LLMRuntime
 from app.main import create_app
 from app.models import GateClaim, GateResult, TranscriptSegment
 from app.rate_limit import QuotaCooldown, TokenBucket
@@ -167,6 +168,9 @@ class _FakeAio:
     def __init__(self, client: "FakeGenAIClient") -> None:
         self.models = _FakeAsyncModels(client)
         self.interactions = _FakeAsyncInteractions(client)
+
+    async def aclose(self) -> None:
+        """Match ``genai.Client.aio.aclose`` so hot-swap close paths work."""
 
 
 class FakeGenAIClient:
@@ -501,6 +505,35 @@ def make_test_settings(**overrides: Any) -> Settings:
     return Settings(**base)
 
 
+def make_fake_llm_runtime(
+    settings: Settings, genai_client: FakeGenAIClient, cooldown: QuotaCooldown
+) -> LLMRuntime:
+    """An :class:`LLMRuntime` built from fakes (mirrors build_llm_runtime).
+
+    When ``settings`` is UNCONFIGURED (active provider key empty/placeholder)
+    the runtime is the keyless None-container, exactly like the real factory.
+    """
+    if not settings.is_configured:
+        return LLMRuntime(settings=settings)
+    return LLMRuntime(
+        settings=settings,
+        client=genai_client,
+        gate=GeminiClaimGate(
+            client=genai_client,
+            model=settings.gemini_gate_model,
+            gate_interval_s=settings.gate_interval_s,
+            gate_timeout_s=settings.gate_timeout_s,
+        ),
+        checker=GeminiFactChecker(
+            client=genai_client,
+            verify_model=settings.gemini_verify_model,
+            extraction_model=settings.gemini_gate_model,
+            cooldown=cooldown,
+            verify_timeout_s=settings.verify_timeout_s,
+        ),
+    )
+
+
 def _install_fake_state(
     application: FastAPI,
     settings: Settings,
@@ -513,26 +546,13 @@ def _install_fake_state(
     async def fake_lifespan(app: FastAPI) -> AsyncIterator[None]:
         cooldown = QuotaCooldown()
         app.state.settings = settings
-        # The slot ws.py hands to the provider factory when building the
-        # per-session gate/checker (same contract as the real lifespan).
-        app.state.llm_client = genai_client
         app.state.quota_cooldown = cooldown
         app.state.verify_bucket = TokenBucket(
             rate_per_min=settings.verify_rpm, burst=10
         )
-        app.state.claim_gate = GeminiClaimGate(
-            client=genai_client,
-            model=settings.gemini_gate_model,
-            gate_interval_s=settings.gate_interval_s,
-            gate_timeout_s=settings.gate_timeout_s,
-        )
-        app.state.fact_checker = GeminiFactChecker(
-            client=genai_client,
-            verify_model=settings.gemini_verify_model,
-            extraction_model=settings.gemini_gate_model,
-            cooldown=cooldown,
-            verify_timeout_s=settings.verify_timeout_s,
-        )
+        # The hot-swappable slot ws.py/debug.py fetch the provider stack
+        # through (same contract as the real lifespan).
+        app.state.llm_runtime = make_fake_llm_runtime(settings, genai_client, cooldown)
         app.state.transcriber = transcriber
         executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="stt-test")
         app.state.stt_executor = executor
@@ -553,7 +573,15 @@ def open_test_client(
     """Build the real app, install fake state, and run its (fake) lifespan."""
     application = create_app()
     _install_fake_state(application, settings, genai_client, transcriber)
-    with TestClient(application) as test_client:
+    # The app only trusts localhost Hosts (TrustedHostMiddleware), so the
+    # TestClient default "testserver" would 400. The explicit default host
+    # header also covers websocket_connect, whose URL is hard-coded to
+    # ws://testserver inside starlette's TestClient.
+    with TestClient(
+        application,
+        base_url="http://127.0.0.1",
+        headers={"host": "127.0.0.1"},
+    ) as test_client:
         yield test_client
 
 

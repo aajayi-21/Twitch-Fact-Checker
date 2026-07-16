@@ -10,8 +10,34 @@ with a web-search-grounded LLM call, and pushes
 Shadow-DOM overlay rendered over the player.
 
 The LLM layer is provider-switchable: **OpenRouter** (default — free model + the `web`
-search plugin) or **Gemini** (requires a paid-tier key for search grounding). Set
-`LLM_PROVIDER` in `backend/.env`.
+search plugin) or **Gemini** (requires a paid-tier key for search grounding). Pick the
+provider and paste your key on the extension's options page — no file editing needed.
+
+## Quickstart
+
+1. **Start the backend** (needs Python 3.11+; first run downloads a ~170 MB speech
+   model):
+
+   ```bash
+   ./backend/run.sh
+   ```
+
+   The server starts key-less in a "needs setup" state — the extension will walk you
+   through adding a key.
+
+2. **Load the extension** (needs Chrome 116+): open `chrome://extensions/`, enable
+   **Developer mode** (top right), click **Load unpacked**, and select the
+   `extension/` folder.
+
+3. **Connect your AI provider**: click the extension's toolbar icon → **Open
+   settings** → paste your **OpenRouter** key (https://openrouter.ai/keys,
+   recommended — free models) or **Gemini** key
+   (https://aistudio.google.com/apikey, requires a paid-tier key for search
+   grounding) → **Save & verify**. The key is validated live against the provider
+   and stored only in `backend/.env` on your machine.
+
+That's it — open a stream on a supported site, click the toolbar icon, and press
+**Start**. See [Usage](#usage) for details.
 
 ## Architecture
 
@@ -35,37 +61,34 @@ Chrome (extension)                              Local backend (127.0.0.1:8710)
 
 No database, no build step, no auth — everything runs locally, single user.
 
-## Prerequisites
+## Backend details (advanced)
 
-- Python 3.11+
-- Google Chrome 116+
-- An OpenRouter API key: https://openrouter.ai/keys (default provider), **or** a
-  paid-tier Gemini API key (https://aistudio.google.com/apikey) if you switch
-  `LLM_PROVIDER=gemini` — Gemini search grounding is not available on the free tier.
-
-## Backend setup
+`./backend/run.sh` is idempotent: it creates `backend/.venv` if missing, installs
+dependencies only when needed, and execs
+`uvicorn app.main:app --host 127.0.0.1 --port 8710`. To run the steps manually:
 
 ```bash
 cd backend
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-
-cp .env.example .env
-# edit .env and set OPENROUTER_API_KEY=<your key>   (from https://openrouter.ai/keys)
-
 uvicorn app.main:app --host 127.0.0.1 --port 8710
 ```
 
-`.env` holds your real API key — it is gitignored and must never be committed.
+Check it is up: `curl http://127.0.0.1:8710/healthz` (echoes `configured` plus the
+active `llm_provider`, `gate_model`, and `verify_model` — all `null` until a key is
+set).
 
-Check it is up: `curl http://127.0.0.1:8710/healthz` (also echoes the active
-`llm_provider`, `gate_model`, and `verify_model`).
+**API keys:** the backend starts without one, in a "needs setup" state (fact-checking
+is disabled until a key is added). The normal path is the extension's options page,
+which validates the key live and writes it to `backend/.env`. Editing `.env` by hand
+still works if you prefer — set `OPENROUTER_API_KEY=<key>` (or `LLM_PROVIDER=gemini`
+plus `GEMINI_API_KEY=<key>`; see `.env.example`) and restart. Both paths use the same
+file. `.env` holds your real key — it is gitignored and must never be committed.
 
 **First run:** the Whisper model (`distil-small.en`, int8, ~170 MB) is downloaded at
-startup — expect a one-time delay. Startup fails loudly if the active provider's API
-key (`OPENROUTER_API_KEY`, or `GEMINI_API_KEY` with `LLM_PROVIDER=gemini`) is missing
-or the model download fails. On slow machines, set `WHISPER_MODEL=base` in `.env`.
+startup — expect a one-time delay. On slow machines, set `WHISPER_MODEL=base` in
+`.env`.
 
 ## LLM provider, models, costs
 
@@ -88,9 +111,10 @@ Documented alternates (full rationale in `.env.example`):
 - `nvidia/nemotron-3-ultra-550b-a55b:free` — not recommended (no structured outputs on
   the free endpoint, slow high-effort reasoning by default, worst measured uptime).
 
-**Switching back to Gemini:** set `LLM_PROVIDER=gemini` and `GEMINI_API_KEY` in `.env`
-(models: `GEMINI_GATE_MODEL` / `GEMINI_VERIFY_MODEL`). Search grounding requires a
-paid-tier Gemini key, which is why OpenRouter is the default.
+**Switching to Gemini:** pick Gemini on the extension's options page and paste your
+key (or manually set `LLM_PROVIDER=gemini` and `GEMINI_API_KEY` in `.env`; models:
+`GEMINI_GATE_MODEL` / `GEMINI_VERIFY_MODEL`). Search grounding requires a paid-tier
+Gemini key, which is why OpenRouter is the default.
 
 **Costs & limits (OpenRouter):**
 
@@ -106,13 +130,10 @@ paid-tier Gemini key, which is why OpenRouter is the default.
 - At the app's throttled rate (gate every 12 s, verifications capped by `VERIFY_RPM=8`
   and deduped), expect pennies per multi-hour stream.
 
-## Extension install
-
-1. Open `chrome://extensions/` and enable **Developer mode** (top right).
-2. Click **Load unpacked** and select `/home/ade/misc/twitch_fact_checker/extension`.
-3. After code changes, click the refresh icon on the extension card to reload.
-
 ## Usage
+
+Installed via the [Quickstart](#quickstart) above. After code changes to the
+extension, click the refresh icon on its card in `chrome://extensions/` to reload.
 
 1. Start the backend, then open a stream on a supported site: Twitch
    (`https://www.twitch.tv/...`), YouTube (`/watch?v=` or `/live/...`), Kick
@@ -196,8 +217,9 @@ python scripts/stream_wav.py tests/fixtures/claims_16k.wav --speed 3   # backpre
 
 ## Troubleshooting
 
-- **"Backend offline" in the popup** — start the server:
-  `uvicorn app.main:app --host 127.0.0.1 --port 8710` from `backend/`.
+- **"Backend offline" in the popup** — start the server: `./backend/run.sh`.
+- **"Add your API key to start fact-checking" in the popup** — the backend is running
+  but has no key yet; click **Open settings** and paste one (see Quickstart step 3).
 - **"Fact-checks paused: API quota is cooling down"** — a provider 429 tripped the
   cooldown; checks resume automatically after the retry window. Lower `VERIFY_RPM` in
   `.env` or reduce sensitivity if it recurs. On OpenRouter free variants this is

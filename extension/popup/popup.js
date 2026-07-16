@@ -41,6 +41,9 @@ const ERROR_COPY = {
   [ERR.ERR_CAPTURE_LOST]:
     "Tab audio capture ended unexpectedly. Click Start to resume.",
   [ERR.ERR_TAB_CLOSED]: "The captured tab was closed. Open a stream and click Start.",
+  [ERR.ERR_NOT_CONFIGURED]: "Backend has no API key — add one in settings.",
+  [ERR.ERR_CREDENTIALS_UPDATED]:
+    "Session restarted after key update — press Start again.",
 };
 
 const STATUS_LABEL = {
@@ -63,11 +66,16 @@ const elements = {
   stopButton: document.getElementById("stop-button"),
   topicsSummary: document.getElementById("topics-summary"),
   topicsEdit: document.getElementById("topics-edit"),
+  setupCard: document.getElementById("setup-card"),
+  openSettingsButton: document.getElementById("open-settings-button"),
 };
 
 const state = {
   backendOnline: false,
   backendChecked: false,
+  // healthz "configured" flag: false while the backend has no API key yet.
+  // Defaults to true so the setup card never flashes before the first check.
+  backendConfigured: true,
   session: {...IDLE_SESSION},
   activeTab: null,
   healthUrl: null,
@@ -145,11 +153,17 @@ const render = () => {
   // unreachable.
   elements.offlineHint.hidden = !(backendChecked && !backendOnline && !active);
 
+  // Setup state: backend reachable but no API key configured yet. Shown
+  // above the start controls; Start stays disabled until a key is added.
+  const needsSetup =
+    backendChecked && backendOnline && !state.backendConfigured;
+  elements.setupCard.hidden = !(needsSetup && !active);
+
   // Buttons.
   elements.stopButton.hidden = !active;
   elements.startButton.hidden = active;
   const capturable = isCapturableTab();
-  elements.startButton.disabled = !backendOnline || !capturable;
+  elements.startButton.disabled = !backendOnline || !capturable || needsSetup;
   if (!active && backendOnline && !capturable) {
     elements.hintLine.hidden = false;
     elements.hintLine.textContent =
@@ -173,6 +187,16 @@ const checkBackendHealth = async () => {
       cache: "no-store",
     });
     state.backendOnline = response.ok;
+    if (response.ok) {
+      try {
+        const health = await response.json();
+        // Missing field (older backend) counts as configured.
+        state.backendConfigured = health?.configured !== false;
+      } catch (parseError) {
+        console.warn("[fact-checker] unparseable healthz body:", parseError);
+        state.backendConfigured = true;
+      }
+    }
   } catch (error) {
     state.backendOnline = false;
   }
@@ -205,7 +229,8 @@ const renderTopicsSummary = (settings) => {
     `Topics: ${enabledCount} of ${TOPIC_SLUGS.length} on`;
 };
 
-const handleEditTopicsClick = async () => {
+/** Shared by the topics "Edit" link and the setup card's "Open settings". */
+const handleOpenOptionsClick = async () => {
   try {
     await chrome.runtime.openOptionsPage();
   } catch (error) {
@@ -237,8 +262,13 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 elements.startButton.addEventListener("click", handleStartClick);
 elements.stopButton.addEventListener("click", handleStopClick);
 elements.topicsEdit.addEventListener("click", () => {
-  handleEditTopicsClick().catch((error) => {
+  handleOpenOptionsClick().catch((error) => {
     console.error("[fact-checker] edit-topics click failed:", error);
+  });
+});
+elements.openSettingsButton.addEventListener("click", () => {
+  handleOpenOptionsClick().catch((error) => {
+    console.error("[fact-checker] open-settings click failed:", error);
   });
 });
 

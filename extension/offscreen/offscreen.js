@@ -164,6 +164,33 @@ const handleServerFrame = (frame) => {
     return;
   }
   if (frame.type === "error" && frame.fatal === true) {
+    if (frame.code === "not_configured") {
+      // Backend is up but has no API key yet — a distinct, user-fixable
+      // state with its own popup copy and settings call-to-action.
+      console.error(`[fact-checker] backend not configured: ${frame.message}`);
+      endSessionWithError(ERR.ERR_NOT_CONFIGURED, ERR.ERR_NOT_CONFIGURED).catch(
+        (error) => {
+          console.error("[fact-checker] not-configured handling failed:", error);
+        }
+      );
+      return;
+    }
+    if (frame.code === "credentials_updated") {
+      // The user saved a new API key; the backend ended this session so the
+      // new provider takes effect on the next start. Expected, not a fault —
+      // distinct popup copy tells the user to simply press Start again.
+      console.info(`[fact-checker] backend credentials updated: ${frame.message}`);
+      endSessionWithError(
+        ERR.ERR_CREDENTIALS_UPDATED,
+        "credentials_updated"
+      ).catch((error) => {
+        console.error(
+          "[fact-checker] credentials-updated handling failed:",
+          error
+        );
+      });
+      return;
+    }
     // e.g. "superseded" — another client preempted this session.
     console.error(
       `[fact-checker] fatal backend error (${frame.code}): ${frame.message}`

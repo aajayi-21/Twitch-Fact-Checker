@@ -9,20 +9,17 @@ import asyncio
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
 from app.config import SERVER_VERSION, Settings
 from app.debug import router as debug_router
-from app.llm_provider import (
-    close_llm_client,
-    create_claim_gate,
-    create_fact_checker,
-    create_llm_client,
-)
+from app.llm_provider import LLMRuntime, build_llm_runtime, close_llm_client
 from app.rate_limit import QuotaCooldown, TokenBucket
+from app.setup import router as setup_router
 from app.transcriber import Transcriber
 from app.ws import router as ws_router
 
@@ -40,21 +37,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     Slots:
 
-    - ``app.state.settings``        — :class:`app.config.Settings`
-    - ``app.state.llm_client``      — ONE client for the active provider
-      (``AsyncOpenAI`` for OpenRouter, ``genai.Client`` for Gemini), built by
-      :func:`app.llm_provider.create_llm_client`; only the active provider's
-      client is ever constructed. All calls are async; the event loop is
-      never blocked.
-    - ``app.state.claim_gate``      — :class:`app.claim_gate.ClaimGate`
-      (provider subclass, via the factory)
-    - ``app.state.fact_checker``    — :class:`app.fact_checker.FactChecker`
-      (provider subclass, via the factory)
+    - ``app.state.settings``        — :class:`app.config.Settings` (boot-time)
+    - ``app.state.llm_runtime``     — :class:`app.llm_provider.LLMRuntime`:
+      the shared provider client plus the process-wide gate/checker used by
+      the debug endpoints. When the backend boots UNCONFIGURED (no API key),
+      the runtime's ``client``/``gate``/``checker`` are ``None``; ``POST
+      /setup/credentials`` later swaps the slot atomically with a live stack.
+      Sessions and debug requests read the slot fresh per request/session.
     - ``app.state.verify_bucket``   — :class:`app.rate_limit.TokenBucket`
     - ``app.state.quota_cooldown``  — :class:`app.rate_limit.QuotaCooldown`
     - ``app.state.transcriber``     — :class:`app.transcriber.Transcriber`;
       the Whisper model loads via ``asyncio.to_thread`` so a failed download
-      aborts startup loudly instead of failing mid-session.
+      aborts startup loudly instead of failing mid-session. Whisper loads
+      even while unconfigured — only the LLM stack is deferred.
     - ``app.state.stt_executor``    — ``ThreadPoolExecutor(max_workers=1)``
       for ``transcribe_window`` (ctranslate2 releases the GIL; a single
       worker keeps CPU use predictable); shut down after ``yield`` with
@@ -65,17 +60,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         level=settings.log_level.upper(),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    settings.require_llm_api_key()
-
-    client = create_llm_client(settings)
     cooldown = QuotaCooldown()
 
     app.state.settings = settings
-    app.state.llm_client = client
     app.state.quota_cooldown = cooldown
     app.state.verify_bucket = TokenBucket(rate_per_min=settings.verify_rpm, burst=2)
-    app.state.claim_gate = create_claim_gate(settings, client)
-    app.state.fact_checker = create_fact_checker(settings, client, cooldown)
+    app.state.llm_runtime = build_llm_runtime(settings, cooldown)
 
     transcriber = Transcriber(
         model_name=settings.whisper_model,
@@ -89,24 +79,36 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     stt_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="stt")
     app.state.stt_executor = stt_executor
 
-    logger.info(
-        "backend %s ready: provider=%s gate=%s verify=%s whisper=%s "
-        "debug_endpoints=%s",
-        SERVER_VERSION,
-        settings.llm_provider,
-        settings.active_gate_model,
-        settings.active_verify_model,
-        settings.whisper_model,
-        settings.debug_endpoints,
-    )
+    if app.state.llm_runtime.configured:
+        logger.info(
+            "backend %s ready: provider=%s gate=%s verify=%s whisper=%s "
+            "debug_endpoints=%s",
+            SERVER_VERSION,
+            settings.llm_provider,
+            settings.active_gate_model,
+            settings.active_verify_model,
+            settings.whisper_model,
+            settings.debug_endpoints,
+        )
+    else:
+        logger.warning(
+            "backend %s started UNCONFIGURED: no API key yet — add one via "
+            "the extension options (POST /setup/credentials); whisper=%s",
+            SERVER_VERSION,
+            settings.whisper_model,
+        )
     try:
         yield
     finally:
         stt_executor.shutdown(wait=False, cancel_futures=True)
-        try:
-            await close_llm_client(client)
-        except Exception as exc:
-            logger.warning("error closing LLM client: %s", exc)
+        # Read the slot fresh: a setup hot-swap may have replaced the boot
+        # runtime (the swap closes the OLD client itself).
+        runtime: LLMRuntime = app.state.llm_runtime
+        if runtime.client is not None:
+            try:
+                await close_llm_client(runtime.client)
+            except Exception as exc:
+                logger.warning("error closing LLM client: %s", exc)
 
 
 def create_app() -> FastAPI:
@@ -122,20 +124,37 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # DNS-rebinding hardening: CORS does nothing against a malicious page
+    # whose own domain is re-pointed at 127.0.0.1 (same-origin, arbitrary
+    # Host), so reject any Host that is not localhost with a 400. Starlette
+    # strips the port before matching (":8710" variants are covered), and
+    # the check applies to both HTTP and the /ws/audio websocket scope. If
+    # the backend is ever served on a LAN hostname, add it here.
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
     app.include_router(debug_router)
+    app.include_router(setup_router)
     app.include_router(ws_router)
 
     @app.get("/healthz")
-    async def healthz(request: Request) -> dict[str, str]:
-        """Liveness + config echo; the extension popup preflights this."""
+    async def healthz(request: Request) -> dict[str, Any]:
+        """Liveness + config echo; the extension popup preflights this.
+
+        While unconfigured, ``configured`` is ``False`` and every LLM field
+        (``llm_provider``/``gate_model``/``verify_model``) is ``null``.
+        """
         settings: Settings = request.app.state.settings
+        runtime: LLMRuntime = request.app.state.llm_runtime
+        configured = runtime.configured
         return {
             "status": "ok",
             "server_version": SERVER_VERSION,
             "whisper_model": settings.whisper_model,
-            "llm_provider": settings.llm_provider,
-            "gate_model": settings.active_gate_model,
-            "verify_model": settings.active_verify_model,
+            "configured": configured,
+            "llm_provider": runtime.settings.llm_provider if configured else None,
+            "gate_model": runtime.settings.active_gate_model if configured else None,
+            "verify_model": (
+                runtime.settings.active_verify_model if configured else None
+            ),
         }
 
     return app

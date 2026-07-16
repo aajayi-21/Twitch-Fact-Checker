@@ -18,8 +18,12 @@
  *  - History panel: corner pill "Fact-check · N" with a connection status
  *    dot, toggling a scrollable list of this session's verdicts (entries
  *    expand on click to show explanation + sources). Each verdict carries a
- *    topic color dot; a footer aggregates claims skipped by the topic filter
- *    with an "Edit topics" link (opens the options page via content.js).
+ *    topic color dot; each row has an always-visible "×" remove button and
+ *    the header a "Clear all" button — both delegate to content.js (the
+ *    history owner) via onRemoveVerdict / onClearHistory, which mutates the
+ *    array and re-renders. A footer aggregates claims skipped by the topic
+ *    filter with an "Edit topics" link (opens the options page via
+ *    content.js).
  *  - Transient extras: non-fatal backend notice chip, optional live
  *    transcript line.
  *
@@ -102,6 +106,24 @@ class FactCheckOverlay {
    * @type {(() => void)|null}
    */
   onEditTopics = null;
+
+  /**
+   * Called when the user clicks a history row's "×" remove button; receives
+   * the verdict's unique id. Assigned by content.js, which owns the session
+   * history array: it removes the matching entry and calls renderHistory()
+   * with the remainder, updating the row DOM and pill count together.
+   * @type {((verdictId: string) => void)|null}
+   */
+  onRemoveVerdict = null;
+
+  /**
+   * Called when the user clicks "Clear all" in the panel header. Assigned by
+   * content.js, which empties the history array and calls renderHistory([])
+   * (pill back to "Fact-check · 0", panel shows its empty state). The
+   * topic-skip footer counter is deliberately unaffected.
+   * @type {(() => void)|null}
+   */
+  onClearHistory = null;
 
   /**
    * @param {object} settings - shape of shared/settings.js DEFAULT_SETTINGS;
@@ -244,6 +266,7 @@ class FactCheckOverlay {
       return;
     }
     this.#refs.pillLabel.textContent = `Fact-check · ${this.#historyEntries.length}`;
+    this.#refs.clearAll.hidden = this.#historyEntries.length === 0;
     const list = this.#refs.panelList;
     list.textContent = "";
     if (this.#historyEntries.length === 0) {
@@ -436,7 +459,8 @@ class FactCheckOverlay {
         </div>
         <section class="fc-panel" hidden>
           <header class="fc-panel-header">
-            <span>Session fact-checks</span>
+            <span class="fc-panel-title">Session fact-checks</span>
+            <button class="fc-clear-all" type="button" hidden>Clear all</button>
             <span class="fc-panel-status">
               <span class="fc-dot" data-state="off"></span>
               <span class="fc-panel-status-text">Idle</span>
@@ -466,6 +490,7 @@ class FactCheckOverlay {
       pillLabel: query(".fc-pill-label"),
       panel: query(".fc-panel"),
       panelList: query(".fc-panel-list"),
+      clearAll: query(".fc-clear-all"),
       panelDot: query(".fc-panel-status .fc-dot"),
       panelStatusText: query(".fc-panel-status-text"),
       panelFooter: query(".fc-panel-footer"),
@@ -480,6 +505,9 @@ class FactCheckOverlay {
     this.#refs.pill.addEventListener("click", () => this.#togglePanel());
     this.#refs.editTopics.addEventListener("click", () => {
       this.onEditTopics?.();
+    });
+    this.#refs.clearAll.addEventListener("click", () => {
+      this.onClearHistory?.();
     });
     this.renderHistory(this.#historyEntries);
     this.setConnectionState(this.#running);
@@ -622,6 +650,18 @@ class FactCheckOverlay {
     time.className = "fc-entry-time";
     time.textContent = FactCheckOverlay.#formatTime(verdict.checked_at);
     head.appendChild(time);
+    const removeButton = document.createElement("button");
+    removeButton.type = "button";
+    removeButton.className = "fc-entry-remove";
+    removeButton.setAttribute("aria-label", "Remove this fact-check");
+    removeButton.textContent = "×";
+    removeButton.addEventListener("click", (event) => {
+      // Don't let the entry's expand/collapse toggle see this click.
+      event.stopPropagation();
+      this.#expandedEntryKeys.delete(key);
+      this.onRemoveVerdict?.(verdict.id);
+    });
+    head.appendChild(removeButton);
     entry.appendChild(head);
 
     const claim = document.createElement("p");
