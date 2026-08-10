@@ -498,7 +498,10 @@ def make_test_settings(**overrides: Any) -> Settings:
     base: dict[str, Any] = {
         # The app-level fakes are Gemini-shaped (FakeGenAIClient), so the
         # provider factory must build the Gemini gate/checker around them.
+        "_env_file": None,
         "llm_provider": "gemini",
+        "gate_provider": "gemini",
+        "verify_provider": "gemini",
         "gemini_api_key": "offline-test-key",
         "gemini_gate_model": "fake-gate-model",
         "gemini_verify_model": "fake-verify-model",
