@@ -25,6 +25,9 @@ import {
   saveSettings,
 } from "../shared/settings.js";
 
+// Promise-safe API namespace (see shared/capabilities.js § namespace idiom).
+const chrome = globalThis.browser ?? globalThis.chrome;
+
 const SAVE_CONFIRMATION_MS = 2200;
 const DURATION_MIN_S = 4;
 const DURATION_MAX_S = 60;

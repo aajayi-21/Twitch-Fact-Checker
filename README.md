@@ -25,9 +25,18 @@ provider and paste your key on the extension's options page — no file editing 
    The server starts key-less in a "needs setup" state — the extension will walk you
    through adding a key.
 
-2. **Load the extension** (needs Chrome 116+): open `chrome://extensions/`, enable
-   **Developer mode** (top right), click **Load unpacked**, and select the
-   `extension/` folder.
+2. **Load the extension** — the same `extension/` folder works in both browsers:
+
+   - **Chrome 116+**: open `chrome://extensions/`, enable **Developer mode**
+     (top right), click **Load unpacked**, select `extension/`.
+   - **Firefox 128+**: open `about:debugging#/runtime/this-firefox`, click
+     **Load Temporary Add-on…**, and select `extension/manifest.json`.
+     (Temporary add-ons are cleared when Firefox restarts.)
+
+   Each browser warns about the other's manifest keys — Chrome about
+   `background.scripts` and `browser_specific_settings`, Firefox about the
+   `tabCapture`/`offscreen` permissions. Both are expected: the manifest
+   deliberately carries both browsers' keys so there is no build step.
 
 3. **Connect your AI provider**: click the extension's toolbar icon → **Open
    settings** → paste your **OpenRouter** key (https://openrouter.ai/keys,
@@ -61,6 +70,51 @@ Chrome (extension)                              Local backend (127.0.0.1:8710)
 
 No build step, no auth — everything runs locally, single user. Analytics live in
 one SQLite file (`backend/fact_checker.db`; delete it to reset).
+
+**Firefox uses a different front half.** Firefox implements neither
+`chrome.tabCapture` nor the offscreen-document API, so there is no way to
+capture a tab's audio and nowhere Chrome-shaped to put the session. The
+extension detects this at load (`extension/shared/capabilities.js`) and swaps
+in a second capture path; the backend never notices the difference.
+
+```
+Firefox (extension)                             Local backend (127.0.0.1:8710)
+┌─────────────────────────────────┐
+│ popup ── Start/Stop (gesture)   │
+│   │                             │
+│ content script                  │
+│   page's own <video>            │
+│   → AudioContext (+ loopback)   │           ┌───────────────────────────────┐
+│   → lowpass ×2 → worklet        │           │ FastAPI  /ws/audio            │
+│   → Int16 PCM → base64          │  16 kHz   │  ring buffer → faster-whisper │
+│   │ runtime messages            │  PCM over │                               │
+│ background EVENT PAGE (has DOM) │  WebSocket│                               │
+│   WebSocket ───────────────────────────────→│  (identical protocol)         │
+│   ← JSON verdict frames ────────────────────←─                              │
+│   │ relayed to the same overlay │           └───────────────────────────────┘
+└─────────────────────────────────┘
+```
+
+Why it is shaped that way: a content script's network requests run in the
+*page's* context under MV3, and Twitch/YouTube ship a `connect-src` CSP that
+would block `ws://127.0.0.1` — so the WebSocket has to live in an extension
+page. Firefox's MV3 background is an event page with a real DOM (not a service
+worker), so it can hold the socket and reuse the same `BackendSocket` client.
+PCM crosses as base64 because runtime messaging is JSON-serialized in both
+browsers (an `ArrayBuffer` would arrive as `{}`).
+
+Firefox-specific caveats:
+
+- Audio is tapped from the page's `<video>` via `createMediaElementSource`,
+  which **reroutes** that element's audio through the extension's
+  AudioContext. The graph therefore keeps a permanent loopback to the
+  speakers and never closes the context — and capture refuses to start if the
+  context cannot leave the `suspended` state, rather than risk muting the
+  stream.
+- It follows that capture only works on pages with a real media element (all
+  four supported sites) and not on DRM-protected video.
+- A full page navigation ends the session (the content script owns the tap);
+  in-page SPA route changes are handled by re-attaching to the new player.
 
 ## Backend details (advanced)
 
@@ -190,7 +244,8 @@ gate pass times out.
 ## Usage
 
 Installed via the [Quickstart](#quickstart) above. After code changes to the
-extension, click the refresh icon on its card in `chrome://extensions/` to reload.
+extension, reload it: the refresh icon on its card in `chrome://extensions/`, or
+**Reload** on `about:debugging#/runtime/this-firefox` in Firefox.
 
 1. Start the backend, then open a stream on a supported site: Twitch
    (`https://www.twitch.tv/...`), YouTube (`/watch?v=` or `/live/...`), Kick
