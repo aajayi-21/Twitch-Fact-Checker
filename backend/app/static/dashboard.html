@@ -1,5 +1,499 @@
-<!-- Placeholder — replaced by the real dashboard in the stats/dashboard phase. -->
 <!doctype html>
+<html lang="en">
+<head>
 <meta charset="utf-8">
-<title>Fact-Checker Dashboard</title>
-<p>Dashboard coming online…</p>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Fact-Checker Analytics</title>
+<style>
+  /* Tokens (dataviz reference palette): light on :root, dark via media query.
+     Served locally same-origin by FastAPI — no external assets. */
+  :root {
+    color-scheme: light;
+    --page:        #f9f9f7;
+    --surface:     #fcfcfb;
+    --ink:         #0b0b0b;
+    --ink-2:       #52514e;
+    --muted:       #898781;
+    --grid:        #e1e0d9;
+    --baseline:    #c3c2b7;
+    --border:      rgba(11, 11, 11, 0.10);
+    --series:      #2a78d6;   /* funnel bars, accents */
+    --lbl-true:    #0ca30c;
+    --lbl-false:   #d03b3b;
+    --lbl-misl:    #fab219;
+    --lbl-unv:     #898781;
+    --good-text:   #006300;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --page:      #0d0d0d;
+      --surface:   #1a1a19;
+      --ink:       #ffffff;
+      --ink-2:     #c3c2b7;
+      --muted:     #898781;
+      --grid:      #2c2c2a;
+      --baseline:  #383835;
+      --border:    rgba(255, 255, 255, 0.10);
+      --series:    #3987e5;
+      --good-text: #0ca30c;
+    }
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--page);
+    color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 14px;
+    line-height: 1.45;
+    padding: 24px clamp(16px, 4vw, 40px) 64px;
+  }
+  a { color: var(--series); }
+
+  header {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 20px;
+  }
+  h1 { font-size: 20px; font-weight: 650; letter-spacing: -0.01em; }
+  #refreshed { color: var(--muted); font-size: 12px; margin-left: auto; }
+  #error-banner {
+    display: none;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--lbl-false);
+    border-radius: 6px;
+    padding: 10px 14px;
+    margin-bottom: 16px;
+    color: var(--ink-2);
+  }
+
+  .grid { display: grid; gap: 16px; }
+  .kpis { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); margin-bottom: 16px; }
+  .charts { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); margin-bottom: 16px; }
+  .channels { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .card h2 {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    margin-bottom: 10px;
+  }
+
+  /* Stat tiles: label / value / context line */
+  .tile .value { font-size: 30px; font-weight: 600; letter-spacing: -0.01em; }
+  .tile .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+
+  /* Horizontal labeled bar list (bar-table hybrid: every row carries its
+     name + value as text, so it doubles as the table view and identity
+     never rides color alone). */
+  .barlist { display: flex; flex-direction: column; gap: 8px; }
+  .barrow { display: grid; grid-template-columns: 118px 1fr 52px; gap: 8px; align-items: center; }
+  .barrow .name { color: var(--ink-2); font-size: 13px; display: flex; align-items: center; gap: 6px; }
+  .barrow .name .swatch { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .barrow .track { height: 16px; position: relative; }
+  .barrow .bar {
+    height: 16px;
+    border-radius: 0 4px 4px 0;   /* rounded data-end, square baseline */
+    background: var(--series);
+    min-width: 2px;
+    transition: opacity 0.1s;
+  }
+  .barrow:hover .bar { opacity: 0.82; }
+  .barrow .num {
+    font-variant-numeric: tabular-nums;
+    color: var(--ink);
+    font-size: 13px;
+    text-align: right;
+  }
+  .empty { color: var(--muted); padding: 12px 0; }
+
+  /* Channel cards */
+  .channel-card .head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }
+  .channel-card .chan { font-weight: 600; font-size: 15px; overflow-wrap: anywhere; }
+  .channel-card .platform {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 1px 8px;
+  }
+  .channel-card dl {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 3px 12px;
+    font-size: 13px;
+  }
+  .channel-card dt { color: var(--muted); }
+  .channel-card dd { text-align: right; font-variant-numeric: tabular-nums; }
+  .channel-card .floor { color: var(--muted); font-size: 12px; margin-top: 8px; }
+
+  /* Sessions table */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th {
+    text-align: left;
+    color: var(--muted);
+    font-weight: 500;
+    font-size: 12px;
+    border-bottom: 1px solid var(--baseline);
+    padding: 6px 10px 6px 0;
+  }
+  td {
+    padding: 7px 10px 7px 0;
+    border-bottom: 1px solid var(--grid);
+    vertical-align: top;
+  }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr.session-row { cursor: pointer; }
+  tr.session-row:hover td { background: color-mix(in oklab, var(--series) 6%, transparent); }
+  tr.detail-row td { background: color-mix(in oklab, var(--series) 4%, transparent); padding: 10px 12px; }
+  .verdict-chip {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 600;
+    border-radius: 4px;
+    padding: 0 6px;
+    margin-right: 6px;
+    color: #fff;
+  }
+  .verdict-chip[data-label="TRUE"] { background: var(--lbl-true); }
+  .verdict-chip[data-label="FALSE"] { background: var(--lbl-false); }
+  .verdict-chip[data-label="MISLEADING"] { background: var(--lbl-misl); color: #0b0b0b; }
+  .verdict-chip[data-label="UNVERIFIED"] { background: var(--lbl-unv); }
+  .detail-claims { color: var(--ink-2); font-size: 12px; margin-bottom: 8px; }
+  .detail-verdict { margin: 4px 0; }
+  .detail-verdict .lat { color: var(--muted); font-size: 12px; }
+  .fb { font-size: 12px; color: var(--muted); }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Fact-Checker Analytics</h1>
+  <span id="refreshed"></span>
+</header>
+<div id="error-banner"></div>
+
+<div class="grid kpis" id="kpis"></div>
+
+<div class="grid charts">
+  <div class="card">
+    <h2>Verdicts by label · all time</h2>
+    <div class="barlist" id="labels-chart"><div class="empty">Loading…</div></div>
+  </div>
+  <div class="card">
+    <h2>Claim funnel · all time</h2>
+    <div class="barlist" id="funnel-chart"><div class="empty">Loading…</div></div>
+  </div>
+</div>
+
+<div class="card" style="margin-bottom:16px">
+  <h2>Channels</h2>
+  <div class="grid channels" id="channels"><div class="empty">Loading…</div></div>
+</div>
+
+<div class="card">
+  <h2>Recent sessions</h2>
+  <div style="overflow-x:auto">
+    <table>
+      <thead>
+        <tr>
+          <th>Started</th><th>Where</th><th>Title</th>
+          <th class="num">Duration</th><th class="num">Speech</th>
+          <th class="num">Checks</th><th class="num">Est. cost</th>
+        </tr>
+      </thead>
+      <tbody id="sessions-body"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+/* Domain palettes.
+   - Verdict labels use the product's status colors; every bar carries its
+     name + count as text, so color never carries identity alone.
+   - The funnel is ONE series (stage identity lives in the row labels,
+     magnitude in the length), so a single hue. */
+const LABEL_ORDER = ["TRUE", "FALSE", "MISLEADING", "UNVERIFIED"];
+const LABEL_COLORS = {
+  TRUE: "var(--lbl-true)",
+  FALSE: "var(--lbl-false)",
+  MISLEADING: "var(--lbl-misl)",
+  UNVERIFIED: "var(--lbl-unv)",
+};
+const FUNNEL_STAGES = [
+  ["verified", "Verified"],
+  ["verify_failed", "Verify failed"],
+  ["pending", "Never completed"],
+  ["queue_dropped", "Queue dropped"],
+  ["duplicate", "Duplicate"],
+  ["topic_skipped", "Topic filtered"],
+  ["below_threshold", "Below threshold"],
+];
+
+const fmtInt = (n) => Number(n ?? 0).toLocaleString("en-US");
+const fmtMoney = (n) => `$${Number(n ?? 0).toFixed(2)}`;
+const fmtPct = (n) => (n == null ? "—" : `${Number(n).toFixed(1)}%`);
+
+const parseUtc = (iso) => {
+  if (!iso) return null;
+  // Backend timestamps are UTC ISO; tolerate a missing Z or a space.
+  const normalized = iso.includes("T") ? iso : iso.replace(" ", "T");
+  return new Date(normalized.endsWith("Z") ? normalized : `${normalized}Z`);
+};
+
+const fmtWhen = (iso) => {
+  const date = parseUtc(iso);
+  return date
+    ? date.toLocaleString(undefined, {
+        month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+      })
+    : "—";
+};
+
+const fmtDuration = (startIso, endIso) => {
+  const start = parseUtc(startIso);
+  const end = parseUtc(endIso);
+  if (!start || !end) return "live?";
+  const minutes = Math.max(0, Math.round((end - start) / 60000));
+  return minutes >= 60
+    ? `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`
+    : `${minutes}m`;
+};
+
+const el = (tag, className, text) => {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+};
+
+/* One labeled bar row: [name+swatch | bar | count]. */
+const barRow = (name, value, max, color) => {
+  const row = el("div", "barrow");
+  const label = el("span", "name");
+  const swatch = el("span", "swatch");
+  swatch.style.background = color;
+  label.append(swatch, document.createTextNode(name));
+  const track = el("div", "track");
+  const bar = el("div", "bar");
+  bar.style.width = max > 0 ? `${Math.max(1.5, (value / max) * 100)}%` : "2px";
+  bar.style.background = color;
+  track.append(bar);
+  row.append(label, track, el("span", "num", fmtInt(value)));
+  return row;
+};
+
+const renderBarList = (container, entries) => {
+  container.textContent = "";
+  const max = Math.max(0, ...entries.map(([, value]) => value));
+  if (max === 0) {
+    container.append(el("div", "empty", "No data yet — run a capture session."));
+    return;
+  }
+  for (const [name, value, color] of entries) {
+    container.append(barRow(name, value, max, color));
+  }
+};
+
+const tile = (label, value, sub) => {
+  const card = el("div", "card tile");
+  card.append(el("h2", null, label), el("div", "value", value));
+  if (sub) card.append(el("div", "sub", sub));
+  return card;
+};
+
+const renderSummary = (summary) => {
+  const kpis = document.getElementById("kpis");
+  kpis.textContent = "";
+  const today = summary.today;
+  const totals = summary.totals;
+  kpis.append(
+    tile("Sessions today", fmtInt(today.sessions), `all time ${fmtInt(totals.sessions)}`),
+    tile("Claims gated today", fmtInt(today.claims), `all time ${fmtInt(totals.claims)}`),
+    tile("Checks run today", fmtInt(today.verify_calls), `all time ${fmtInt(totals.verify_calls)}`),
+    tile("Est. cost today", fmtMoney(today.est_cost_usd), `all time ${fmtMoney(totals.est_cost_usd)}`),
+  );
+  renderBarList(
+    document.getElementById("labels-chart"),
+    LABEL_ORDER.map((label) => [label, totals.labels?.[label] ?? 0, LABEL_COLORS[label]]),
+  );
+  renderBarList(
+    document.getElementById("funnel-chart"),
+    FUNNEL_STAGES.map(([key, name]) => [name, totals.funnel?.[key] ?? 0, "var(--series)"]),
+  );
+};
+
+const channelCard = (entry) => {
+  const card = el("div", "card channel-card");
+  const head = el("div", "head");
+  head.append(el("span", "chan", entry.channel), el("span", "platform", entry.platform ?? "?"));
+  card.append(head);
+  const dl = el("dl");
+  const add = (term, value) => {
+    dl.append(el("dt", null, term), el("dd", null, value));
+  };
+  add("Watch time", `${(entry.watch_seconds / 3600).toFixed(1)} h`);
+  add("Claims / hour", entry.claims_per_hour == null ? "—" : entry.claims_per_hour.toFixed(1));
+  const adjudicated = entry.adjudicated ?? {};
+  // Honest-metrics floor: rates only at n >= 30 adjudicated verdicts.
+  if ((adjudicated.n ?? 0) >= 30) {
+    add("False", fmtPct(adjudicated.false_pct));
+    add("Misleading", fmtPct(adjudicated.misleading_pct));
+  }
+  add("Unverified share*", fmtPct(entry.unverified_share));
+  add("Est. cost", fmtMoney(entry.est_cost_usd));
+  card.append(dl);
+  const floor = el("div", "floor");
+  floor.textContent =
+    (adjudicated.n ?? 0) >= 30
+      ? `*coverage of the pipeline, not the channel · n=${fmtInt(adjudicated.n)} adjudicated`
+      : `Rates need ≥30 adjudicated verdicts (n=${fmtInt(adjudicated.n ?? 0)}). *coverage of the pipeline, not the channel`;
+  card.append(floor);
+  return card;
+};
+
+const renderChannels = (channels) => {
+  const container = document.getElementById("channels");
+  container.textContent = "";
+  if (!channels.length) {
+    container.append(el("div", "empty", "No channel data yet — sessions need a recognized channel."));
+    return;
+  }
+  for (const entry of channels) container.append(channelCard(entry));
+};
+
+const detailCell = (detail) => {
+  const cell = el("td");
+  cell.colSpan = 7;
+  const funnelCounts = {};
+  for (const claim of detail.claims) {
+    funnelCounts[claim.outcome] = (funnelCounts[claim.outcome] ?? 0) + 1;
+  }
+  const summary = FUNNEL_STAGES
+    .filter(([key]) => funnelCounts[key])
+    .map(([key, name]) => `${name} ${funnelCounts[key]}`)
+    .join(" · ");
+  cell.append(el("div", "detail-claims", summary || "No claims recorded."));
+  for (const verdict of detail.verdicts) {
+    const row = el("div", "detail-verdict");
+    const chip = el("span", "verdict-chip", verdict.label);
+    chip.dataset.label = verdict.label;
+    row.append(chip);
+    const claim = detail.claims.find((c) => c.id === verdict.claim_id);
+    row.append(document.createTextNode(claim ? claim.text : "(claim missing)"));
+    const lat = verdict.latency_ms != null ? `${(verdict.latency_ms / 1000).toFixed(1)}s` : "";
+    row.append(el("span", "lat", ` · ${lat} · ${verdict.provider ?? ""}`));
+    if (verdict.feedback) {
+      row.append(
+        el("span", "fb", ` · you rated: ${verdict.feedback.rating === "up" ? "👍" : "👎"}`),
+      );
+    }
+    cell.append(row);
+  }
+  return cell;
+};
+
+const toggleDetail = async (sessionId, row) => {
+  const existing = row.nextElementSibling;
+  if (existing?.classList.contains("detail-row")) {
+    existing.remove();
+    return;
+  }
+  const detailRow = el("tr", "detail-row");
+  const loading = el("td", "empty", "Loading…");
+  loading.colSpan = 7;
+  detailRow.append(loading);
+  row.after(detailRow);
+  try {
+    const detail = await fetchJson(`/stats/sessions/${sessionId}`);
+    detailRow.textContent = "";
+    detailRow.append(detailCell(detail));
+  } catch (error) {
+    loading.textContent = `Could not load session detail: ${error.message}`;
+  }
+};
+
+const renderSessions = (sessions) => {
+  const body = document.getElementById("sessions-body");
+  body.textContent = "";
+  if (!sessions.length) {
+    const row = el("tr");
+    const cell = el("td", "empty", "No sessions yet — start a capture from the extension.");
+    cell.colSpan = 7;
+    row.append(cell);
+    body.append(row);
+    return;
+  }
+  for (const session of sessions) {
+    const row = el("tr", "session-row");
+    row.title = "Click for claims & verdicts";
+    const where = session.channel
+      ? `${session.platform ?? "?"} / ${session.channel}`
+      : session.platform ?? "—";
+    const cells = [
+      ["", fmtWhen(session.started_at)],
+      ["", where],
+      ["", session.title ?? "—"],
+      ["num", fmtDuration(session.started_at, session.ended_at)],
+      ["num", `${Math.round((session.speech_seconds ?? 0) / 60)}m`],
+      ["num", fmtInt(session.verify_calls)],
+      ["num", fmtMoney(session.est_cost_usd)],
+    ];
+    for (const [cls, text] of cells) row.append(el("td", cls || undefined, text));
+    row.addEventListener("click", () => toggleDetail(session.id, row));
+    body.append(row);
+  }
+};
+
+const fetchJson = async (path) => {
+  const response = await fetch(path, { cache: "no-store" });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+};
+
+const refresh = async () => {
+  const banner = document.getElementById("error-banner");
+  try {
+    const [summary, channels, sessions] = await Promise.all([
+      fetchJson("/stats/summary"),
+      fetchJson("/stats/channels"),
+      fetchJson("/stats/sessions?limit=25"),
+    ]);
+    renderSummary(summary);
+    renderChannels(channels);
+    renderSessions(sessions);
+    banner.style.display = "none";
+    document.getElementById("refreshed").textContent =
+      `updated ${new Date().toLocaleTimeString()}`;
+  } catch (error) {
+    banner.textContent =
+      `Could not reach the backend (${error.message}). Is it running on this port?`;
+    banner.style.display = "block";
+  }
+};
+
+refresh();
+setInterval(refresh, 30000);
+</script>
+</body>
+</html>
