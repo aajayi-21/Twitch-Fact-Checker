@@ -65,6 +65,13 @@
                 <span class="segment-sub">requires paid-tier key for search</span>
               </span>
             </label>
+            <label class="segment">
+              <input type="radio" name="apiProvider" value="ollama" />
+              <span class="segment-multi">
+                <span class="segment-name">Ollama</span>
+                <span class="segment-sub">local · no API key</span>
+              </span>
+            </label>
           </div>
           <div class="key-input-row">
             <input
@@ -106,6 +113,50 @@
             data-state="checking"
           >
             Checking backend…
+          </p>
+        </div>
+
+        <!-- Per-provider readiness, rendered from GET /setup/status. -->
+        <ul class="provider-status-list" id="provider-status-list" hidden></ul>
+
+        <!-- Stage routing: which provider runs claim detection vs
+             verification. Always visible once status loads (stages must be
+             switchable without entering "Change key"); explicit Apply
+             because a flip can 409 and reroutes real API spend. -->
+        <div class="stage-section" id="stage-section" hidden>
+          <div class="stage-row">
+            <label class="stage-label" for="gate-provider-select">
+              Claim detection (gate)
+            </label>
+            <select id="gate-provider-select">
+              <option value="openrouter">OpenRouter</option>
+              <option value="gemini">Gemini</option>
+              <option value="ollama">Ollama (local)</option>
+            </select>
+          </div>
+          <div class="stage-row">
+            <label class="stage-label" for="verify-provider-select">
+              Verification
+            </label>
+            <select id="verify-provider-select">
+              <option value="openrouter">OpenRouter</option>
+              <option value="gemini">Gemini</option>
+            </select>
+          </div>
+          <div class="stage-actions">
+            <button type="button" class="button-save" id="apply-stages-button" disabled>
+              Apply
+            </button>
+            <p
+              class="provider-status"
+              id="stage-status"
+              role="status"
+              aria-live="polite"
+            ></p>
+          </div>
+          <p class="field-help">
+            The gate runs ~300 cheap calls/hour (great locally via Ollama);
+            verification needs web search and stays on OpenRouter or Gemini.
           </p>
         </div>
       </form>
@@ -234,6 +285,20 @@
           <p class="field-help">
             Displays what the fact-checker hears as a subtle caption. Applies
             the next time capture starts.
+          </p>
+        </section>
+
+        <section class="field">
+          <label class="checkbox-row">
+            <input id="capture-video" name="captureVideo" type="checkbox" />
+            <span>Send video frames for on-screen claims (experimental)</span>
+          </label>
+          <p class="field-help">
+            While fact-checking runs, a small screenshot of the stream (up to
+            480p) is captured every 5 seconds and sent to your local backend;
+            only when a claim appears to reference something on screen is the
+            latest frame forwarded to your verification provider. Frames are
+            never stored. Applies the next time capture starts.
           </p>
         </section>
 

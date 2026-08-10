@@ -184,6 +184,7 @@
     popupPosition: "top-right",
     popupDurationS: 12,
     showTranscript: false,
+    captureVideo: false,
     topics: Object.freeze({
       politics: true,
       health: true,
@@ -390,6 +391,11 @@
           state.overlay.setTopicSkipCount(state.topicSkipCount);
         }
         break;
+      case "contradiction":
+        // Same-session self-contradiction alert (backend enforces the
+        // high-confidence threshold; the relay stays dumb).
+        state.overlay.addContradiction(event);
+        break;
       case "error":
         state.overlay.showBackendNotice(event);
         break;
@@ -489,6 +495,20 @@
     state.overlay.onClearHistory = () => {
       state.history.length = 0;
       state.overlay.renderHistory(state.history);
+    };
+    // 👍/👎 on a verdict: fire-and-forget relay to the service worker,
+    // which POSTs the backend's /feedback endpoint (content scripts never
+    // talk HTTP themselves).
+    state.overlay.onVerdictFeedback = (verdictId, rating) => {
+      chrome.runtime
+        .sendMessage({
+          target: "background",
+          type: "SUBMIT_FEEDBACK",
+          payload: {verdictId, rating},
+        })
+        .catch((error) => {
+          console.debug("[fact-checker] SUBMIT_FEEDBACK send failed:", error);
+        });
     };
     ensureMounted(); // no-ops quietly on non-player pages
     document.addEventListener("fullscreenchange", handleFullscreenChange);

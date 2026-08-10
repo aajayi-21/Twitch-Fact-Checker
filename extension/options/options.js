@@ -20,6 +20,7 @@ import {
   TOPIC_COLORS,
   TOPIC_LABELS,
   TOPIC_SLUGS,
+  deriveBackendHttpOrigin,
   loadSettings,
   saveSettings,
 } from "../shared/settings.js";
@@ -33,9 +34,13 @@ const SETUP_STATUS_TIMEOUT_MS = 2500;
 const SETUP_SAVE_TIMEOUT_MS = 30000;
 // How long the "verified" status stays visible before the card collapses.
 const SETUP_SUCCESS_COLLAPSE_MS = 1400;
+// How long a stage-routing Apply may take (config write + hot-swap, no
+// provider probe beyond the local ollama one).
+const STAGE_APPLY_TIMEOUT_MS = 5000;
 const PROVIDER_LABELS = Object.freeze({
   openrouter: "OpenRouter",
   gemini: "Gemini",
+  ollama: "Ollama",
 });
 const BACKEND_DOWN_COPY =
   "Backend isn't running — start it first (./backend/run.sh in the project folder)";
@@ -55,10 +60,18 @@ const apiKeyInput = document.getElementById("api-key-input");
 const keyVisibilityToggle = document.getElementById("key-visibility-toggle");
 const saveKeyButton = document.getElementById("save-key-button");
 const providerStatus = document.getElementById("provider-status");
+const keyInputRow = providerForm.querySelector(".key-input-row");
+const providerStatusList = document.getElementById("provider-status-list");
+const stageSection = document.getElementById("stage-section");
+const gateProviderSelect = document.getElementById("gate-provider-select");
+const verifyProviderSelect = document.getElementById("verify-provider-select");
+const applyStagesButton = document.getElementById("apply-stages-button");
+const stageStatus = document.getElementById("stage-status");
 const backendUrlInput = document.getElementById("backend-url");
 const backendUrlError = document.getElementById("backend-url-error");
 const durationInput = document.getElementById("popup-duration");
 const transcriptCheckbox = document.getElementById("show-transcript");
+const captureVideoCheckbox = document.getElementById("capture-video");
 const saveConfirmation = document.getElementById("save-confirmation");
 const topicRowsContainer = document.getElementById("topic-rows");
 const topicsMasterCheckbox = document.getElementById("topics-master");
@@ -136,25 +149,6 @@ const showConfirmation = (text, isError = false) => {
  * client-side in any form.
  */
 
-/**
- * Derive the backend's http(s) origin from the ws:// backendUrl setting,
- * exactly like popup.js derives its healthz URL:
- * ws://host:port/ws/audio -> http://host:port (wss -> https).
- *
- * @param {string} backendUrl
- * @returns {string|null}
- */
-const deriveBackendHttpOrigin = (backendUrl) => {
-  try {
-    const wsUrl = new URL(backendUrl);
-    const httpProtocol = wsUrl.protocol === "wss:" ? "https:" : "http:";
-    return `${httpProtocol}//${wsUrl.host}`;
-  } catch (error) {
-    console.error(`[fact-checker] invalid backendUrl "${backendUrl}":`, error);
-    return null;
-  }
-};
-
 const getSelectedProvider = () =>
   providerForm.querySelector('input[name="apiProvider"]:checked')?.value ??
   "openrouter";
@@ -175,35 +169,110 @@ const setProviderStatus = (text, stateName) => {
 };
 
 /**
- * Provider/key/credits tail shared by the transient status line and the
- * compact connected row, e.g. "OpenRouter · key …abcd · $4.97 credits"
- * (credits are only present for OpenRouter; remaining = total - usage).
+ * One-line stage summary for the connected row and post-save beat, e.g.
+ * "Gate: Ollama (gemma3:4b) · Verify: OpenRouter …abcd · $4.97 credits".
  *
- * @param {object} status - /setup/status (or POST /setup/credentials) body
+ * @param {object} status - per-stage /setup/status body
  * @returns {string}
  */
-const describeConnectedDetails = (status) => {
-  const parts = [PROVIDER_LABELS[status.provider] ?? status.provider];
-  if (status.key_hint) {
-    parts.push(`key ${status.key_hint}`);
+const describeStagesSummary = (status) => {
+  const gate = status.gate ?? {};
+  const verify = status.verify ?? {};
+  const providers = status.providers ?? {};
+  const gatePart = `Gate: ${PROVIDER_LABELS[gate.provider] ?? gate.provider ?? "?"}${
+    gate.model ? ` (${gate.model})` : ""
+  }`;
+  let verifyPart = `Verify: ${
+    PROVIDER_LABELS[verify.provider] ?? verify.provider ?? "?"
+  }`;
+  const verifyInfo = providers[verify.provider];
+  if (verifyInfo?.key_hint) {
+    verifyPart += ` ${verifyInfo.key_hint}`;
   }
-  const credits = status.credits;
+  const credits = providers.openrouter?.credits;
   if (
+    verify.provider === "openrouter" &&
     credits &&
     Number.isFinite(credits.total) &&
     Number.isFinite(credits.usage)
   ) {
-    parts.push(`$${(credits.total - credits.usage).toFixed(2)} credits`);
+    verifyPart += ` · $${(credits.total - credits.usage).toFixed(2)} credits`;
   }
-  return parts.join(" · ");
+  return `${gatePart} · ${verifyPart}`;
+};
+
+/** Per-provider readiness rows rendered from status.providers. */
+const renderProviderStatusList = (status) => {
+  const providers = status.providers ?? {};
+  providerStatusList.textContent = "";
+  const describeRow = (name) => {
+    const info = providers[name] ?? {};
+    if (name === "ollama") {
+      return info.reachable
+        ? ["ok", `reachable · ${info.base_url ?? ""}`]
+        : ["missing", "not reachable — is `ollama serve` running?"];
+    }
+    if (!info.configured) {
+      return ["missing", "no key"];
+    }
+    let detail = `key ${info.key_hint ?? "set"}`;
+    const credits = info.credits;
+    if (credits && Number.isFinite(credits.total) && Number.isFinite(credits.usage)) {
+      detail += ` · $${(credits.total - credits.usage).toFixed(2)} credits`;
+    }
+    return ["ok", detail];
+  };
+  for (const name of ["openrouter", "gemini", "ollama"]) {
+    const [rowState, detail] = describeRow(name);
+    const row = document.createElement("li");
+    row.dataset.provider = name;
+    row.dataset.state = rowState;
+    const label = document.createElement("span");
+    label.className = "provider-status-name";
+    label.textContent = PROVIDER_LABELS[name];
+    const detailSpan = document.createElement("span");
+    detailSpan.className = "provider-status-detail";
+    detailSpan.textContent = detail;
+    row.append(label, detailSpan);
+    providerStatusList.appendChild(row);
+  }
+  providerStatusList.hidden = false;
+};
+
+const setStageStatus = (text, stateName) => {
+  stageStatus.textContent = text;
+  stageStatus.dataset.state = stateName;
+};
+
+/** Apply is enabled only when a select differs from the backend's routing. */
+const updateStagesDirty = () => {
+  const dirty =
+    lastStatus !== null &&
+    (gateProviderSelect.value !== (lastStatus.gate?.provider ?? "") ||
+      verifyProviderSelect.value !== (lastStatus.verify?.provider ?? ""));
+  applyStagesButton.disabled = !dirty;
+};
+
+const renderStageSection = (status) => {
+  if (status.gate?.provider) {
+    gateProviderSelect.value = status.gate.provider;
+  }
+  if (status.verify?.provider) {
+    verifyProviderSelect.value = status.verify.provider;
+  }
+  stageSection.hidden = false;
+  updateStagesDirty();
 };
 
 /**
- * Last known-configured /setup/status body — provider, key_hint, credits
- * only, NEVER any key material. Lets "Cancel" restore the collapsed summary
- * without a network round-trip. null until the backend reports configured.
+ * Last known-configured /setup/status body — stage routing, key hints,
+ * credits only, NEVER any key material. Lets "Cancel" restore the collapsed
+ * summary without a network round-trip. null until the backend reports
+ * configured.
  */
 let lastConnectedStatus = null;
+/** Latest /setup/status body regardless of configured-ness (dirty checks). */
+let lastStatus = null;
 /** Pending "show success briefly, then collapse" timer, or null. */
 let collapseTimerId = null;
 
@@ -224,12 +293,12 @@ const cancelPendingCollapse = () => {
 const collapseToConnectedSummary = (status) => {
   cancelPendingCollapse();
   lastConnectedStatus = status;
-  if (status.provider) {
-    setSelectedProvider(status.provider);
+  if (status.verify?.provider) {
+    setSelectedProvider(status.verify.provider);
   }
   apiKeyInput.value = "";
   resetKeyVisibility();
-  providerConnectedSummary.textContent = `Connected — ${describeConnectedDetails(
+  providerConnectedSummary.textContent = `Connected — ${describeStagesSummary(
     status
   )}`;
   providerFormBody.hidden = true;
@@ -246,9 +315,10 @@ const expandProviderForm = () => {
   cancelPendingCollapse();
   providerConnected.hidden = true;
   providerFormBody.hidden = false;
-  if (lastConnectedStatus?.provider) {
-    setSelectedProvider(lastConnectedStatus.provider);
+  if (lastConnectedStatus?.verify?.provider) {
+    setSelectedProvider(lastConnectedStatus.verify.provider);
   }
+  syncProviderRadioUi();
   apiKeyInput.value = "";
   resetKeyVisibility();
   cancelChangeButton.hidden = lastConnectedStatus === null;
@@ -264,7 +334,13 @@ const cancelKeyChange = () => {
 };
 
 const renderSetupStatus = (status) => {
-  if (status?.configured) {
+  if (!status || typeof status !== "object") {
+    return;
+  }
+  lastStatus = status;
+  renderProviderStatusList(status);
+  renderStageSection(status);
+  if (status.configured) {
     // Don't yank the form away from a user who already started typing a new
     // key while the on-open status probe was in flight.
     if (
@@ -277,7 +353,8 @@ const renderSetupStatus = (status) => {
     collapseToConnectedSummary(status);
   } else {
     setProviderStatus(
-      "Not connected — choose a provider, paste an API key, then Save & verify.",
+      "Not fully configured — connect a provider below, then choose " +
+        "which stage uses it.",
       "setup"
     );
   }
@@ -327,7 +404,7 @@ const handleProviderSubmit = async (event) => {
   event.preventDefault();
   const provider = getSelectedProvider();
   const apiKey = apiKeyInput.value.trim();
-  if (!apiKey) {
+  if (provider !== "ollama" && !apiKey) {
     // Deliberately BEFORE cancelPendingCollapse(): an empty re-submit during
     // the post-save success beat must not cancel the scheduled collapse.
     setProviderStatus("Paste an API key first.", "error");
@@ -349,7 +426,9 @@ const handleProviderSubmit = async (event) => {
   }
   saveKeyButton.disabled = true;
   setProviderStatus(
-    `Verifying key with ${PROVIDER_LABELS[provider] ?? provider}…`,
+    provider === "ollama"
+      ? "Testing connection to Ollama…"
+      : `Verifying key with ${PROVIDER_LABELS[provider] ?? provider}…`,
     "pending"
   );
   try {
@@ -358,7 +437,10 @@ const handleProviderSubmit = async (event) => {
       response = await fetch(`${origin}/setup/credentials`, {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({provider, api_key: apiKey}),
+        // Ollama is keyless: the POST is a pure reachability test.
+        body: JSON.stringify(
+          provider === "ollama" ? {provider} : {provider, api_key: apiKey}
+        ),
         signal: AbortSignal.timeout(SETUP_SAVE_TIMEOUT_MS),
       });
     } catch (networkError) {
@@ -372,15 +454,32 @@ const handleProviderSubmit = async (event) => {
     } catch (parseError) {
       console.warn("[fact-checker] unparseable setup response:", parseError);
     }
+    if (response.ok && provider === "ollama") {
+      // Nothing was persisted or swapped — just refresh the readiness rows
+      // and point the user at the stage routing below.
+      if (body) {
+        lastStatus = body;
+        renderProviderStatusList(body);
+        renderStageSection(body);
+      }
+      setProviderStatus(
+        "Ollama reachable ✓ — route the gate to it below.",
+        "connected"
+      );
+      return;
+    }
     if (response.ok) {
       apiKeyInput.value = ""; // the key never outlives the request
       resetKeyVisibility();
-      const status = body?.configured ? body : {configured: true, provider};
+      const status = body ?? {configured: true, gate: {}, verify: {}, providers: {}};
       // Refresh Cancel's snapshot right away so a click during the brief
       // success beat still collapses to the NEW key's summary.
       lastConnectedStatus = status;
+      lastStatus = status;
+      renderProviderStatusList(status);
+      renderStageSection(status);
       setProviderStatus(
-        `Key verified ✓ ${describeConnectedDetails(status)}`,
+        `Key verified ✓ ${describeStagesSummary(status)}`,
         "connected"
       );
       collapseTimerId = setTimeout(() => {
@@ -402,6 +501,77 @@ const handleProviderSubmit = async (event) => {
   }
 };
 
+/** Ollama needs no key: hide the input row, relabel the submit button. */
+const syncProviderRadioUi = () => {
+  const isOllama = getSelectedProvider() === "ollama";
+  keyInputRow.hidden = isOllama;
+  saveKeyButton.textContent = isOllama ? "Test connection" : "Save & verify";
+};
+
+/**
+ * POST /setup/stages: persist + hot-swap the per-stage provider routing.
+ * Explicit Apply (not instant): a flip can 409 when the target provider is
+ * unconfigured, and it reroutes real API spend.
+ */
+const handleApplyStages = async () => {
+  const gateProvider = gateProviderSelect.value;
+  const verifyProvider = verifyProviderSelect.value;
+  let settings;
+  try {
+    settings = await loadSettings();
+  } catch (error) {
+    console.error("[fact-checker] loading settings for stages failed:", error);
+    settings = {...DEFAULT_SETTINGS};
+  }
+  const origin = deriveBackendHttpOrigin(settings.backendUrl);
+  if (!origin) {
+    setStageStatus("Backend URL below is invalid — fix it first.", "error");
+    return;
+  }
+  applyStagesButton.disabled = true;
+  setStageStatus("Applying…", "pending");
+  let response;
+  try {
+    response = await fetch(`${origin}/setup/stages`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        gate_provider: gateProvider,
+        verify_provider: verifyProvider,
+      }),
+      signal: AbortSignal.timeout(STAGE_APPLY_TIMEOUT_MS),
+    });
+  } catch (networkError) {
+    console.warn("[fact-checker] stages POST failed:", networkError);
+    setStageStatus(BACKEND_DOWN_COPY, "error");
+    updateStagesDirty();
+    return;
+  }
+  let body = null;
+  try {
+    body = await response.json();
+  } catch (parseError) {
+    console.warn("[fact-checker] unparseable stages response:", parseError);
+  }
+  if (response.ok && body) {
+    renderSetupStatus(body);
+    setStageStatus("Stage routing updated ✓", "connected");
+    return;
+  }
+  const detail =
+    typeof body?.detail === "string" && body.detail.length > 0
+      ? body.detail
+      : `Applying stages failed (HTTP ${response.status}).`;
+  setStageStatus(
+    response.status === 409
+      ? `Can't apply: ${detail} Add its key above (or test Ollama), then ` +
+        "apply again."
+      : detail,
+    "error"
+  );
+  updateStagesDirty(); // keep the user's selection; re-enable Apply
+};
+
 const wireProviderCard = () => {
   changeKeyButton.addEventListener("click", expandProviderForm);
   cancelChangeButton.addEventListener("click", cancelKeyChange);
@@ -411,11 +581,27 @@ const wireProviderCard = () => {
     keyVisibilityToggle.textContent = reveal ? "Hide" : "Show";
     keyVisibilityToggle.setAttribute("aria-pressed", String(reveal));
   });
+  for (const radio of providerForm.querySelectorAll('input[name="apiProvider"]')) {
+    radio.addEventListener("change", syncProviderRadioUi);
+  }
   providerForm.addEventListener("submit", (event) => {
     handleProviderSubmit(event).catch((error) => {
       console.error("[fact-checker] saving credentials failed:", error);
       setProviderStatus("Saving the key failed — see console for details.", "error");
       saveKeyButton.disabled = false;
+    });
+  });
+  for (const select of [gateProviderSelect, verifyProviderSelect]) {
+    select.addEventListener("change", () => {
+      setStageStatus("", "setup");
+      updateStagesDirty();
+    });
+  }
+  applyStagesButton.addEventListener("click", () => {
+    handleApplyStages().catch((error) => {
+      console.error("[fact-checker] applying stages failed:", error);
+      setStageStatus("Applying failed — see console for details.", "error");
+      updateStagesDirty();
     });
   });
 };
@@ -548,6 +734,7 @@ const populateForm = async () => {
     showConfirmation("Could not load saved settings — showing defaults", true);
   }
   backendUrlInput.value = settings.backendUrl;
+  captureVideoCheckbox.checked = Boolean(settings.captureVideo);
   setRadioValue(
     "sensitivity",
     ["low", "medium", "high"].includes(settings.sensitivity)
@@ -586,6 +773,7 @@ const handleSubmit = async (event) => {
       getRadioValue("popupPosition") ?? DEFAULT_SETTINGS.popupPosition,
     popupDurationS: clampDurationSeconds(durationInput.value),
     showTranscript: transcriptCheckbox.checked,
+    captureVideo: captureVideoCheckbox.checked,
   };
   durationInput.value = String(updatedSettings.popupDurationS); // reflect clamp
   try {
@@ -609,6 +797,8 @@ backendUrlInput.addEventListener("input", () => setBackendUrlError(null));
 buildTopicRows();
 wireTopicHandlers();
 wireProviderCard();
+
+syncProviderRadioUi();
 
 populateForm().catch((error) => {
   console.error("[fact-checker] options init failed:", error);

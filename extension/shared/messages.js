@@ -35,6 +35,9 @@ export const MSG = Object.freeze({
   // content script -> service worker
   CONTENT_READY: "CONTENT_READY",
   OPEN_OPTIONS: "OPEN_OPTIONS",
+  // content script -> service worker: 👍/👎 on a verdict; the SW POSTs it
+  // to the backend's /feedback endpoint (fire-and-forget).
+  SUBMIT_FEEDBACK: "SUBMIT_FEEDBACK",
 });
 
 /**

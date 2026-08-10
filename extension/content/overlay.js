@@ -89,6 +89,14 @@ class FactCheckOverlay {
   #root = null;
   #refs = null;
   #activeToasts = [];
+
+  /**
+   * Selected feedback per entry key ("up"|"down") — presentation state kept
+   * overlay-internal exactly like #expandedEntryKeys, so it survives
+   * renderHistory()'s full re-render. Page-lifetime, bounded by the history
+   * cap in practice.
+   */
+  #feedbackByVerdictId = new Map();
   #historyEntries = [];
   #expandedEntryKeys = new Set();
   #panelOpen = false;
@@ -124,6 +132,15 @@ class FactCheckOverlay {
    * @type {(() => void)|null}
    */
   onClearHistory = null;
+
+  /**
+   * Called when the user clicks 👍/👎 on a toast or history entry. Assigned
+   * by content.js, which relays it to the service worker's /feedback POST.
+   * The overlay only records the SELECTION (see #feedbackByVerdictId);
+   * the backend is the system of record for the rating itself.
+   * @type {((verdictId: string, rating: "up"|"down") => void)|null}
+   */
+  onVerdictFeedback = null;
 
   /**
    * @param {object} settings - shape of shared/settings.js DEFAULT_SETTINGS;
@@ -249,6 +266,35 @@ class FactCheckOverlay {
       this.#dismissToast(this.#activeToasts[0], {immediate: true});
     }
     const toast = this.#buildToast(verdict);
+    this.#refs.toasts.prepend(toast.element);
+    this.#activeToasts.push(toast);
+    this.#startToastTimer(toast);
+  }
+
+  /**
+   * Show a same-session contradiction alert. Shares the toast container,
+   * stacking cap, and timers with verdict toasts, but wears its own visual
+   * language (data-kind, not a TRUE/FALSE label) — it answers "is this
+   * consistent with what you said earlier", never "is this true".
+   *
+   * Toast-only in v1: the history pipeline is verdict-typed end-to-end
+   * (label pills, per-id removal, feedback), so a suppressed-fullscreen
+   * contradiction is dropped — an accepted tradeoff for now.
+   *
+   * @param {object} frame - {current_claim, prior_claim, prior_claimed_at,
+   *   confidence, explanation}
+   */
+  addContradiction(frame) {
+    if (!this.#refs || !frame) {
+      return;
+    }
+    if (this.#toastsSuppressed) {
+      return;
+    }
+    while (this.#activeToasts.length >= FactCheckOverlay.MAX_STACKED_TOASTS) {
+      this.#dismissToast(this.#activeToasts[0], {immediate: true});
+    }
+    const toast = this.#buildContradictionToast(frame);
     this.#refs.toasts.prepend(toast.element);
     this.#activeToasts.push(toast);
     this.#startToastTimer(toast);
@@ -539,6 +585,9 @@ class FactCheckOverlay {
     time.className = "fc-toast-time";
     time.textContent = FactCheckOverlay.#formatTime(verdict.checked_at);
     head.appendChild(time);
+    // Hover-pause already freezes the dismiss timer while the pointer is
+    // over these buttons, so feedback clicks never race the countdown.
+    head.appendChild(this.#buildFeedbackControls(verdict));
     const close = document.createElement("button");
     close.type = "button";
     close.className = "fc-toast-close";
@@ -565,6 +614,81 @@ class FactCheckOverlay {
     );
     if (sources) {
       element.appendChild(sources);
+    }
+
+    const toast = {
+      element,
+      remainingMs: this.#durationMs(),
+      timerId: null,
+      startedAt: 0,
+      dismissed: false,
+    };
+    close.addEventListener("click", () => this.#dismissToast(toast));
+    element.addEventListener("mouseenter", () => this.#pauseToastTimer(toast));
+    element.addEventListener("mouseleave", () => this.#resumeToastTimer(toast));
+    return toast;
+  }
+
+  /**
+   * Two-quote contradiction layout: pill + times in the head, then the
+   * earlier and current statements, then the judge's one-line explanation.
+   *
+   * @param {object} frame
+   * @returns {{element: HTMLElement, remainingMs: number, timerId: number|null,
+   *   startedAt: number, dismissed: boolean}}
+   */
+  #buildContradictionToast(frame) {
+    const element = document.createElement("article");
+    element.className = "fc-toast";
+    element.dataset.kind = "contradiction";
+    element.setAttribute("role", "status");
+
+    const head = document.createElement("div");
+    head.className = "fc-toast-head";
+    const pill = document.createElement("span");
+    pill.className = "fc-contra-pill";
+    pill.textContent = "CONTRADICTION";
+    head.appendChild(pill);
+    const time = document.createElement("span");
+    time.className = "fc-toast-time";
+    time.textContent = FactCheckOverlay.#formatTime(new Date().toISOString());
+    head.appendChild(time);
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "fc-toast-close";
+    close.setAttribute("aria-label", "Dismiss");
+    close.textContent = "✕";
+    head.appendChild(close);
+    element.appendChild(head);
+
+    const quotes = [
+      [
+        "prior",
+        `Earlier · ${FactCheckOverlay.#formatTime(frame.prior_claimed_at)}`,
+        frame.prior_claim,
+      ],
+      ["current", "Just now", frame.current_claim],
+    ];
+    for (const [which, whenText, text] of quotes) {
+      const quote = document.createElement("div");
+      quote.className = "fc-contra-quote";
+      quote.dataset.which = which;
+      const when = document.createElement("span");
+      when.className = "fc-contra-when";
+      when.textContent = whenText;
+      quote.appendChild(when);
+      const body = document.createElement("p");
+      body.className = "fc-contra-text";
+      body.textContent = typeof text === "string" ? text : "";
+      quote.appendChild(body);
+      element.appendChild(quote);
+    }
+
+    if (typeof frame.explanation === "string" && frame.explanation) {
+      const explanation = document.createElement("p");
+      explanation.className = "fc-explanation";
+      explanation.textContent = frame.explanation;
+      element.appendChild(explanation);
     }
 
     const toast = {
@@ -650,6 +774,7 @@ class FactCheckOverlay {
     time.className = "fc-entry-time";
     time.textContent = FactCheckOverlay.#formatTime(verdict.checked_at);
     head.appendChild(time);
+    head.appendChild(this.#buildFeedbackControls(verdict));
     const removeButton = document.createElement("button");
     removeButton.type = "button";
     removeButton.className = "fc-entry-remove";
@@ -699,6 +824,61 @@ class FactCheckOverlay {
       }
     });
     return entry;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Private: feedback controls                                         */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * 👍/👎 buttons shared by toasts and history entries. The verdict id is
+   * captured in the closure (toasts do not retain the verdict object).
+   * Re-clicking the already-selected rating is a no-op (no duplicate
+   * POSTs); switching sides re-fires the callback (the backend upserts).
+   *
+   * @param {object} verdict
+   * @returns {HTMLElement}
+   */
+  #buildFeedbackControls(verdict) {
+    const key = FactCheckOverlay.#entryKey(verdict);
+    const container = document.createElement("span");
+    container.className = "fc-feedback";
+    const buttons = new Map();
+    const syncSelection = () => {
+      const selected = this.#feedbackByVerdictId.get(key) ?? null;
+      for (const [buttonRating, button] of buttons) {
+        const isSelected = buttonRating === selected;
+        button.dataset.selected = isSelected ? "true" : "false";
+        button.setAttribute("aria-pressed", isSelected ? "true" : "false");
+      }
+    };
+    for (const [rating, glyph, label] of [
+      ["up", "👍", "Mark verdict correct"],
+      ["down", "👎", "Mark verdict wrong"],
+    ]) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "fc-feedback-btn";
+      button.dataset.rating = rating;
+      button.textContent = glyph;
+      button.setAttribute("aria-label", label);
+      button.addEventListener("click", (event) => {
+        // History entries toggle expansion on click; keep this local.
+        event.stopPropagation();
+        if (this.#feedbackByVerdictId.get(key) === rating) {
+          return; // same-rating re-click: no duplicate POST
+        }
+        this.#feedbackByVerdictId.set(key, rating);
+        syncSelection();
+        if (typeof verdict.id === "string" && verdict.id) {
+          this.onVerdictFeedback?.(verdict.id, rating);
+        }
+      });
+      buttons.set(rating, button);
+      container.appendChild(button);
+    }
+    syncSelection();
+    return container;
   }
 
   /* ------------------------------------------------------------------ */

@@ -22,7 +22,11 @@
  */
 
 import {ERR, MSG, TARGET, makeMsg} from "../shared/messages.js";
-import {getEnabledTopicSlugs, loadSettings} from "../shared/settings.js";
+import {
+  deriveBackendHttpOrigin,
+  getEnabledTopicSlugs,
+  loadSettings,
+} from "../shared/settings.js";
 
 const OFFSCREEN_DOCUMENT_PATH = "offscreen/offscreen.html";
 const CAPTURED_TAB_KEY = "capturedTabId";
@@ -142,6 +146,51 @@ const notifySessionState = async (tabId, running) => {
 };
 
 /**
+ * Session identity (backend analytics): platform/channel/title derived from
+ * the captured tab, best-effort. Keyed like content.js's PLATFORM_ADAPTERS
+ * (hostname minus leading www.). No "tabs" permission needed — activeTab,
+ * granted by the popup interaction that triggers CAPTURE_START, exposes the
+ * tab's url/title.
+ */
+const PLATFORM_BY_HOSTNAME = Object.freeze({
+  "twitch.tv": "twitch",
+  "youtube.com": "youtube",
+  "kick.com": "kick",
+  "rumble.com": "rumble",
+});
+
+// Best-effort " - Twitch"-style suffix strip from tab titles.
+const TITLE_SUFFIX_RE = /\s*[-–—|·]\s*(Twitch|YouTube|Kick|Rumble)\s*$/i;
+
+/**
+ * Derive {platform, channel, streamTitle} from a tab, all-null on any
+ * failure — every field is optional on the wire. Channel is the first path
+ * segment for twitch/kick only (YouTube/Rumble URLs carry video ids, not
+ * channel slugs).
+ *
+ * @param {chrome.tabs.Tab|null} tab
+ * @returns {{platform: string|null, channel: string|null, streamTitle: string|null}}
+ */
+const deriveSessionIdentity = (tab) => {
+  const identity = {platform: null, channel: null, streamTitle: null};
+  if (!tab) {
+    return identity;
+  }
+  try {
+    identity.streamTitle = tab.title?.replace(TITLE_SUFFIX_RE, "").trim() || null;
+    const url = new URL(tab.url ?? "");
+    const hostname = url.hostname.replace(/^www\./, "");
+    identity.platform = PLATFORM_BY_HOSTNAME[hostname] ?? null;
+    if (identity.platform === "twitch" || identity.platform === "kick") {
+      identity.channel = url.pathname.split("/").filter(Boolean)[0] ?? null;
+    }
+  } catch (error) {
+    console.debug("[fact-checker] session identity derivation failed:", error);
+  }
+  return identity;
+};
+
+/**
  * One full start pass. Order is load-bearing: the offscreen document must
  * exist BEFORE the stream id is requested, and OFFSCREEN_START must go out
  * in the same tick the id resolves — getMediaStreamId ids expire in seconds.
@@ -174,11 +223,16 @@ const handleCaptureStart = async (tabId) => {
     lastError: null,
   });
   const settings = await loadSettings();
+  // Identity is best-effort: a tabs.get failure must not abort the start.
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
   const offscreenSettings = {
     backendUrl: settings.backendUrl,
     sensitivity: settings.sensitivity,
     topics: getEnabledTopicSlugs(settings.topics),
     sendTranscripts: settings.showTranscript,
+    // Opt-in frame capture; next-start-only (same precedent as backendUrl).
+    captureVideo: Boolean(settings.captureVideo),
+    ...deriveSessionIdentity(tab),
   };
   try {
     await runStartSequence(tabId, offscreenSettings);
@@ -264,6 +318,43 @@ const relayBackendEvent = async (payload) => {
   }
 };
 
+/**
+ * POST one 👍/👎 to the backend. Fire-and-forget by contract: failures are
+ * logged, never surfaced — the backend is the system of record and a lost
+ * rating is not worth interrupting the viewer.
+ */
+const handleSubmitFeedback = async (payload) => {
+  const verdictId = payload?.verdictId;
+  const rating = payload?.rating;
+  if (typeof verdictId !== "string" || !["up", "down"].includes(rating)) {
+    console.warn("[fact-checker] SUBMIT_FEEDBACK with bad payload:", payload);
+    return;
+  }
+  const settings = await loadSettings();
+  const origin = deriveBackendHttpOrigin(settings.backendUrl);
+  if (!origin) {
+    return;
+  }
+  try {
+    const response = await fetch(`${origin}/feedback`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        verdict_id: verdictId,
+        rating,
+        corrected_label: null,
+        note: null,
+      }),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!response.ok) {
+      console.warn(`[fact-checker] feedback POST got HTTP ${response.status}`);
+    }
+  } catch (error) {
+    console.warn("[fact-checker] feedback POST failed:", error);
+  }
+};
+
 const buildSessionStateReply = async (sender) => {
   const capturedTabId = await getCapturedTabId();
   const session = await readCaptureSession();
@@ -316,6 +407,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case MSG.OPEN_OPTIONS:
         // Content scripts cannot call chrome.runtime.openOptionsPage().
         await chrome.runtime.openOptionsPage();
+        break;
+      case MSG.SUBMIT_FEEDBACK:
+        await handleSubmitFeedback(message.payload);
         break;
       default:
         console.warn(`[fact-checker] unhandled message type: ${message.type}`);

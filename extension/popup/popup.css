@@ -243,3 +243,10 @@ body {
 .button-stop:hover {
   background: rgba(239, 68, 68, 0.28);
 }
+
+/* Today's usage readout under the status card (healthz counters). */
+.cost-line {
+  margin: 2px 2px 0;
+  font-size: 11.5px;
+  color: var(--text-dim, #a3a3b8);
+}
