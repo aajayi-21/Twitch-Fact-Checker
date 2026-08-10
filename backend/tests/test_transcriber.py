@@ -368,3 +368,22 @@ def test_real_whisper_emits_nothing_for_silence_and_tone() -> None:
     t = np.arange(SAMPLE_RATE * 4, dtype=np.float32) / SAMPLE_RATE
     tone = (0.2 * np.sin(2.0 * np.pi * 440.0 * t)).astype(np.float32)
     assert transcriber.transcribe_window(tone, 4.0, 0.0, state) == []
+
+
+class TestDropCounts:
+    def test_filtered_segments_increment_coarse_reason_keys(self) -> None:
+        """Per-session drop-reason instrumentation (report §1 Tier 3)."""
+        transcriber, fake_model = make_transcriber()
+        fake_model.script.append(
+            [
+                raw_segment("thanks for watching", 0.0, 1.0),  # blacklist
+                raw_segment("garbled noise", 1.0, 2.0, no_speech_prob=0.9),
+                raw_segment("a real sentence spoken here", 2.0, 3.0),
+            ]
+        )
+        state = SessionTextState()
+        segments = transcriber.transcribe_window(AUDIO, 0.0, 0.0, state)
+        assert [segment.text for segment in segments] == [
+            "a real sentence spoken here"
+        ]
+        assert state.drop_counts == {"blacklist": 1, "no_speech": 1}

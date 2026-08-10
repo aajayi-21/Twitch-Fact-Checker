@@ -473,3 +473,75 @@ class TestErrorHelpers:
 
     def test_retry_after_defaults_to_sixty(self) -> None:
         assert _parse_retry_after_s(FakeInteractionsError(429)) == 60.0
+
+
+# --------------------------------------------------------------------------- #
+# Vision failure ladder (provider-neutral, on the base class)
+# --------------------------------------------------------------------------- #
+
+
+class _ScriptedChecker(FactChecker):
+    """Base-class harness: scripts _check_once outcomes per (claim, image)."""
+
+    def __init__(self, cooldown: QuotaCooldown) -> None:
+        super().__init__(cooldown=cooldown, verify_timeout_s=0.5)
+        self.calls: list[str | None] = []  # the image_b64 seen per call
+        self.script: list[Any] = []  # exception instance or VerdictPayload
+
+    async def _grounded_structured(
+        self, claim: str, image_b64: str | None = None
+    ) -> tuple[VerdictPayload, list[Source]]:
+        self.calls.append(image_b64)
+        item = self.script.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        return item, [Source(url="https://example.com/s")]
+
+    async def _grounded_fallback(
+        self, claim: str, image_b64: str | None = None
+    ) -> tuple[VerdictPayload, list[Source]]:
+        raise AssertionError("fallback must not run in these tests")
+
+
+class TestVisionLadder:
+    async def test_image_success_is_one_call(self, cooldown: QuotaCooldown) -> None:
+        checker = _ScriptedChecker(cooldown)
+        checker.script = [VerdictPayload(label="TRUE", explanation="ok")]
+        verdict = await checker.check(CLAIM, image_b64="anImage=")
+        assert verdict.label == "TRUE"
+        assert checker.calls == ["anImage="]
+
+    async def test_image_failure_falls_through_to_text_ladder(
+        self, cooldown: QuotaCooldown
+    ) -> None:
+        """HARD RULE: an image must never fail a check that would succeed
+        without it."""
+        checker = _ScriptedChecker(cooldown)
+        checker.script = [
+            VerificationError("vision model choked"),
+            VerdictPayload(label="FALSE", explanation="text-only worked"),
+        ]
+        verdict = await checker.check(CLAIM, image_b64="anImage=")
+        assert verdict.label == "FALSE"
+        # First call carried the image; the retry deliberately did not.
+        assert checker.calls == ["anImage=", None]
+
+    async def test_quota_error_on_image_call_propagates_without_retry(
+        self, cooldown: QuotaCooldown
+    ) -> None:
+        """The cooldown is already tripped; a retry would spend money to
+        fail again."""
+        checker = _ScriptedChecker(cooldown)
+        checker.script = [QuotaExceededError("429")]
+        with pytest.raises(QuotaExceededError):
+            await checker.check(CLAIM, image_b64="anImage=")
+        assert checker.calls == ["anImage="]
+
+    async def test_no_image_keeps_the_old_ladder(
+        self, cooldown: QuotaCooldown
+    ) -> None:
+        checker = _ScriptedChecker(cooldown)
+        checker.script = [VerdictPayload(label="TRUE", explanation="ok")]
+        verdict = await checker.check(CLAIM)
+        assert verdict.label == "TRUE"
+        assert checker.calls == [None]

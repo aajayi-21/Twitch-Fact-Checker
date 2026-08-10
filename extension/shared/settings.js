@@ -10,6 +10,9 @@
  * the label/color maps (classic content scripts cannot import modules) —
  * keep them in sync.
  */
+// Promise-safe API namespace (see shared/capabilities.js § namespace idiom).
+const chrome = globalThis.browser ?? globalThis.chrome;
+
 export const TOPIC_SLUGS = Object.freeze([
   "politics",
   "health",
@@ -52,6 +55,9 @@ export const DEFAULT_SETTINGS = Object.freeze({
   popupPosition: "top-right", // top-left | top-right | bottom-left | bottom-right
   popupDurationS: 12,
   showTranscript: false,
+  // Opt-in video-frame capture for on-screen claims (privacy-sensitive:
+  // OFF by default; applies on the next capture start).
+  captureVideo: false,
   topics: Object.freeze({
     politics: true,
     health: true,
@@ -79,6 +85,27 @@ export const getEnabledTopicSlugs = (topics) => {
   return TOPIC_SLUGS.filter(
     (slug) => slug === "other" || topicMap[slug] !== false
   );
+};
+
+/**
+ * Derive the backend's http(s) origin from the ws:// backendUrl setting:
+ * ws://host:port/ws/audio -> http://host:port (wss -> https).
+ *
+ * Shared by the service worker (/feedback POST), popup (/healthz), and
+ * options page (/setup endpoints). Content scripts never talk HTTP.
+ *
+ * @param {string} backendUrl
+ * @returns {string|null}
+ */
+export const deriveBackendHttpOrigin = (backendUrl) => {
+  try {
+    const wsUrl = new URL(backendUrl);
+    const httpProtocol = wsUrl.protocol === "wss:" ? "https:" : "http:";
+    return `${httpProtocol}//${wsUrl.host}`;
+  } catch (error) {
+    console.error(`[fact-checker] invalid backendUrl "${backendUrl}":`, error);
+    return null;
+  }
 };
 
 /**

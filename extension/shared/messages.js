@@ -32,9 +32,24 @@ export const MSG = Object.freeze({
   // service worker -> content script (via chrome.tabs.sendMessage)
   OVERLAY_EVENT: "OVERLAY_EVENT",
   SESSION_STATE: "SESSION_STATE",
+  // Firefox capture path only (no tabCapture/offscreen there): the content
+  // script taps the page's own <video> and streams PCM back to the
+  // background page. See shared/capabilities.js.
+  CONTENT_CAPTURE_START: "CONTENT_CAPTURE_START",
+  CONTENT_CAPTURE_STOP: "CONTENT_CAPTURE_STOP",
   // content script -> service worker
   CONTENT_READY: "CONTENT_READY",
   OPEN_OPTIONS: "OPEN_OPTIONS",
+  // content script -> service worker: 👍/👎 on a verdict; the SW POSTs it
+  // to the backend's /feedback endpoint (fire-and-forget).
+  SUBMIT_FEEDBACK: "SUBMIT_FEEDBACK",
+  // Firefox capture path: audio/video payloads from the content script to
+  // the background page's WebSocket. PCM travels base64-encoded because
+  // runtime messaging is JSON-serialized in both browsers (an ArrayBuffer
+  // would arrive as {}).
+  AUDIO_CHUNK: "AUDIO_CHUNK",
+  VIDEO_FRAME: "VIDEO_FRAME",
+  CONTENT_CAPTURE_FAILED: "CONTENT_CAPTURE_FAILED",
 });
 
 /**

@@ -101,6 +101,10 @@ const teardown = async () => {
   if (activeCapture) {
     activeCapture.onFrame = null;
     activeCapture.onEnded = null;
+    // Null the video callbacks too: a late sampling tick must never touch
+    // a destroyed socket.
+    activeCapture.onVideoFrame = null;
+    activeCapture.shouldSendFrame = null;
     try {
       await activeCapture.stop();
     } catch (error) {
@@ -216,9 +220,21 @@ const handleStart = async ({streamId, tabId, settings}) => {
   capture = new AudioCapture({
     onFrame: handleAudioFrame,
     onEnded: handleCaptureLost,
+    // Opt-in video frames: pushed straight to the backend's in-memory
+    // ring over the live socket; dropped silently when the socket is down.
+    onVideoFrame: ({imageB64, capturedAtMs}) => {
+      socket?.sendJson({
+        type: "frame",
+        image_b64: imageB64,
+        captured_at_ms: capturedAtMs,
+      });
+    },
+    shouldSendFrame: () => socket?.isOpen === true,
   });
   // Issue getUserMedia in this tick; persist the transition while it runs.
-  const captureStarted = capture.start(streamId);
+  const captureStarted = capture.start(streamId, {
+    captureVideo: Boolean(sessionSettings.captureVideo),
+  });
   await writeSession({
     status: "starting",
     tabId,
@@ -248,6 +264,11 @@ const handleStart = async ({streamId, tabId, settings}) => {
         ? [...sessionSettings.topics]
         : null,
       send_transcripts: Boolean(sessionSettings.sendTranscripts),
+      // Session identity for backend analytics (optional fields; the hello
+      // object is held by reference, so reconnects carry them too).
+      platform: sessionSettings.platform ?? null,
+      channel: sessionSettings.channel ?? null,
+      stream_title: sessionSettings.streamTitle ?? null,
     },
     onEvent: handleServerFrame,
     onStateChange: handleSocketState,
@@ -273,6 +294,8 @@ const handleStop = async ({reason = "user_stop"} = {}) => {
   if (activeCapture) {
     activeCapture.onFrame = null;
     activeCapture.onEnded = null;
+    activeCapture.onVideoFrame = null;
+    activeCapture.shouldSendFrame = null;
     try {
       await activeCapture.stop();
     } catch (error) {

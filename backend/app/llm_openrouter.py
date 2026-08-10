@@ -46,20 +46,26 @@ import openai
 from openai import AsyncOpenAI
 from pydantic import ValidationError
 
-from app.claim_gate import ClaimGate, GateError
+from app.claim_gate import (
+    GATE_JSON_SCHEMA,
+    ClaimGate,
+    GateError,
+    parse_contradiction_judgement,
+    parse_gate_result,
+)
 from app.fact_checker import (
     DEFAULT_RETRY_AFTER_S,
     FLAT_VERDICT_SCHEMA,
     MAX_SOURCES,
-    _JSON_FENCE_RE,
     FactChecker,
     QuotaExceededError,
     VerificationError,
     _FallbackNeeded,
     _today,
 )
-from app.models import TOPICS, GateClaim, GateResult, Source, VerdictPayload
+from app.models import ContradictionJudgement, GateClaim, Source, VerdictPayload
 from app.prompts import (
+    build_contradiction_prompt,
     build_gate_prompt,
     build_verdict_extraction_prompt,
     build_verify_fallback_prompt,
@@ -126,34 +132,8 @@ WEB_SEARCH_PROMPT = (
     "citations are collected separately from metadata."
 )
 
-# Strict gate schema, written out by hand (rather than generated from the
-# Pydantic model) so it contains no $refs/titles/numeric-bound keywords that
-# strict-mode validators are known to reject. Range enforcement for
-# check_worthiness still happens in Pydantic when the response is parsed.
-GATE_JSON_SCHEMA: dict[str, Any] = {
-    "name": "gate_result",
-    "strict": True,
-    "schema": {
-        "type": "object",
-        "properties": {
-            "claims": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "claim_text": {"type": "string"},
-                        "check_worthiness": {"type": "number"},
-                        "topic": {"type": "string", "enum": list(TOPICS)},
-                    },
-                    "required": ["claim_text", "check_worthiness", "topic"],
-                    "additionalProperties": False,
-                },
-            }
-        },
-        "required": ["claims"],
-        "additionalProperties": False,
-    },
-}
+# The strict gate schema lives in app.claim_gate (GATE_JSON_SCHEMA, imported
+# above): it is provider-neutral and shared with the local (Ollama) gate.
 
 # The verify schema is the shared flat two-field schema plus the strict-mode
 # additionalProperties requirement.
@@ -448,17 +428,36 @@ class OpenRouterClaimGate(ClaimGate):
 
     @staticmethod
     def _parse_gate_json(raw: str) -> list[GateClaim]:
-        """Robust parse (fences/prose tolerated) into ``GateResult.claims``."""
-        if not raw:
-            raise GateError("gate response contained no text to parse")
-        cleaned = _JSON_FENCE_RE.sub("", raw).strip()
-        start, end = cleaned.find("{"), cleaned.rfind("}")
-        if start == -1 or end <= start:
-            raise GateError(f"no JSON object found in gate response: {cleaned[:120]!r}")
+        """Robust parse into ``GateResult.claims`` (shared, provider-neutral)."""
+        return parse_gate_result(raw)
+
+    async def judge_contradiction(
+        self, current: str, prior: str
+    ) -> ContradictionJudgement:
+        """One ``json_object`` judge call on the gate model.
+
+        Deliberately does NOT touch the strict-latch machinery: three flat
+        fields need no schema enforcement, and keeping the latch semantics
+        purely gate-owned avoids cross-talk between the two call kinds.
+        """
+        prompt = build_contradiction_prompt(current, prior)
         try:
-            return GateResult.model_validate_json(cleaned[start : end + 1]).claims
-        except ValidationError as exc:
-            raise GateError(f"gate response failed schema validation: {exc}") from exc
+            raw = await self._complete(
+                prompt,
+                response_format={"type": "json_object"},
+                require_parameters=False,
+            )
+        except GateError:
+            raise
+        except openai.APITimeoutError as exc:
+            raise GateError(
+                f"contradiction judge timed out after {self._gate_timeout_s:.0f}s"
+            ) from exc
+        except openai.APIStatusError as exc:
+            raise _gate_api_error(exc) from exc
+        except Exception as exc:
+            raise GateError(f"contradiction judge failed: {exc}") from exc
+        return parse_contradiction_judgement(raw)
 
 
 class OpenRouterFactChecker(FactChecker):
@@ -495,12 +494,13 @@ class OpenRouterFactChecker(FactChecker):
         }
 
     async def _grounded_structured(
-        self, claim: str
+        self, claim: str, image_b64: str | None = None
     ) -> tuple[VerdictPayload, list[Source]]:
         """Web search + strict flat structured output in a single call."""
         try:
             response = await self._strict_grounded_completion(
-                build_verify_prompt(claim, _today())
+                build_verify_prompt(claim, _today(), with_image=image_b64 is not None),
+                image_b64=image_b64,
             )
         except Exception as exc:
             raise self._translate_api_error(
@@ -517,7 +517,9 @@ class OpenRouterFactChecker(FactChecker):
             raise _FallbackNeeded(f"structured output unparseable: {exc}") from exc
         return payload, sources
 
-    async def _strict_grounded_completion(self, prompt: str) -> Any:
+    async def _strict_grounded_completion(
+        self, prompt: str, image_b64: str | None = None
+    ) -> Any:
         """One strict verify completion, retried once without ``reasoning``.
 
         Same disambiguation as the gate's :meth:`OpenRouterClaimGate.
@@ -551,6 +553,7 @@ class OpenRouterFactChecker(FactChecker):
                 response_format=response_format,
                 extra_body=first_extra_body,
                 max_tokens=VERIFY_MAX_TOKENS,
+                image_b64=image_b64,
             )
         except openai.APIStatusError as exc:
             if (
@@ -563,12 +566,13 @@ class OpenRouterFactChecker(FactChecker):
                 response_format=response_format,
                 extra_body=build_extra_body(include_reasoning=False),
                 max_tokens=VERIFY_MAX_TOKENS,
+                image_b64=image_b64,
             )
             _mark_reasoning_unsupported(exc.status_code, self._verify_model)
             return response
 
     async def _grounded_fallback(
-        self, claim: str
+        self, claim: str, image_b64: str | None = None
     ) -> tuple[VerdictPayload, list[Source]]:
         """Web-plugin plain-text call -> lenient parse -> json_object extraction.
 
@@ -577,12 +581,15 @@ class OpenRouterFactChecker(FactChecker):
         """
         try:
             response = await self._create_completion(
-                build_verify_fallback_prompt(claim, _today()),
+                build_verify_fallback_prompt(
+                    claim, _today(), with_image=image_b64 is not None
+                ),
                 response_format=None,
                 extra_body=self._extra_body_with_reasoning(
                     {"plugins": [self._web_plugin()]}
                 ),
                 max_tokens=VERIFY_MAX_TOKENS,
+                image_b64=image_b64,
             )
         except Exception as exc:
             raise self._translate_api_error(
@@ -649,11 +656,26 @@ class OpenRouterFactChecker(FactChecker):
         response_format: dict[str, Any] | None,
         extra_body: dict[str, Any],
         max_tokens: int,
+        image_b64: str | None = None,
     ) -> Any:
-        """One verify-model completion with the per-call SDK timeout applied."""
+        """One verify-model completion with the per-call SDK timeout applied.
+
+        With ``image_b64`` the message content becomes OpenAI-style parts
+        (text + ``image_url`` data URI); plain string content otherwise, so
+        text-only call shapes stay byte-identical to the pre-vision wire.
+        """
+        content: Any = prompt
+        if image_b64 is not None:
+            content = [
+                {"type": "text", "text": prompt},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"},
+                },
+            ]
         kwargs: dict[str, Any] = {
             "model": self._verify_model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [{"role": "user", "content": content}],
             "temperature": 0.0,
             "max_tokens": max_tokens,
             "extra_body": extra_body,

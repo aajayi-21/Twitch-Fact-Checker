@@ -17,6 +17,9 @@ import {
   loadSettings,
 } from "../shared/settings.js";
 
+// Promise-safe API namespace (see shared/capabilities.js § namespace idiom).
+const chrome = globalThis.browser ?? globalThis.chrome;
+
 const CAPTURE_SESSION_KEY = "captureSession";
 const HEALTH_TIMEOUT_MS = 1500;
 const HEALTH_POLL_INTERVAL_MS = 3000;
@@ -68,6 +71,7 @@ const elements = {
   topicsEdit: document.getElementById("topics-edit"),
   setupCard: document.getElementById("setup-card"),
   openSettingsButton: document.getElementById("open-settings-button"),
+  costLine: document.getElementById("cost-line"),
 };
 
 const state = {
@@ -79,6 +83,10 @@ const state = {
   session: {...IDLE_SESSION},
   activeTab: null,
   healthUrl: null,
+  // Today's verification-attempt count + estimated cost from healthz.
+  // null = field absent (older backend) -> the cost line stays hidden.
+  checksToday: null,
+  estCostTodayUsd: null,
 };
 
 /**
@@ -149,6 +157,17 @@ const render = () => {
     elements.errorLine.textContent = errorCopy;
   }
 
+  // Today's usage readout (feature-detected: hidden on older backends).
+  const showCost = backendOnline && state.checksToday !== null;
+  elements.costLine.hidden = !showCost;
+  if (showCost) {
+    const costPart = Number.isFinite(state.estCostTodayUsd)
+      ? ` · ~$${state.estCostTodayUsd.toFixed(2)}`
+      : "";
+    elements.costLine.textContent =
+      `Checks today: ${state.checksToday}${costPart}`;
+  }
+
   // Offline hint (with the port the popup actually polls) while stopped and
   // unreachable.
   elements.offlineHint.hidden = !(backendChecked && !backendOnline && !active);
@@ -192,6 +211,12 @@ const checkBackendHealth = async () => {
         const health = await response.json();
         // Missing field (older backend) counts as configured.
         state.backendConfigured = health?.configured !== false;
+        state.checksToday = Number.isFinite(health?.checks_today)
+          ? health.checks_today
+          : null;
+        state.estCostTodayUsd = Number.isFinite(health?.est_cost_today_usd)
+          ? health.est_cost_today_usd
+          : null;
       } catch (parseError) {
         console.warn("[fact-checker] unparseable healthz body:", parseError);
         state.backendConfigured = true;

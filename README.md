@@ -25,9 +25,18 @@ provider and paste your key on the extension's options page — no file editing 
    The server starts key-less in a "needs setup" state — the extension will walk you
    through adding a key.
 
-2. **Load the extension** (needs Chrome 116+): open `chrome://extensions/`, enable
-   **Developer mode** (top right), click **Load unpacked**, and select the
-   `extension/` folder.
+2. **Load the extension** — the same `extension/` folder works in both browsers:
+
+   - **Chrome 116+**: open `chrome://extensions/`, enable **Developer mode**
+     (top right), click **Load unpacked**, select `extension/`.
+   - **Firefox 128+**: open `about:debugging#/runtime/this-firefox`, click
+     **Load Temporary Add-on…**, and select `extension/manifest.json`.
+     (Temporary add-ons are cleared when Firefox restarts.)
+
+   Each browser warns about the other's manifest keys — Chrome about
+   `background.scripts` and `browser_specific_settings`, Firefox about the
+   `tabCapture`/`offscreen` permissions. Both are expected: the manifest
+   deliberately carries both browsers' keys so there is no build step.
 
 3. **Connect your AI provider**: click the extension's toolbar icon → **Open
    settings** → paste your **OpenRouter** key (https://openrouter.ai/keys,
@@ -59,7 +68,53 @@ Chrome (extension)                              Local backend (127.0.0.1:8710)
 └─────────────────────────────────┘           └───────────────────────────────┘
 ```
 
-No database, no build step, no auth — everything runs locally, single user.
+No build step, no auth — everything runs locally, single user. Analytics live in
+one SQLite file (`backend/fact_checker.db`; delete it to reset).
+
+**Firefox uses a different front half.** Firefox implements neither
+`chrome.tabCapture` nor the offscreen-document API, so there is no way to
+capture a tab's audio and nowhere Chrome-shaped to put the session. The
+extension detects this at load (`extension/shared/capabilities.js`) and swaps
+in a second capture path; the backend never notices the difference.
+
+```
+Firefox (extension)                             Local backend (127.0.0.1:8710)
+┌─────────────────────────────────┐
+│ popup ── Start/Stop (gesture)   │
+│   │                             │
+│ content script                  │
+│   page's own <video>            │
+│   → AudioContext (+ loopback)   │           ┌───────────────────────────────┐
+│   → lowpass ×2 → worklet        │           │ FastAPI  /ws/audio            │
+│   → Int16 PCM → base64          │  16 kHz   │  ring buffer → faster-whisper │
+│   │ runtime messages            │  PCM over │                               │
+│ background EVENT PAGE (has DOM) │  WebSocket│                               │
+│   WebSocket ───────────────────────────────→│  (identical protocol)         │
+│   ← JSON verdict frames ────────────────────←─                              │
+│   │ relayed to the same overlay │           └───────────────────────────────┘
+└─────────────────────────────────┘
+```
+
+Why it is shaped that way: a content script's network requests run in the
+*page's* context under MV3, and Twitch/YouTube ship a `connect-src` CSP that
+would block `ws://127.0.0.1` — so the WebSocket has to live in an extension
+page. Firefox's MV3 background is an event page with a real DOM (not a service
+worker), so it can hold the socket and reuse the same `BackendSocket` client.
+PCM crosses as base64 because runtime messaging is JSON-serialized in both
+browsers (an `ArrayBuffer` would arrive as `{}`).
+
+Firefox-specific caveats:
+
+- Audio is tapped from the page's `<video>` via `createMediaElementSource`,
+  which **reroutes** that element's audio through the extension's
+  AudioContext. The graph therefore keeps a permanent loopback to the
+  speakers and never closes the context — and capture refuses to start if the
+  context cannot leave the `suspended` state, rather than risk muting the
+  stream.
+- It follows that capture only works on pages with a real media element (all
+  four supported sites) and not on DRM-protected video.
+- A full page navigation ends the session (the content script owns the tap);
+  in-page SPA route changes are handled by re-attaching to the new player.
 
 ## Backend details (advanced)
 
@@ -90,6 +145,41 @@ file. `.env` holds your real key — it is gitignored and must never be committe
 startup — expect a one-time delay. On slow machines, set `WHISPER_MODEL=base` in
 `.env`.
 
+## Analytics & dashboard
+
+Every session records its funnel to `backend/fact_checker.db`: which claims were
+gated, why they were dropped (below threshold / topic filter / duplicate / queue),
+verdicts with latency and sources, and your 👍/👎 feedback from the overlay (the
+seed of a self-growing eval set). Open **http://127.0.0.1:8710/dashboard** for
+today's stat tiles, the verdict-label distribution, the claim funnel, per-channel
+cards (rates only appear at ≥30 adjudicated verdicts — below that there is no
+honest signal), and a recent-sessions table with per-session detail. The popup
+shows a live "Checks today: N · ~$X.XX" readout. Raw JSON: `GET /stats/summary`,
+`/stats/channels`, `/stats/sessions`. Delete the `.db` file to reset everything.
+
+## Self-contradiction alerts
+
+Separately from web-grounded fact-checks, the backend remembers what was claimed
+earlier in the SAME session and flags high-confidence logical contradictions
+("Earlier: 'I've never been to Japan' · Just now: 'I've been to Japan twice'") as
+amber two-quote toasts. Candidate pairs are retrieved with Ollama embeddings
+(`nomic-embed-text`) when Ollama is running, or a built-in lexical fallback when
+it isn't, and judged by the gate model. The doctrine mirrors verification:
+default to NO flag — mind-changes, jokes, and restatements never count, and only
+high-confidence judgements surface.
+
+## On-screen claims (experimental, opt-in)
+
+Enable **"Send video frames for on-screen claims"** in the options page and the
+extension captures a small (≤480p) screenshot of the stream every 5 seconds
+alongside the audio. When a claim references something visible ("as you can see,
+this chart…"), the freshest frame is attached to that verification call so the
+model can actually look at the chart. Privacy posture: frames go only to your
+local backend, are held in a 3-frame in-memory ring, are forwarded to the LLM
+provider only for visual-cue claims, and are **never stored anywhere**. An
+attached image can never make a check fail (or a verdict stronger) than it would
+have been without it — the no-citations ⇒ UNVERIFIED rule is unchanged.
+
 ## LLM provider, models, costs
 
 **Default: OpenRouter.** Both pipeline stages (claim gate + verification) run on
@@ -116,6 +206,27 @@ key (or manually set `LLM_PROVIDER=gemini` and `GEMINI_API_KEY` in `.env`; model
 `GEMINI_GATE_MODEL` / `GEMINI_VERIFY_MODEL`). Search grounding requires a paid-tier
 Gemini key, which is why OpenRouter is the default.
 
+**Per-stage providers & Ollama (local gate).** The two pipeline stages can run on
+different providers: the claim gate makes ~300 cheap ungrounded calls/hour (this is
+what burns OpenRouter's free-tier daily cap), while verification makes 5–20
+grounded calls/hour. Routing the gate to a local **Ollama** model eliminates ~95%
+of hosted API calls with hard grammar-constrained JSON output — the recommended
+setup for anyone with a GPU:
+
+```bash
+ollama pull gemma3:4b          # gate model (OLLAMA_GATE_MODEL)
+ollama pull nomic-embed-text   # embeddings for contradiction detection
+```
+
+Then on the options page: select **Ollama → Test connection**, and set **Claim
+detection (gate)** to Ollama under stage routing (verification stays on
+OpenRouter/Gemini — local verify is not supported because it has no web-search
+grounding). Env equivalents: `GATE_PROVIDER=ollama`, `VERIFY_PROVIDER=openrouter`,
+`OLLAMA_BASE_URL=http://127.0.0.1:11434/v1` (any OpenAI-compatible server works:
+LM Studio, vLLM, llama.cpp). A cold local model's first call can exceed
+`GATE_TIMEOUT_S=15` — raise it or set a longer Ollama `keep_alive` if the first
+gate pass times out.
+
 **Costs & limits (OpenRouter):**
 
 - Inference on `:free` models costs $0, but **web search is billed to your credit
@@ -133,7 +244,8 @@ Gemini key, which is why OpenRouter is the default.
 ## Usage
 
 Installed via the [Quickstart](#quickstart) above. After code changes to the
-extension, click the refresh icon on its card in `chrome://extensions/` to reload.
+extension, reload it: the refresh icon on its card in `chrome://extensions/`, or
+**Reload** on `about:debugging#/runtime/this-firefox` in Firefox.
 
 1. Start the backend, then open a stream on a supported site: Twitch
    (`https://www.twitch.tv/...`), YouTube (`/watch?v=` or `/live/...`), Kick

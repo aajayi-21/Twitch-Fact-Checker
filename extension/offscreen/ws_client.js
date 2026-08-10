@@ -138,6 +138,32 @@ export class BackendSocket {
     this.droppedMs += FRAME_DURATION_MS;
   }
 
+  /** True while the socket is connected and writable. */
+  get isOpen() {
+    return this.socket?.readyState === WebSocket.OPEN;
+  }
+
+  /**
+   * Send one arbitrary JSON frame (e.g. a captured video frame) when the
+   * socket is open. Generic by design — no hello folding, no semantics
+   * (unlike sendConfig): frames that miss the window are simply dropped.
+   *
+   * @param {object} frame
+   * @returns {boolean} true when the frame was handed to the socket
+   */
+  sendJson(frame) {
+    if (!this.isOpen) {
+      return false;
+    }
+    try {
+      this.socket.send(JSON.stringify(frame));
+      return true;
+    } catch (error) {
+      console.warn("[fact-checker] sendJson failed:", error);
+      return false;
+    }
+  }
+
   /**
    * Forward a mid-session config change ({"type":"config", ...}). Updated
    * values (sensitivity, enabled_topics) are also folded into the hello so

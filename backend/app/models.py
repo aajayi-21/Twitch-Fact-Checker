@@ -24,6 +24,8 @@ Label = Literal["TRUE", "FALSE", "MISLEADING", "UNVERIFIED"]
 
 Sensitivity = Literal["low", "medium", "high"]
 
+Confidence = Literal["low", "medium", "high"]
+
 Topic = Literal[
     "politics",
     "health",
@@ -93,6 +95,11 @@ def new_verdict_id() -> str:
     return uuid4().hex
 
 
+def new_claim_id() -> str:
+    """Opaque unique claim id (hex uuid4) — the claims-table primary key."""
+    return uuid4().hex
+
+
 # --------------------------------------------------------------------------- #
 # Client -> server frames (§2.1)
 # --------------------------------------------------------------------------- #
@@ -112,6 +119,12 @@ class ClientHello(BaseModel):
     # time (:func:`resolve_enabled_topics`), never rejected with a 1008.
     enabled_topics: list[str] | None = None
     send_transcripts: bool = True
+    # Session identity (optional — old clients omit them, old backends ignore
+    # them): which stream this session is listening to, for per-channel
+    # analytics. Never used for anything protocol-affecting.
+    platform: Literal["twitch", "youtube", "kick", "rumble"] | None = None
+    channel: str | None = None
+    stream_title: str | None = None
 
 
 class ClientConfig(BaseModel):
@@ -130,6 +143,18 @@ class ClientStop(BaseModel):
     """Graceful end: server flushes, runs a final gate pass, closes 1000."""
 
     type: Literal["stop"]
+
+
+class ClientFrameMessage(BaseModel):
+    """One captured video frame (wire contract §Phase 6).
+
+    ``image_b64`` is a bare base64 JPEG (no ``data:`` prefix). Frames live
+    only in the session's in-memory ring — NEVER persisted (privacy rule).
+    """
+
+    type: Literal["frame"]
+    image_b64: str
+    captured_at_ms: int
 
 
 # --------------------------------------------------------------------------- #
@@ -155,6 +180,11 @@ class TranscriptSegment(BaseModel):
 class GateClaim(BaseModel):
     """One claim extracted by the gate model."""
 
+    # Server-side identity for the analytics funnel. NEVER model-supplied:
+    # the before-validator strips any incoming "id" key, because Gemini's
+    # gate call passes this Pydantic class as its response_schema — without
+    # the strip the model could emit its own (colliding) ids.
+    id: str = Field(default_factory=new_claim_id)
     claim_text: str
     check_worthiness: float = Field(ge=0.0, le=1.0)
     # Deliberately NO default: the field must appear in the JSON schema's
@@ -173,9 +203,14 @@ class GateClaim(BaseModel):
         normalized rather than discarded: they can only arrive via the
         non-schema-enforced parse paths (OpenRouter json_object mode, Gemini
         raw-text fallback), where the enum is prompt-suggested only.
+
+        Also discards any model-supplied "id" so the server default_factory
+        always assigns it (see the field comment).
         """
         if not isinstance(data, dict):
             return data
+        if "id" in data:
+            data = {k: v for k, v in data.items() if k != "id"}
         value = data.get("topic")
         if isinstance(value, str):
             candidate = value.strip().lower()
@@ -290,6 +325,31 @@ class VerdictFrame(BaseModel):
         return cls(**verdict.model_dump())
 
 
+class ContradictionJudgement(BaseModel):
+    """The contradiction judge's flat structured output (gate-model call)."""
+
+    contradicts: bool
+    confidence: Confidence
+    explanation: str
+
+
+class ContradictionFrame(BaseModel):
+    """Same-session self-contradiction alert (wire contract §Phase 5).
+
+    Deliberately NOT a verdict: it answers "is this consistent with what you
+    said earlier", never "is this true", and gets its own visual language in
+    the overlay. Only confidence == "high" judgements are ever emitted (the
+    detector enforces this).
+    """
+
+    type: Literal["contradiction"] = "contradiction"
+    current_claim: str
+    prior_claim: str
+    prior_claimed_at: str
+    confidence: Confidence
+    explanation: str
+
+
 class ErrorFrame(BaseModel):
     """Non-fatal errors keep the session alive; fatal ones precede a close."""
 
@@ -297,6 +357,20 @@ class ErrorFrame(BaseModel):
     code: ErrorCode
     message: str
     fatal: bool = False
+
+
+# --------------------------------------------------------------------------- #
+# Feedback endpoint
+# --------------------------------------------------------------------------- #
+
+
+class FeedbackRequest(BaseModel):
+    """Body for POST /feedback — user judgement on one delivered verdict."""
+
+    verdict_id: str
+    rating: Literal["up", "down"]
+    corrected_label: Label | None = None
+    note: str | None = None
 
 
 # --------------------------------------------------------------------------- #

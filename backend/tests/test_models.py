@@ -280,3 +280,71 @@ class TestDebugTextRequest:
     def test_enabled_topics_defaults_to_none_meaning_all(self) -> None:
         request = DebugTextRequest(text="The earth is flat.")
         assert request.enabled_topics is None
+
+
+class TestSessionIdentityFields:
+    def test_old_hello_without_identity_stays_valid(self) -> None:
+        hello = ClientHello.model_validate(make_hello())
+        assert hello.platform is None
+        assert hello.channel is None
+        assert hello.stream_title is None
+
+    def test_identity_fields_parse(self) -> None:
+        hello = ClientHello.model_validate(
+            make_hello(platform="kick", channel="somebody", stream_title="Live!")
+        )
+        assert hello.platform == "kick"
+        assert hello.channel == "somebody"
+        assert hello.stream_title == "Live!"
+
+    def test_unknown_platform_is_rejected(self) -> None:
+        import pytest as _pytest
+        from pydantic import ValidationError as _ValidationError
+
+        with _pytest.raises(_ValidationError):
+            ClientHello.model_validate(make_hello(platform="myspace"))
+
+
+class TestGateClaimId:
+    def test_server_assigns_a_unique_id(self) -> None:
+        from app.models import GateClaim
+
+        first = GateClaim(claim_text="a claim", check_worthiness=0.5, topic="other")
+        second = GateClaim(claim_text="a claim", check_worthiness=0.5, topic="other")
+        assert first.id and second.id and first.id != second.id
+
+    def test_model_supplied_id_is_discarded(self) -> None:
+        """Gemini derives its response schema from this Pydantic class, so a
+        model COULD emit ids; the before-validator must strip them or they
+        become colliding primary keys."""
+        from app.models import GateClaim
+
+        claim = GateClaim.model_validate(
+            {
+                "id": "1",
+                "claim_text": "a claim",
+                "check_worthiness": 0.5,
+                "topic": "other",
+            }
+        )
+        assert claim.id != "1"
+        assert len(claim.id) == 32  # server uuid4 hex
+
+
+class TestFeedbackRequest:
+    def test_minimal_body_parses(self) -> None:
+        from app.models import FeedbackRequest
+
+        body = FeedbackRequest.model_validate(
+            {"verdict_id": "v1", "rating": "up"}
+        )
+        assert body.corrected_label is None and body.note is None
+
+    def test_bad_rating_rejected(self) -> None:
+        import pytest as _pytest
+        from pydantic import ValidationError as _ValidationError
+
+        from app.models import FeedbackRequest
+
+        with _pytest.raises(_ValidationError):
+            FeedbackRequest.model_validate({"verdict_id": "v1", "rating": "meh"})

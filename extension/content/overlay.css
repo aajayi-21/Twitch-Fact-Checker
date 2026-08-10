@@ -262,6 +262,55 @@
   border-left-color: var(--fc-misleading);
 }
 
+/* Contradiction alerts wear their own visual language (amber, two quotes) —
+   deliberately NOT a TRUE/FALSE label variant. */
+.fc-toast[data-kind="contradiction"] {
+  border-left-color: var(--fc-misleading);
+  background: linear-gradient(
+    to right,
+    rgba(245, 158, 11, 0.08),
+    transparent 40%
+  ), var(--fc-glass);
+}
+
+.fc-contra-pill {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: #1a1205;
+  background: var(--fc-misleading);
+}
+
+.fc-contra-quote {
+  border-left: 2px solid rgba(245, 158, 11, 0.45);
+  padding: 2px 0 2px 8px;
+  margin: 4px 0;
+}
+
+.fc-contra-quote[data-which="current"] {
+  border-left-color: var(--fc-misleading);
+}
+
+.fc-contra-when {
+  display: block;
+  font-size: 10px;
+  color: var(--fc-dim);
+  margin-bottom: 1px;
+}
+
+.fc-contra-text {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: #ffffff;
+}
+
+.fc-contra-quote[data-which="prior"] .fc-contra-text {
+  color: #d9d9e3;
+}
+
 .fc-toast.fc-leaving {
   animation: fc-out 180ms ease-in forwards;
 }
@@ -296,6 +345,41 @@
 .fc-toast-close:hover {
   color: #ffffff;
   background: rgba(255, 255, 255, 0.1);
+}
+
+/* 👍/👎 feedback buttons (toast heads + history-entry heads). */
+.fc-feedback {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.fc-feedback-btn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 3px 4px;
+  border-radius: 6px;
+  filter: grayscale(1) opacity(0.55);
+  transition: background 120ms ease, filter 120ms ease;
+}
+
+.fc-feedback-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  filter: grayscale(0) opacity(1);
+}
+
+.fc-feedback-btn[data-selected="true"] {
+  background: rgba(145, 71, 255, 0.28);
+  filter: grayscale(0) opacity(1);
+}
+
+.fc-feedback-btn:focus-visible {
+  outline: 2px solid var(--fc-accent);
+  outline-offset: 1px;
 }
 
 .fc-claim {

@@ -37,11 +37,13 @@ if str(BACKEND_DIR) not in sys.path:
 
 import inspect
 import json
+import tempfile
 from collections import deque
 from collections.abc import AsyncIterator, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager
 from typing import Any
+from uuid import uuid4
 
 import httpx
 import numpy as np
@@ -54,6 +56,7 @@ from openai.types.chat import ChatCompletion
 
 from app import ws as ws_module
 from app.config import Settings
+from app.db import Database, DayCounter
 from app.llm_gemini import GeminiClaimGate, GeminiFactChecker
 from app.llm_provider import LLMRuntime
 from app.main import create_app
@@ -500,6 +503,17 @@ def make_test_settings(**overrides: Any) -> Settings:
         "verify_timeout_s": 5.0,
         "send_transcripts": True,
         "debug_endpoints": True,
+        # Per-call unique temp path: safe for callers that never open a
+        # client (the file is only created by Database.open); the fake
+        # lifespan unlinks it (plus WAL sidecars) on teardown.
+        "db_path": str(
+            Path(tempfile.gettempdir()) / f"fact-checker-test-{uuid4().hex}.db"
+        ),
+        # Dead port: an instant connection refusal on every machine, so
+        # ollama-touching paths (embeddings, reachability probes) degrade
+        # deterministically and the suite stays genuinely offline even on
+        # dev boxes running a real Ollama.
+        "ollama_base_url": "http://127.0.0.1:1/v1",
     }
     base.update(overrides)
     return Settings(**base)
@@ -517,7 +531,10 @@ def make_fake_llm_runtime(
         return LLMRuntime(settings=settings)
     return LLMRuntime(
         settings=settings,
-        client=genai_client,
+        # Same fake object for both stages (mirrors build_llm_runtime when
+        # gate and verify resolve to the same provider).
+        gate_client=genai_client,
+        verify_client=genai_client,
         gate=GeminiClaimGate(
             client=genai_client,
             model=settings.gemini_gate_model,
@@ -556,10 +573,19 @@ def _install_fake_state(
         app.state.transcriber = transcriber
         executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="stt-test")
         app.state.stt_executor = executor
+        # Real Database on the per-test temp path (same contract as the real
+        # lifespan); torn down together with its WAL sidecars.
+        db = Database(settings.db_path)
+        await db.open()
+        app.state.db = db
+        app.state.verify_counter = DayCounter(initial=await db.count_checks_today())
         try:
             yield
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
+            await db.close()
+            for suffix in ("", "-wal", "-shm"):
+                Path(f"{settings.db_path}{suffix}").unlink(missing_ok=True)
 
     application.router.lifespan_context = fake_lifespan
 
@@ -594,8 +620,13 @@ def _reset_current_pipeline() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
-def _reset_openrouter_process_latches() -> Iterator[None]:
-    """Isolate the process-wide OpenRouter latches between tests."""
+def _reset_llm_process_latches() -> Iterator[None]:
+    """Isolate the process-wide provider latches between tests.
+
+    RULE: every new process-wide latch (class attribute surviving session
+    rebuilds) needs a reset here.
+    """
+    from app.llm_local import LocalClaimGate
     from app.llm_openrouter import OpenRouterClaimGate, _ReasoningSupport
 
     def reset() -> None:
@@ -603,6 +634,7 @@ def _reset_openrouter_process_latches() -> Iterator[None]:
         OpenRouterClaimGate._consecutive_strict_503s = 0
         OpenRouterClaimGate._json_schema_retry_at = 0.0
         _ReasoningSupport.unsupported = False
+        LocalClaimGate._json_schema_unsupported = False
 
     reset()
     yield
@@ -617,6 +649,64 @@ def fake_genai_client() -> FakeGenAIClient:
 @pytest.fixture()
 def fake_openrouter_client() -> FakeOpenRouterClient:
     return FakeOpenRouterClient()
+
+
+# The local (Ollama) transport talks through the identical AsyncOpenAI
+# surface, so the OpenRouter fake covers it verbatim; the alias keeps test
+# intent readable.
+FakeLocalClient = FakeOpenRouterClient
+
+
+@pytest.fixture()
+def fake_local_client() -> FakeLocalClient:
+    return FakeLocalClient()
+
+
+def make_judgement_response(
+    contradicts: bool, confidence: str = "high", explanation: str = "They clash."
+) -> "FakeGenerateContentResponse":
+    """A scripted Gemini judge result (rides the generate_results queue)."""
+    from app.models import ContradictionJudgement
+
+    return FakeGenerateContentResponse(
+        parsed=ContradictionJudgement(
+            contradicts=contradicts,
+            confidence=confidence,  # type: ignore[arg-type]
+            explanation=explanation,
+        )
+    )
+
+
+class FakeEmbedder:
+    """Scripted stand-in for app.embeddings.OllamaEmbedder.
+
+    ``results`` items: a list of vectors (one per input text), or an
+    exception instance to raise. Unscripted call -> AssertionError.
+    """
+
+    def __init__(self) -> None:
+        self.results: deque[Any] = deque()
+        self.calls: list[list[str]] = []
+
+    async def embed(self, texts: list[str]) -> list[Any]:
+        self.calls.append(list(texts))
+        if not self.results:
+            raise AssertionError("unscripted FakeEmbedder.embed call")
+        item = self.results.popleft()
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+
+def make_frame_message(
+    image_b64: str = "aGVsbG8=", captured_at_ms: int = 1_700_000_000_000
+) -> dict[str, Any]:
+    """A valid client->server video-frame message (wire contract §Phase 6)."""
+    return {
+        "type": "frame",
+        "image_b64": image_b64,
+        "captured_at_ms": captured_at_ms,
+    }
 
 
 @pytest.fixture()

@@ -24,6 +24,10 @@ SENSITIVITY_THRESHOLDS: dict[str, float] = {"low": 0.75, "medium": 0.55, "high":
 
 _DEFAULT_ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 
+# The analytics database lives next to `.env` by default; tests point DB_PATH
+# at temp files instead.
+_DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent / "fact_checker.db"
+
 
 def resolve_env_file() -> Path:
     """The ``.env`` path used for BOTH reading settings and setup persistence.
@@ -58,6 +62,22 @@ class Settings(BaseSettings):
         super().__init__(**kwargs)
 
     llm_provider: Literal["openrouter", "gemini"] = "openrouter"
+
+    # Per-stage provider overrides; "" = follow the legacy ``llm_provider``
+    # switch, so existing single-provider setups are untouched. The verify
+    # Literal deliberately excludes "ollama": local verify has no web-search
+    # grounding, so every verdict would be downgraded to UNVERIFIED — a
+    # hand-edited VERIFY_PROVIDER=ollama fails loudly at boot instead of
+    # half-working.
+    gate_provider: Literal["", "openrouter", "gemini", "ollama"] = ""
+    verify_provider: Literal["", "openrouter", "gemini"] = ""
+
+    # Ollama (or any OpenAI-compatible local server: LM Studio, vLLM,
+    # llama.cpp). The base URL is the OpenAI-compatible root INCLUDING /v1;
+    # embeddings derive the native root from it (app.embeddings).
+    ollama_base_url: str = "http://127.0.0.1:11434/v1"
+    ollama_gate_model: str = "gemma3:4b"
+    ollama_embed_model: str = "nomic-embed-text"
 
     openrouter_api_key: str = ""
     openrouter_gate_model: str = "google/gemma-4-26b-a4b-it:free"
@@ -94,56 +114,101 @@ class Settings(BaseSettings):
 
     send_transcripts: bool = True
     debug_endpoints: bool = True
+    # Attach a captured stream frame to verification when the claim contains
+    # a visual cue ("this chart", "on screen", ...). Frames only exist when
+    # the extension's opt-in capture toggle is on; they are never persisted.
+    vision_enabled: bool = True
+
+    # Analytics persistence (app/db.py). One SQLite file; delete it to reset.
+    db_path: str = str(_DEFAULT_DB_PATH)
+    # Estimated marginal cost of ONE verification attempt (the web-search fee
+    # dominates; tokens are noise). Used for the popup/dashboard cost readouts.
+    cost_per_verify_usd: float = 0.005
 
     host: str = "127.0.0.1"
     port: int = 8710
     log_level: str = "INFO"
 
     @property
+    def resolved_gate_provider(self) -> str:
+        """The gate stage's provider ("" override falls back to llm_provider)."""
+        return self.gate_provider or self.llm_provider
+
+    @property
+    def resolved_verify_provider(self) -> str:
+        """The verify stage's provider ("" override falls back to llm_provider)."""
+        return self.verify_provider or self.llm_provider
+
+    @property
     def active_gate_model(self) -> str:
-        """The gate model of the active provider (for logs/healthz/ready)."""
-        if self.llm_provider == "openrouter":
-            return self.openrouter_gate_model
-        return self.gemini_gate_model
+        """The gate model of the gate stage's provider (logs/healthz/ready)."""
+        return {
+            "openrouter": self.openrouter_gate_model,
+            "gemini": self.gemini_gate_model,
+            "ollama": self.ollama_gate_model,
+        }[self.resolved_gate_provider]
 
     @property
     def active_verify_model(self) -> str:
-        """The verify model of the active provider (for logs/healthz/ready)."""
-        if self.llm_provider == "openrouter":
-            return self.openrouter_verify_model
-        return self.gemini_verify_model
+        """The verify model of the verify stage's provider."""
+        return {
+            "openrouter": self.openrouter_verify_model,
+            "gemini": self.gemini_verify_model,
+        }[self.resolved_verify_provider]
 
     @property
     def active_api_key(self) -> str:
-        """The ACTIVE provider's API key (may be empty when unconfigured)."""
+        """The LEGACY provider's API key (may be empty when unconfigured).
+
+        Still keyed off ``llm_provider`` (which can only be a keyed
+        provider); per-stage code paths use :meth:`provider_configured`.
+        """
         if self.llm_provider == "openrouter":
             return self.openrouter_api_key
         return self.gemini_api_key
 
+    def provider_configured(self, provider: str) -> bool:
+        """Whether ``provider`` is usable.
+
+        Keyed providers need a non-placeholder key. Ollama is keyless and
+        counts as ALWAYS configured — runtime unreachability surfaces as
+        per-call ``GateError`` (and the setup probe reports reachability).
+        Unknown names are never configured.
+        """
+        if provider == "openrouter":
+            return not self._is_placeholder_key(self.openrouter_api_key)
+        if provider == "gemini":
+            return not self._is_placeholder_key(self.gemini_api_key)
+        return provider == "ollama"
+
     @property
     def is_configured(self) -> bool:
-        """True when the active provider's key is present and non-placeholder.
+        """True when EVERY distinct resolved stage provider is configured.
 
         Reuses the placeholder hardening from the ``require_*`` checks: an
         empty value, whitespace, or a leftover ``#`` comment (the
         ``.env.example`` inline-comment trap) all count as NOT configured.
         """
-        return not self._is_placeholder_key(self.active_api_key)
+        return all(
+            self.provider_configured(provider)
+            for provider in {self.resolved_gate_provider, self.resolved_verify_provider}
+        )
 
     def require_llm_api_key(self) -> None:
-        """Fail loudly at startup when the ACTIVE provider has no usable key.
+        """Fail loudly at startup when an ACTIVE stage provider has no key.
 
-        Only the selected provider's key is required: an OpenRouter setup
-        needs no Gemini key and vice versa.
+        Only the resolved stage providers' keys are required (Ollama needs
+        none): an OpenRouter setup needs no Gemini key and vice versa.
 
         Raises:
-            RuntimeError: if the active provider's API key is empty,
+            RuntimeError: if a resolved stage provider's API key is empty,
                 whitespace, or a leftover comment rather than a real key.
         """
-        if self.llm_provider == "openrouter":
-            self.require_openrouter_api_key()
-        else:
-            self.require_gemini_api_key()
+        for provider in {self.resolved_gate_provider, self.resolved_verify_provider}:
+            if provider == "openrouter":
+                self.require_openrouter_api_key()
+            elif provider == "gemini":
+                self.require_gemini_api_key()
 
     def require_openrouter_api_key(self) -> None:
         """Fail loudly when ``OPENROUTER_API_KEY`` is missing or a placeholder.

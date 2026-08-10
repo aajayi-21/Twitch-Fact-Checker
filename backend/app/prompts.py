@@ -191,6 +191,54 @@ sources, including the key fact or number. No URLs.>
 """
 
 
+# Appended to verify prompts when a captured stream frame is attached. The
+# label rules stay structural: an image can never produce url_citation
+# sources, so the no-citations => UNVERIFIED invariant already caps what a
+# misread frame can do.
+VERIFY_IMAGE_NOTE = """\
+
+
+A frame captured from the live stream is attached. Use it ONLY if it is
+clearly legible and directly relevant to the claim; otherwise ignore it
+entirely. The label rules above are unchanged — never move off UNVERIFIED
+based on the image alone.
+"""
+
+
+CONTRADICTION_PROMPT_TEMPLATE = """\
+You compare two statements made by the SAME speaker at different points in ONE
+live stream, and decide whether they LOGICALLY CONTRADICT each other.
+
+EARLIER STATEMENT: "{prior}"
+LATER STATEMENT: "{current}"
+
+A contradiction requires ALL of the following:
+- Both statements are about the SAME concrete entity, event, or quantity —
+  being about the same topic is NOT enough.
+- The two statements cannot both be true (a direct logical clash).
+- The clash is factual, not a shift in opinion, preference, plan, or mood.
+
+These are NOT contradictions (default to contradicts=false):
+- Changing one's mind, opinion drift, or updated preferences over the stream.
+- Jokes, sarcasm, hyperbole, banter, or obvious exaggeration.
+- Vague overlap, or statements reconcilable by time passing or added context.
+- Restating or refining the same claim with slightly different wording or
+  numbers.
+
+Weight direct negations ("I have never...", "always...", "first time...")
+higher than a plain factual delta.
+
+confidence is "high" ONLY when both statements are unambiguous, concern the
+same concrete fact, and cannot be reconciled. If you are unsure, return
+contradicts=false with confidence "low". Missing a contradiction is fine;
+inventing one is not.
+
+Respond with a JSON object with exactly three fields:
+{{"contradicts": true | false, "confidence": "low" | "medium" | "high",
+"explanation": "<one sentence naming the clashing fact>"}}
+"""
+
+
 VERDICT_EXTRACTION_PROMPT_TEMPLATE = """\
 The text below is a fact-check verdict written in free form. Extract it into
 JSON with exactly two fields: "label" (one of TRUE, FALSE, MISLEADING,
@@ -211,16 +259,25 @@ def build_gate_prompt(context: str, new_transcript: str) -> str:
     )
 
 
-def build_verify_prompt(claim: str, date: str) -> str:
+def build_verify_prompt(claim: str, date: str, with_image: bool = False) -> str:
     """Render the grounded structured verification prompt."""
-    return VERIFY_PROMPT_TEMPLATE.format(claim=claim, date=date)
+    prompt = VERIFY_PROMPT_TEMPLATE.format(claim=claim, date=date)
+    return prompt + VERIFY_IMAGE_NOTE if with_image else prompt
 
 
-def build_verify_fallback_prompt(claim: str, date: str) -> str:
+def build_verify_fallback_prompt(
+    claim: str, date: str, with_image: bool = False
+) -> str:
     """Render the grounded plain-text (LABEL:/EXPLANATION:) fallback prompt."""
-    return VERIFY_FALLBACK_PROMPT_TEMPLATE.format(claim=claim, date=date)
+    prompt = VERIFY_FALLBACK_PROMPT_TEMPLATE.format(claim=claim, date=date)
+    return prompt + VERIFY_IMAGE_NOTE if with_image else prompt
 
 
 def build_verdict_extraction_prompt(raw_text: str) -> str:
     """Render the last-resort ungrounded structured-extraction prompt."""
     return VERDICT_EXTRACTION_PROMPT_TEMPLATE.format(raw_text=raw_text.strip())
+
+
+def build_contradiction_prompt(current: str, prior: str) -> str:
+    """Render the contradiction-judge prompt (gate-model call, no search)."""
+    return CONTRADICTION_PROMPT_TEMPLATE.format(current=current, prior=prior)

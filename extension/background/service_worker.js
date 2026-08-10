@@ -1,28 +1,45 @@
 /**
- * Background service worker — a stateless message router.
+ * Background message router — a service worker in Chrome, an event page in
+ * Firefox (the manifest declares both; each browser picks its own).
  *
- * MV3 service workers die after ~30 s of idle, so this file keeps ZERO
- * in-memory session state: the captured tab id lives in
- * chrome.storage.session ("capturedTabId") and is re-read on every event.
- * Everything long-lived (MediaStream, AudioContext, WebSocket, timers)
- * lives in the offscreen document.
+ * TWO CAPTURE PATHS, chosen by `HAS_OFFSCREEN_CAPTURE`:
+ *
+ *  - Chrome: tabCapture mints a stream id and the OFFSCREEN DOCUMENT owns
+ *    the session (MediaStream + AudioContext + WebSocket). This file stays a
+ *    stateless router — MV3 service workers die after ~30 s idle, so the
+ *    captured tab id lives in chrome.storage.session and is re-read on every
+ *    event.
+ *  - Firefox: neither tabCapture nor offscreen documents exist, so the
+ *    CONTENT SCRIPT taps the page's <video> and streams base64 PCM here,
+ *    where `page_session.js` owns the WebSocket. Firefox's background page
+ *    has a DOM and stays alive under the 4 msg/s audio cadence.
+ *    See shared/capabilities.js for the full rationale.
  *
  * Responsibilities:
- *  - offscreen document lifecycle,
+ *  - offscreen document lifecycle (Chrome) / page_session wiring (Firefox),
  *  - the capture start sequence (offscreen doc FIRST, then getMediaStreamId,
  *    then OFFSCREEN_START in the same tick — the stream id expires in seconds),
  *  - one automatic full-sequence retry on stream-id failure,
  *  - tabs.onRemoved guard for the captured tab,
  *  - relaying BACKEND_EVENT frames to the captured tab's content script,
- *  - persisting the offscreen document's SESSION_UPDATE state to
+ *  - persisting the session owner's SESSION_UPDATE state to
  *    chrome.storage.session (offscreen docs cannot access chrome.storage),
- *  - forwarding sync-settings changes to the offscreen doc (OFFSCREEN_CONFIG),
+ *  - forwarding sync-settings changes to the session owner,
  *  - opening the options page for content scripts (OPEN_OPTIONS),
  *  - closing the offscreen document on CAPTURE_ENDED.
  */
 
+import {HAS_OFFSCREEN_CAPTURE} from "../shared/capabilities.js";
 import {ERR, MSG, TARGET, makeMsg} from "../shared/messages.js";
-import {getEnabledTopicSlugs, loadSettings} from "../shared/settings.js";
+import {
+  deriveBackendHttpOrigin,
+  getEnabledTopicSlugs,
+  loadSettings,
+} from "../shared/settings.js";
+import * as pageSession from "./page_session.js";
+
+// Promise-safe API namespace (see shared/capabilities.js § namespace idiom).
+const chrome = globalThis.browser ?? globalThis.chrome;
 
 const OFFSCREEN_DOCUMENT_PATH = "offscreen/offscreen.html";
 const CAPTURED_TAB_KEY = "capturedTabId";
@@ -116,6 +133,9 @@ const ensureOffscreenDocument = async () => {
 };
 
 const closeOffscreenDocument = async () => {
+  if (!HAS_OFFSCREEN_CAPTURE) {
+    return; // Firefox: no offscreen documents exist to close
+  }
   try {
     if (await chrome.offscreen.hasDocument()) {
       await chrome.offscreen.closeDocument();
@@ -139,6 +159,51 @@ const notifySessionState = async (tabId, running) => {
   } catch (error) {
     console.debug("[fact-checker] SESSION_STATE not delivered:", error);
   }
+};
+
+/**
+ * Session identity (backend analytics): platform/channel/title derived from
+ * the captured tab, best-effort. Keyed like content.js's PLATFORM_ADAPTERS
+ * (hostname minus leading www.). No "tabs" permission needed — activeTab,
+ * granted by the popup interaction that triggers CAPTURE_START, exposes the
+ * tab's url/title.
+ */
+const PLATFORM_BY_HOSTNAME = Object.freeze({
+  "twitch.tv": "twitch",
+  "youtube.com": "youtube",
+  "kick.com": "kick",
+  "rumble.com": "rumble",
+});
+
+// Best-effort " - Twitch"-style suffix strip from tab titles.
+const TITLE_SUFFIX_RE = /\s*[-–—|·]\s*(Twitch|YouTube|Kick|Rumble)\s*$/i;
+
+/**
+ * Derive {platform, channel, streamTitle} from a tab, all-null on any
+ * failure — every field is optional on the wire. Channel is the first path
+ * segment for twitch/kick only (YouTube/Rumble URLs carry video ids, not
+ * channel slugs).
+ *
+ * @param {chrome.tabs.Tab|null} tab
+ * @returns {{platform: string|null, channel: string|null, streamTitle: string|null}}
+ */
+const deriveSessionIdentity = (tab) => {
+  const identity = {platform: null, channel: null, streamTitle: null};
+  if (!tab) {
+    return identity;
+  }
+  try {
+    identity.streamTitle = tab.title?.replace(TITLE_SUFFIX_RE, "").trim() || null;
+    const url = new URL(tab.url ?? "");
+    const hostname = url.hostname.replace(/^www\./, "");
+    identity.platform = PLATFORM_BY_HOSTNAME[hostname] ?? null;
+    if (identity.platform === "twitch" || identity.platform === "kick") {
+      identity.channel = url.pathname.split("/").filter(Boolean)[0] ?? null;
+    }
+  } catch (error) {
+    console.debug("[fact-checker] session identity derivation failed:", error);
+  }
+  return identity;
 };
 
 /**
@@ -174,12 +239,37 @@ const handleCaptureStart = async (tabId) => {
     lastError: null,
   });
   const settings = await loadSettings();
+  // Identity is best-effort: a tabs.get failure must not abort the start.
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
   const offscreenSettings = {
     backendUrl: settings.backendUrl,
     sensitivity: settings.sensitivity,
     topics: getEnabledTopicSlugs(settings.topics),
     sendTranscripts: settings.showTranscript,
+    // Opt-in frame capture; next-start-only (same precedent as backendUrl).
+    captureVideo: Boolean(settings.captureVideo),
+    ...deriveSessionIdentity(tab),
   };
+  if (!HAS_OFFSCREEN_CAPTURE) {
+    // Firefox: open the socket here, then ask the content script to start
+    // tapping the page's <video>. Socket first so the hello handshake is
+    // already in flight when the first PCM frame lands.
+    try {
+      await pageSession.start(tabId, offscreenSettings);
+      await chrome.tabs.sendMessage(tabId, {
+        type: MSG.CONTENT_CAPTURE_START,
+        payload: {captureVideo: offscreenSettings.captureVideo},
+      });
+    } catch (error) {
+      console.error("[fact-checker] content capture start failed:", error);
+      await pageSession.captureFailed();
+      return;
+    }
+    await setCapturedTabId(tabId);
+    await setToolbarIcon(true);
+    await notifySessionState(tabId, true);
+    return;
+  }
   try {
     await runStartSequence(tabId, offscreenSettings);
   } catch (firstError) {
@@ -212,6 +302,20 @@ const handleCaptureStart = async (tabId) => {
  * cleanup here so the popup never shows a zombie session.
  */
 const handleCaptureStop = async (reason) => {
+  if (!HAS_OFFSCREEN_CAPTURE) {
+    // Firefox: silence the content script first (a late PCM frame must not
+    // outlive the socket), then flush and close it here.
+    const capturedTabId = await getCapturedTabId();
+    if (capturedTabId !== null) {
+      await chrome.tabs
+        .sendMessage(capturedTabId, {type: MSG.CONTENT_CAPTURE_STOP, payload: {}})
+        .catch((error) => {
+          console.debug("[fact-checker] CONTENT_CAPTURE_STOP not delivered:", error);
+        });
+    }
+    await pageSession.stop(reason);
+    return;
+  }
   try {
     await chrome.runtime.sendMessage(
       makeMsg(TARGET.OFFSCREEN, MSG.OFFSCREEN_STOP, {reason})
@@ -261,6 +365,43 @@ const relayBackendEvent = async (payload) => {
     // Expected when the captured tab has no content script (unsupported
     // page) or has navigated.
     console.debug("[fact-checker] OVERLAY_EVENT not delivered:", error);
+  }
+};
+
+/**
+ * POST one 👍/👎 to the backend. Fire-and-forget by contract: failures are
+ * logged, never surfaced — the backend is the system of record and a lost
+ * rating is not worth interrupting the viewer.
+ */
+const handleSubmitFeedback = async (payload) => {
+  const verdictId = payload?.verdictId;
+  const rating = payload?.rating;
+  if (typeof verdictId !== "string" || !["up", "down"].includes(rating)) {
+    console.warn("[fact-checker] SUBMIT_FEEDBACK with bad payload:", payload);
+    return;
+  }
+  const settings = await loadSettings();
+  const origin = deriveBackendHttpOrigin(settings.backendUrl);
+  if (!origin) {
+    return;
+  }
+  try {
+    const response = await fetch(`${origin}/feedback`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        verdict_id: verdictId,
+        rating,
+        corrected_label: null,
+        note: null,
+      }),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!response.ok) {
+      console.warn(`[fact-checker] feedback POST got HTTP ${response.status}`);
+    }
+  } catch (error) {
+    console.warn("[fact-checker] feedback POST failed:", error);
   }
 };
 
@@ -317,6 +458,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         // Content scripts cannot call chrome.runtime.openOptionsPage().
         await chrome.runtime.openOptionsPage();
         break;
+      case MSG.SUBMIT_FEEDBACK:
+        await handleSubmitFeedback(message.payload);
+        break;
+      // Firefox capture path (content script -> this page's WebSocket).
+      case MSG.AUDIO_CHUNK:
+        pageSession.submitAudio(message.payload?.pcmB64);
+        break;
+      case MSG.VIDEO_FRAME:
+        pageSession.submitVideoFrame(message.payload ?? {});
+        break;
+      case MSG.CONTENT_CAPTURE_FAILED:
+        console.error(
+          "[fact-checker] content capture failed:",
+          message.payload?.reason
+        );
+        await pageSession.captureFailed();
+        break;
       default:
         console.warn(`[fact-checker] unhandled message type: ${message.type}`);
     }
@@ -331,6 +489,19 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   handleTabRemoved(tabId).catch((error) => {
     console.error("[fact-checker] tabs.onRemoved handling failed:", error);
   });
+});
+
+// Firefox capture path: give page_session.js the same session/tab plumbing
+// the offscreen document reaches through messages. Harmless on Chrome — the
+// module is inert unless HAS_OFFSCREEN_CAPTURE is false.
+pageSession.configure({
+  onSessionPatch: writeCaptureSession,
+  onBackendEvent: (tabId, event) => {
+    relayBackendEvent({tabId, event}).catch((error) => {
+      console.debug("[fact-checker] backend event relay failed:", error);
+    });
+  },
+  onEnded: handleCaptureEnded,
 });
 
 /**
@@ -359,6 +530,12 @@ const relaySettingsChange = async (changes) => {
     }
   }
   if (Object.keys(configPatch).length === 0) {
+    return;
+  }
+  if (!HAS_OFFSCREEN_CAPTURE) {
+    // Firefox: the socket lives here, so apply the change directly (a no-op
+    // when no session is running).
+    pageSession.sendConfig(configPatch);
     return;
   }
   if (!(await chrome.offscreen.hasDocument())) {

@@ -41,8 +41,15 @@ from app.fact_checker import (
     _FallbackNeeded,
     _today,
 )
-from app.models import GateClaim, GateResult, Source, VerdictPayload
+from app.models import (
+    ContradictionJudgement,
+    GateClaim,
+    GateResult,
+    Source,
+    VerdictPayload,
+)
 from app.prompts import (
+    build_contradiction_prompt,
     build_gate_prompt,
     build_verdict_extraction_prompt,
     build_verify_fallback_prompt,
@@ -123,6 +130,42 @@ class GeminiClaimGate(ClaimGate):
             raise GateError(f"gate call failed: {exc}") from exc
         return self._parse_gate_response(response)
 
+    async def judge_contradiction(
+        self, current: str, prior: str
+    ) -> ContradictionJudgement:
+        """One structured judge call on the gate model (no search)."""
+        try:
+            response = await asyncio.wait_for(
+                self._client.aio.models.generate_content(
+                    model=self._model,
+                    contents=build_contradiction_prompt(current, prior),
+                    config=genai_types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        response_schema=ContradictionJudgement,
+                        temperature=0.0,
+                    ),
+                ),
+                timeout=self._gate_timeout_s,
+            )
+        except asyncio.TimeoutError as exc:
+            raise GateError(
+                f"contradiction judge timed out after {self._gate_timeout_s:.0f}s"
+            ) from exc
+        except Exception as exc:
+            raise GateError(f"contradiction judge failed: {exc}") from exc
+        parsed = getattr(response, "parsed", None)
+        if isinstance(parsed, ContradictionJudgement):
+            return parsed
+        raw = (getattr(response, "text", None) or "").strip()
+        if not raw:
+            raise GateError("contradiction judge response contained no text")
+        try:
+            return ContradictionJudgement.model_validate_json(raw)
+        except ValidationError as exc:
+            raise GateError(
+                f"contradiction judgement failed schema validation: {exc}"
+            ) from exc
+
     @staticmethod
     def _parse_gate_response(
         response: genai_types.GenerateContentResponse,
@@ -156,14 +199,30 @@ class GeminiFactChecker(FactChecker):
         self._verify_model = verify_model
         self._extraction_model = extraction_model
 
+    @staticmethod
+    def _interaction_input(prompt: str, image_b64: str | None) -> Any:
+        """Plain string for text-only calls (pre-vision wire shape); a
+        text+image content-part list when a frame is attached."""
+        if image_b64 is None:
+            return prompt
+        return [
+            {"type": "text", "text": prompt},
+            {"type": "image", "data": image_b64, "mime_type": "image/jpeg"},
+        ]
+
     async def _grounded_structured(
-        self, claim: str
+        self, claim: str, image_b64: str | None = None
     ) -> tuple[VerdictPayload, list[Source]]:
         """Grounded search + flat structured output in a single Interactions call."""
         try:
             interaction = await self._client.aio.interactions.create(
                 model=self._verify_model,
-                input=build_verify_prompt(claim, _today()),
+                input=self._interaction_input(
+                    build_verify_prompt(
+                        claim, _today(), with_image=image_b64 is not None
+                    ),
+                    image_b64,
+                ),
                 tools=[{"type": "google_search"}],
                 response_format={
                     "type": "text",
@@ -185,7 +244,7 @@ class GeminiFactChecker(FactChecker):
         return payload, sources
 
     async def _grounded_fallback(
-        self, claim: str
+        self, claim: str, image_b64: str | None = None
     ) -> tuple[VerdictPayload, list[Source]]:
         """Grounded plain-text call -> lenient parse -> ungrounded extraction.
 
@@ -195,7 +254,12 @@ class GeminiFactChecker(FactChecker):
         try:
             interaction = await self._client.aio.interactions.create(
                 model=self._verify_model,
-                input=build_verify_fallback_prompt(claim, _today()),
+                input=self._interaction_input(
+                    build_verify_fallback_prompt(
+                        claim, _today(), with_image=image_b64 is not None
+                    ),
+                    image_b64,
+                ),
                 tools=[{"type": "google_search"}],
                 generation_config={"temperature": 0.0},
             )
