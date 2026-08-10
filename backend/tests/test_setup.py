@@ -249,6 +249,8 @@ class TestUnconfiguredSurface:
                     "configured": False,
                     "key_hint": None,
                     "credits": None,
+                    "gate_model": "google/gemma-4-26b-a4b-it:free",
+                    "verify_model": "google/gemma-4-26b-a4b-it:free",
                 },
                 "gemini": {"configured": False, "key_hint": None},
                 "ollama": {
@@ -395,6 +397,8 @@ class TestCredentialsSuccess:
                     "configured": True,
                     "key_hint": "…alue",
                     "credits": None,
+                    "gate_model": "google/gemma-4-26b-a4b-it:free",
+                    "verify_model": "google/gemma-4-26b-a4b-it:free",
                 },
                 "gemini": {"configured": True, "key_hint": "…abcd"},
                 "ollama": {
@@ -775,7 +779,7 @@ class TestConfiguredBootFromEnvFile:
 
         boot_client = FakeGenAIClient()
 
-        def fake_transcriber_factory(**_kwargs: Any) -> FakeTranscriber:
+        def fake_transcriber_factory(*_args: Any, **_kwargs: Any) -> FakeTranscriber:
             return FakeTranscriber()
 
         def fake_create_llm_client(
@@ -785,7 +789,7 @@ class TestConfiguredBootFromEnvFile:
             assert settings.gemini_api_key == "AIza-boot-test-key"
             return boot_client
 
-        monkeypatch.setattr("app.main.Transcriber", fake_transcriber_factory)
+        monkeypatch.setattr("app.main.create_transcriber", fake_transcriber_factory)
         # Do NOT stub create_claim_gate/create_fact_checker: the point is
         # that the real build_llm_runtime composes the real Gemini stack.
         monkeypatch.setattr(
@@ -939,7 +943,11 @@ class TestSetupStages:
         assert body["verify"]["provider"] == "gemini"
         # Existing lines preserved byte-for-byte; the two stage keys appended.
         assert stages_env_file.read_text(encoding="utf-8") == (
-            STAGES_ENV + "GATE_PROVIDER=openrouter\nVERIFY_PROVIDER=gemini\n"
+            STAGES_ENV
+            + "GATE_PROVIDER=openrouter\n"
+            + "VERIFY_PROVIDER=gemini\n"
+            + "OPENROUTER_GATE_MODEL=google/gemma-4-26b-a4b-it:free\n"
+            + "OPENROUTER_VERIFY_MODEL=google/gemma-4-26b-a4b-it:free\n"
         )
         # Hot-swap is visible on the very next status read (no restart).
         status = configured_client.get("/setup/status").json()
@@ -1023,3 +1031,268 @@ class TestSetupStages:
         assert response.status_code == 409
         assert "gate provider 'ollama'" in response.json()["detail"]
         assert stages_env_file.read_text(encoding="utf-8") == STAGES_ENV
+
+
+# --------------------------------------------------------------------------- #
+# OpenRouter model slugs: live-catalogue validation + latch reset
+# --------------------------------------------------------------------------- #
+
+CATALOGUE = {
+    "google/gemma-4-26b-a4b-it:free",
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b:free",
+}
+
+
+def _catalogue_ok(monkeypatch: pytest.MonkeyPatch, calls: list[int]) -> None:
+    async def fetch() -> set[str]:
+        calls.append(1)
+        return set(CATALOGUE)
+
+    monkeypatch.setattr(setup_api, "fetch_openrouter_model_slugs", fetch)
+
+
+def _catalogue_down(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fetch() -> set[str]:
+        raise ProviderUnreachable("openrouter is down")
+
+    monkeypatch.setattr(setup_api, "fetch_openrouter_model_slugs", fetch)
+
+
+class TestOpenRouterModelSlugs:
+    @pytest.fixture()
+    def configured_client(
+        self,
+        stages_env_file: Path,
+        fake_genai_client: FakeGenAIClient,
+        fake_transcriber: FakeTranscriber,
+    ) -> Iterator[TestClient]:
+        settings = make_test_settings(
+            gemini_api_key="AIza-stages-test-key",
+            openrouter_api_key="sk-or-stages-test-key",
+        )
+        with open_test_client(settings, fake_genai_client, fake_transcriber) as client:
+            yield client
+
+    def test_status_exposes_stored_slugs_even_when_stage_uses_another_provider(
+        self, configured_client: TestClient
+    ) -> None:
+        """StageStatus.model shows the ACTIVE model; the options page needs
+        the stored OpenRouter slugs to prefill regardless of routing."""
+        body = configured_client.get("/setup/status").json()
+        openrouter = body["providers"]["openrouter"]
+        assert openrouter["gate_model"] == "google/gemma-4-26b-a4b-it:free"
+        assert openrouter["verify_model"] == "google/gemma-4-26b-a4b-it:free"
+
+    def test_valid_slugs_persist_and_hot_swap(
+        self,
+        configured_client: TestClient,
+        stages_env_file: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        calls: list[int] = []
+        _catalogue_ok(monkeypatch, calls)
+        _install_fake_runtime_builder(monkeypatch, FakeGenAIClient())
+        response = configured_client.post(
+            "/setup/stages",
+            json={
+                "gate_provider": "openrouter",
+                "verify_provider": "openrouter",
+                "gate_model": "openai/gpt-oss-20b:free",
+                "verify_model": "openai/gpt-oss-120b",
+            },
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["gate"]["model"] == "openai/gpt-oss-20b:free"
+        assert body["verify"]["model"] == "openai/gpt-oss-120b"
+        assert body["providers"]["openrouter"]["gate_model"] == (
+            "openai/gpt-oss-20b:free"
+        )
+        env = stages_env_file.read_text(encoding="utf-8")
+        assert "OPENROUTER_GATE_MODEL=openai/gpt-oss-20b:free" in env
+        assert "OPENROUTER_VERIFY_MODEL=openai/gpt-oss-120b" in env
+        # One catalogue fetch covers both slugs.
+        assert len(calls) == 1
+
+    def test_unknown_slug_is_400_and_persists_nothing(
+        self,
+        configured_client: TestClient,
+        stages_env_file: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _catalogue_ok(monkeypatch, [])
+        before = stages_env_file.read_text(encoding="utf-8")
+        response = configured_client.post(
+            "/setup/stages",
+            json={
+                "gate_provider": "openrouter",
+                "verify_provider": "openrouter",
+                "gate_model": "acme/definitely-not-real",
+                "verify_model": "",
+            },
+        )
+        assert response.status_code == 400
+        assert "no model" in response.json()["detail"]
+        assert stages_env_file.read_text(encoding="utf-8") == before
+
+    def test_free_suffix_typo_gets_a_did_you_mean(
+        self, configured_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """OpenRouter serves paid and :free as DISTINCT slugs — the most
+        common mistake deserves a pointer, not just a rejection."""
+        _catalogue_ok(monkeypatch, [])
+        response = configured_client.post(
+            "/setup/stages",
+            json={
+                "gate_provider": "openrouter",
+                "verify_provider": "openrouter",
+                "gate_model": "openai/gpt-oss-20b",
+                "verify_model": "",
+            },
+        )
+        assert response.status_code == 400
+        assert "openai/gpt-oss-20b:free" in response.json()["detail"]
+
+    def test_catalogue_unreachable_is_502(
+        self, configured_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _catalogue_down(monkeypatch)
+        response = configured_client.post(
+            "/setup/stages",
+            json={
+                "gate_provider": "openrouter",
+                "verify_provider": "openrouter",
+                "gate_model": "openai/gpt-oss-120b",
+                "verify_model": "",
+            },
+        )
+        assert response.status_code == 502
+
+    def test_omitted_slugs_skip_validation_entirely(
+        self, configured_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Old clients send only the two provider fields; that must not cost
+        a network round-trip nor change the stored slugs."""
+        calls: list[int] = []
+        _catalogue_ok(monkeypatch, calls)
+        _install_fake_runtime_builder(monkeypatch, FakeGenAIClient())
+        response = configured_client.post(
+            "/setup/stages",
+            json={"gate_provider": "gemini", "verify_provider": "gemini"},
+        )
+        assert response.status_code == 200
+        assert calls == []
+        assert response.json()["providers"]["openrouter"]["gate_model"] == (
+            "google/gemma-4-26b-a4b-it:free"
+        )
+
+    def test_model_change_resets_capability_latches(
+        self,
+        configured_client: TestClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A latch learned from model A must never silently downgrade model B.
+
+        The strict-json_schema latches are process-wide by design (they
+        outlive per-session gate rebuilds), so a model swap has to clear them
+        explicitly or the new model is stuck in json_object mode forever.
+        """
+        from app.llm_openrouter import OpenRouterClaimGate, _ReasoningSupport
+
+        _catalogue_ok(monkeypatch, [])
+        _install_fake_runtime_builder(monkeypatch, FakeGenAIClient())
+        OpenRouterClaimGate._json_schema_unsupported = True
+        OpenRouterClaimGate._consecutive_strict_503s = 3
+        OpenRouterClaimGate._json_schema_retry_at = 1e12
+        _ReasoningSupport.unsupported = True
+
+        response = configured_client.post(
+            "/setup/stages",
+            json={
+                "gate_provider": "openrouter",
+                "verify_provider": "openrouter",
+                "gate_model": "openai/gpt-oss-120b",
+                "verify_model": "",
+            },
+        )
+        assert response.status_code == 200
+        assert OpenRouterClaimGate._json_schema_unsupported is False
+        assert OpenRouterClaimGate._consecutive_strict_503s == 0
+        assert OpenRouterClaimGate._json_schema_retry_at == 0.0
+        assert _ReasoningSupport.unsupported is False
+
+    def test_unchanged_slug_leaves_latches_alone(
+        self, configured_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Re-applying the SAME model must not throw away a hard-won latch."""
+        from app.llm_openrouter import OpenRouterClaimGate
+
+        _catalogue_ok(monkeypatch, [])
+        _install_fake_runtime_builder(monkeypatch, FakeGenAIClient())
+        OpenRouterClaimGate._json_schema_unsupported = True
+        response = configured_client.post(
+            "/setup/stages",
+            json={
+                "gate_provider": "openrouter",
+                "verify_provider": "openrouter",
+                "gate_model": "google/gemma-4-26b-a4b-it:free",
+                "verify_model": "google/gemma-4-26b-a4b-it:free",
+            },
+        )
+        assert response.status_code == 200
+        assert OpenRouterClaimGate._json_schema_unsupported is True
+
+
+class TestFetchOpenRouterModelSlugs:
+    """The catalogue probe itself, via the transport seam (no global patch)."""
+
+    async def test_parses_ids(self) -> None:
+        import httpx
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert str(request.url) == setup_api.OPENROUTER_MODELS_URL
+            return httpx.Response(
+                200,
+                json={"data": [{"id": "a/b"}, {"id": "c/d:free"}, {"id": None}]},
+            )
+
+        slugs = await setup_api.fetch_openrouter_model_slugs(
+            transport=httpx.MockTransport(handler)
+        )
+        assert slugs == {"a/b", "c/d:free"}
+
+    @pytest.mark.parametrize(
+        ("status_code", "payload", "text"),
+        [
+            (500, None, "boom"),
+            (200, {"nope": 1}, None),
+            (200, {"data": []}, None),
+        ],
+        ids=["http-500", "malformed", "empty"],
+    )
+    async def test_failures_are_unreachable(
+        self, status_code: int, payload: Any, text: str | None
+    ) -> None:
+        import httpx
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if payload is None:
+                return httpx.Response(status_code, text=text or "")
+            return httpx.Response(status_code, json=payload)
+
+        with pytest.raises(ProviderUnreachable):
+            await setup_api.fetch_openrouter_model_slugs(
+                transport=httpx.MockTransport(handler)
+            )
+
+    async def test_network_error_is_unreachable(self) -> None:
+        import httpx
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("refused", request=request)
+
+        with pytest.raises(ProviderUnreachable, match="could not reach"):
+            await setup_api.fetch_openrouter_model_slugs(
+                transport=httpx.MockTransport(handler)
+            )

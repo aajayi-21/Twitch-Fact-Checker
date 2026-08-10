@@ -97,9 +97,34 @@ class Settings(BaseSettings):
     gemini_gate_model: str = "gemini-3.1-flash-lite"
     gemini_verify_model: str = "gemini-3.5-flash"
 
+    # Speech-to-text engine:
+    #   "faster-whisper" (default) — ctranslate2; CPU and CUDA only, fastest
+    #     on CPU, and the model name is a ctranslate2 name ("distil-small.en").
+    #   "torch" — transformers + PyTorch; the ONLY way to reach Intel XPU or
+    #     AMD ROCm, and the model name is a Hugging Face repo id
+    #     ("openai/whisper-small.en"). Install it with
+    #     scripts/install_stt_gpu.sh.
+    stt_backend: Literal["faster-whisper", "torch"] = "faster-whisper"
+
     whisper_model: str = "distil-small.en"
+    # cpu | cuda | rocm | xpu | auto. "rocm" is an alias for PyTorch's HIP
+    # build, which reports itself through the CUDA API surface; the torch
+    # backend validates that distinction so a ROCm typo cannot silently fall
+    # back to CPU. faster-whisper accepts only cpu/cuda/auto.
     whisper_device: str = "cpu"
+    # ctranslate2 quantization ("int8", "float16", …) for faster-whisper; the
+    # torch backend maps it onto a dtype (int8 -> float32 on CPU, float16 on
+    # GPU) since PyTorch has no equivalent quantized path here.
     whisper_compute_type: str = "int8"
+    # Transcription language. Empty = derive it: English-only checkpoints
+    # (".en" / "…-en" names) pin "en", everything else auto-detects. Set it
+    # explicitly for a multilingual model on a known-language stream.
+    whisper_language: str = ""
+
+    @property
+    def whisper_language_or_none(self) -> str | None:
+        """The configured language, with empty/whitespace normalized to None."""
+        return self.whisper_language.strip() or None
 
     stt_window_s: float = 4.0
     stt_hop_s: float = 3.5

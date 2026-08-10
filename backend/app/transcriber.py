@@ -1,4 +1,4 @@
-"""Local speech-to-text: PCM ring buffer + faster-whisper wrapper.
+"""Local speech-to-text: PCM ring buffer + pluggable Whisper backends.
 
 ``AudioRingBuffer`` absorbs 250 ms PCM frames from the WebSocket receive loop
 and hands fixed windows to the STT executor. When transcription falls behind
@@ -6,24 +6,49 @@ the live stream, the buffer drops its OLDEST audio (watermark policy) — stale
 audio on a live stream is worthless — and reports how much was dropped so the
 caller can log it and emit an ``stt_overload`` frame.
 
-``Transcriber`` wraps one process-wide ``WhisperModel``. ``transcribe_window``
-is synchronous by design: the pipeline runs it on a single-worker
-``ThreadPoolExecutor`` (ctranslate2 releases the GIL, one worker keeps CPU use
-predictable). Whisper hallucinates stock outro phrases on music and silence,
-so every segment passes a layered filter stack (VAD is enabled in the model
-call itself; then no-speech probability, average log-probability, a blacklist
-of known hallucinations, loop-artifact and window-overlap dedupe) before it
+**Two engines, one filter stack.** :class:`BaseTranscriber` owns everything
+that is engine-agnostic — the whole hallucination filter stack and its
+per-session dedupe state — and leaves exactly one thing abstract:
+:meth:`BaseTranscriber._run_model`, "turn this window of audio into raw
+segments". The concrete backends are:
+
+- :class:`FasterWhisperTranscriber` (default) — ctranslate2, CPU and CUDA
+  only, with Silero VAD built into the model call.
+- :class:`app.stt_torch.TorchWhisperTranscriber` — transformers + PyTorch,
+  which is the only way to reach Intel **XPU** and AMD **ROCm**.
+
+Pick one with ``STT_BACKEND``; :func:`create_transcriber` builds it. The
+pipeline never learns which is running: ``transcribe_window`` keeps its exact
+signature and is invoked positionally through the STT executor.
+
+``transcribe_window`` is synchronous by design — the pipeline runs it on a
+single-worker ``ThreadPoolExecutor`` (ctranslate2 releases the GIL; one worker
+also keeps a single GPU-resident model serialized, which the per-session
+``SessionTextState`` contract relies on). Whisper hallucinates stock outro
+phrases on music and silence, so every segment passes a layered filter stack
+(VAD; then no-speech probability, average log-probability, a blacklist of
+known hallucinations, loop-artifact and window-overlap dedupe) before it
 reaches the claim gate.
+
+Heavy engine imports (``faster_whisper``, ``torch``) are deliberately made
+inside ``load()``, never at module scope: importing this module must stay
+cheap, because the test suite imports :class:`SessionTextState` from here and
+must not pay for — or require — either engine.
 """
 
 import logging
 import string
+from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Protocol
 
 import numpy as np
-from faster_whisper import WhisperModel
 
 from app.models import TranscriptSegment
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from app.config import Settings
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +58,34 @@ _PUNCTUATION_TABLE = str.maketrans("", "", string.punctuation)
 def _normalize_text(text: str) -> str:
     """Lowercase, strip punctuation, collapse whitespace (filter compare key)."""
     return " ".join(text.lower().translate(_PUNCTUATION_TABLE).split())
+
+
+class RawSegment(Protocol):
+    """What an engine must hand back per detected segment.
+
+    faster-whisper's own ``Segment`` satisfies this structurally; the torch
+    backend builds :class:`SimpleRawSegment`. ``avg_logprob`` and
+    ``no_speech_prob`` are load-bearing, not decoration: two of the six
+    filters below threshold on them, so an engine that cannot produce real
+    values silently disables those filters.
+    """
+
+    text: str
+    start: float
+    end: float
+    avg_logprob: float
+    no_speech_prob: float
+
+
+@dataclass
+class SimpleRawSegment:
+    """Concrete :class:`RawSegment` for engines that lack their own type."""
+
+    text: str
+    start: float
+    end: float
+    avg_logprob: float
+    no_speech_prob: float
 
 
 @dataclass
@@ -144,8 +197,14 @@ class AudioRingBuffer:
         self._released_samples += sample_count
 
 
-class Transcriber:
-    """faster-whisper wrapper with overlap trimming and hallucination filters.
+class BaseTranscriber(ABC):
+    """Engine-agnostic filter stack shared by every STT backend.
+
+    Subclasses implement exactly two things — :meth:`load` (bring the engine
+    up, loudly) and :meth:`_run_model` (audio in, raw segments out). Every
+    hallucination filter, the overlap trimming, and the per-session dedupe
+    memory live here so both backends behave identically on the parts that
+    took tuning.
 
     Cross-window text state (the emitted tail used for suffix dedupe and the
     last emitted segment) lives in a per-session :class:`SessionTextState`
@@ -191,6 +250,9 @@ class Transcriber:
     SUFFIX_MATCH_MIN_WORDS: int = 4
     EMITTED_TAIL_MAX_WORDS: int = 40
 
+    #: Short name used in logs and /healthz (overridden per backend).
+    BACKEND_NAME: str = "base"
+
     def __init__(
         self,
         model_name: str,
@@ -202,36 +264,61 @@ class Transcriber:
         self._compute_type = compute_type
         # English-only checkpoints reject a language kwarg mismatch; pin it.
         self._language: str | None = "en" if model_name.endswith(".en") else None
-        self._model: WhisperModel | None = None
+        self._model: Any | None = None
 
+    # ------------------------------------------------------------------ #
+    # Engine hooks — the only things a backend must implement
+    # ------------------------------------------------------------------ #
+
+    @abstractmethod
     def load(self) -> None:
         """Blocking model load; lifespan runs it via ``asyncio.to_thread``.
 
-        Fails loudly: a download or initialization failure aborts server
-        startup instead of surfacing mid-session.
-
-        Raises:
-            RuntimeError: with the underlying cause when the model cannot be
-                downloaded or initialized.
+        Must fail loudly: a download, device, or initialization failure
+        aborts server startup (wrapped in :class:`RuntimeError`) instead of
+        surfacing mid-session.
         """
-        logger.info(
-            "loading whisper model %s (device=%s, compute_type=%s)…",
-            self._model_name,
-            self._device,
-            self._compute_type,
+
+    @abstractmethod
+    def _run_model(self, audio: np.ndarray) -> Iterable[RawSegment]:
+        """Transcribe one window of 16 kHz mono float32 audio.
+
+        Times are WINDOW-RELATIVE seconds; the caller shifts them into
+        absolute stream time. Implementations must supply real
+        ``avg_logprob``/``no_speech_prob`` values — the filter stack depends
+        on them.
+        """
+
+    def unload(self) -> None:
+        """Release engine resources (GPU memory). Default: nothing to do."""
+        self._model = None
+
+    # ------------------------------------------------------------------ #
+    # Shared surface
+    # ------------------------------------------------------------------ #
+
+    @property
+    def is_loaded(self) -> bool:
+        return self._model is not None
+
+    def describe(self) -> str:
+        """One-line engine description for the startup banner and logs."""
+        return (
+            f"{self.BACKEND_NAME}:{self._model_name} "
+            f"(device={self._device}, compute_type={self._compute_type})"
         )
-        try:
-            self._model = WhisperModel(
-                self._model_name,
-                device=self._device,
-                compute_type=self._compute_type,
-            )
-        except Exception as exc:
-            raise RuntimeError(
-                f"failed to load Whisper model {self._model_name!r} "
-                f"(device={self._device}, compute_type={self._compute_type}): {exc}"
-            ) from exc
-        logger.info("whisper model %s loaded", self._model_name)
+
+    @property
+    def backend_name(self) -> str:
+        return self.BACKEND_NAME
+
+    @property
+    def device(self) -> str:
+        return self._device
+
+    @property
+    def model_name(self) -> str:
+        return self._model_name
 
     def transcribe_window(
         self,
@@ -266,17 +353,12 @@ class Transcriber:
         Raises:
             RuntimeError: if :meth:`load` has not been called.
         """
-        if self._model is None:
+        if not self.is_loaded:
             raise RuntimeError(
-                "Transcriber.load() has not been called; cannot transcribe"
+                f"{type(self).__name__}.load() has not been called; "
+                "cannot transcribe"
             )
-        raw_segments, _info = self._model.transcribe(
-            audio,
-            beam_size=1,
-            vad_filter=True,
-            condition_on_previous_text=False,
-            language=self._language,
-        )
+        raw_segments = self._run_model(audio)
         emitted: list[TranscriptSegment] = []
         for raw in raw_segments:
             segment = TranscriptSegment(
@@ -352,3 +434,100 @@ class Transcriber:
         text_state.emitted_tail_words = (
             text_state.emitted_tail_words + normalized.split()
         )[-self.EMITTED_TAIL_MAX_WORDS :]
+
+
+class FasterWhisperTranscriber(BaseTranscriber):
+    """Default engine: faster-whisper / ctranslate2 (CPU and CUDA only).
+
+    Silero VAD runs inside the model call (``vad_filter=True``), which is why
+    the shared filter stack treats no-speech/low-confidence scores as a
+    SECOND line of defense rather than the first.
+    """
+
+    BACKEND_NAME = "faster-whisper"
+
+    #: ctranslate2 accepts only these; "rocm"/"xpu" need the torch backend.
+    SUPPORTED_DEVICES: frozenset[str] = frozenset({"cpu", "cuda", "auto"})
+
+    def load(self) -> None:
+        """Instantiate the ctranslate2 model (downloads on first use).
+
+        Raises:
+            RuntimeError: on an unsupported device or any load failure.
+        """
+        if self._device not in self.SUPPORTED_DEVICES:
+            raise RuntimeError(
+                f"STT_BACKEND=faster-whisper cannot use WHISPER_DEVICE="
+                f"{self._device!r} — ctranslate2 supports only "
+                f"{sorted(self.SUPPORTED_DEVICES)}. For Intel XPU or AMD "
+                "ROCm set STT_BACKEND=torch (see scripts/install_stt_gpu.sh)."
+            )
+        # Imported here, not at module scope: the test suite imports this
+        # module for SessionTextState and must not pay for ctranslate2.
+        from faster_whisper import WhisperModel
+
+        logger.info(
+            "loading faster-whisper model %s (device=%s, compute_type=%s)…",
+            self._model_name,
+            self._device,
+            self._compute_type,
+        )
+        try:
+            self._model = WhisperModel(
+                self._model_name,
+                device=self._device,
+                compute_type=self._compute_type,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"failed to load Whisper model {self._model_name!r} "
+                f"(device={self._device}, compute_type={self._compute_type}): {exc}"
+            ) from exc
+        logger.info("faster-whisper model %s loaded", self._model_name)
+
+    def _run_model(self, audio: np.ndarray) -> Iterable[RawSegment]:
+        raw_segments, _info = self._model.transcribe(
+            audio,
+            beam_size=1,
+            vad_filter=True,
+            condition_on_previous_text=False,
+            language=self._language,
+        )
+        return raw_segments
+
+
+# Backwards-compatible alias: this was the only engine before STT_BACKEND
+# existed, and `Transcriber` still reads well as "the default one".
+Transcriber = FasterWhisperTranscriber
+
+
+#: STT_BACKEND value -> loader. Torch is imported lazily inside the factory
+#: so the default install never needs it (mirrors llm_provider's registry).
+_STT_BACKENDS: tuple[str, ...] = ("faster-whisper", "torch")
+
+
+def create_transcriber(settings: "Settings") -> BaseTranscriber:
+    """Build the transcriber selected by ``STT_BACKEND``.
+
+    Raises:
+        ValueError: on an unknown backend name.
+    """
+    backend = settings.stt_backend
+    if backend == "faster-whisper":
+        return FasterWhisperTranscriber(
+            model_name=settings.whisper_model,
+            device=settings.whisper_device,
+            compute_type=settings.whisper_compute_type,
+        )
+    if backend == "torch":
+        from app.stt_torch import TorchWhisperTranscriber
+
+        return TorchWhisperTranscriber(
+            model_name=settings.whisper_model,
+            device=settings.whisper_device,
+            compute_type=settings.whisper_compute_type,
+            language=settings.whisper_language_or_none,
+        )
+    raise ValueError(
+        f"unknown STT_BACKEND {backend!r}; expected one of {list(_STT_BACKENDS)}"
+    )

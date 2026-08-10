@@ -442,17 +442,31 @@ def make_openrouter_timeout_error() -> openai.APITimeoutError:
 class FakeTranscriber:
     """Scripted transcriber: pops one segment list per window, ``[]`` after.
 
-    Matches the ``Transcriber`` surface the pipeline uses (``load``,
-    ``transcribe_window``); ``transcribe_window`` is sync because the
-    pipeline runs it on the STT executor.
+    Matches the ``BaseTranscriber`` surface the app uses (``load``,
+    ``unload``, ``describe``, ``transcribe_window``); ``transcribe_window``
+    is sync because the pipeline runs it on the STT executor.
     """
+
+    BACKEND_NAME = "fake"
 
     def __init__(self) -> None:
         self.segments_script: deque[list[TranscriptSegment]] = deque()
         self.calls: list[dict[str, Any]] = []
+        self.unloaded = False
 
     def load(self) -> None:
         """No model to load; present for interface parity."""
+
+    def unload(self) -> None:
+        """Interface parity with the real backends' teardown hook."""
+        self.unloaded = True
+
+    def describe(self) -> str:
+        return "fake:fake-whisper.en (device=cpu)"
+
+    @property
+    def backend_name(self) -> str:
+        return self.BACKEND_NAME
 
     def transcribe_window(
         self,

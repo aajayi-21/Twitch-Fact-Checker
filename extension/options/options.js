@@ -69,6 +69,10 @@ const stageSection = document.getElementById("stage-section");
 const gateProviderSelect = document.getElementById("gate-provider-select");
 const verifyProviderSelect = document.getElementById("verify-provider-select");
 const applyStagesButton = document.getElementById("apply-stages-button");
+const gateModelInput = document.getElementById("gate-model-input");
+const verifyModelInput = document.getElementById("verify-model-input");
+const gateModelRow = document.querySelector('[data-provider-scope="gate"]');
+const verifyModelRow = document.querySelector('[data-provider-scope="verify"]');
 const stageStatus = document.getElementById("stage-status");
 const backendUrlInput = document.getElementById("backend-url");
 const backendUrlError = document.getElementById("backend-url-error");
@@ -187,7 +191,7 @@ const describeStagesSummary = (status) => {
   }`;
   let verifyPart = `Verify: ${
     PROVIDER_LABELS[verify.provider] ?? verify.provider ?? "?"
-  }`;
+  }${verify.model ? ` (${verify.model})` : ""}`;
   const verifyInfo = providers[verify.provider];
   if (verifyInfo?.key_hint) {
     verifyPart += ` ${verifyInfo.key_hint}`;
@@ -247,12 +251,36 @@ const setStageStatus = (text, stateName) => {
   stageStatus.dataset.state = stateName;
 };
 
-/** Apply is enabled only when a select differs from the backend's routing. */
+/**
+ * The stored OpenRouter slug for a stage. Read from providers.openrouter
+ * (NOT stage.model): stage.model reports the ACTIVE provider's model, so it
+ * says "gemma3:4b" whenever that stage is routed to Ollama.
+ *
+ * @param {object|null} status
+ * @param {"gate"|"verify"} stage
+ * @returns {string}
+ */
+const storedSlug = (status, stage) =>
+  status?.providers?.openrouter?.[`${stage}_model`] ?? "";
+
+/** Model slug inputs only apply to OpenRouter-routed stages. */
+const syncModelRowVisibility = () => {
+  gateModelRow.hidden = gateProviderSelect.value !== "openrouter";
+  verifyModelRow.hidden = verifyProviderSelect.value !== "openrouter";
+};
+
+/** Apply is enabled when any select OR slug differs from the backend. */
 const updateStagesDirty = () => {
+  const slugDirty = (stage, input, select) =>
+    select.value === "openrouter" &&
+    input.value.trim() !== "" &&
+    input.value.trim() !== storedSlug(lastStatus, stage);
   const dirty =
     lastStatus !== null &&
     (gateProviderSelect.value !== (lastStatus.gate?.provider ?? "") ||
-      verifyProviderSelect.value !== (lastStatus.verify?.provider ?? ""));
+      verifyProviderSelect.value !== (lastStatus.verify?.provider ?? "") ||
+      slugDirty("gate", gateModelInput, gateProviderSelect) ||
+      slugDirty("verify", verifyModelInput, verifyProviderSelect));
   applyStagesButton.disabled = !dirty;
 };
 
@@ -263,6 +291,9 @@ const renderStageSection = (status) => {
   if (status.verify?.provider) {
     verifyProviderSelect.value = status.verify.provider;
   }
+  gateModelInput.value = storedSlug(status, "gate");
+  verifyModelInput.value = storedSlug(status, "verify");
+  syncModelRowVisibility();
   stageSection.hidden = false;
   updateStagesDirty();
 };
@@ -541,6 +572,12 @@ const handleApplyStages = async () => {
       body: JSON.stringify({
         gate_provider: gateProvider,
         verify_provider: verifyProvider,
+        // Only meaningful for OpenRouter-routed stages; "" tells the
+        // backend to keep whatever slug it already has.
+        gate_model:
+          gateProvider === "openrouter" ? gateModelInput.value.trim() : "",
+        verify_model:
+          verifyProvider === "openrouter" ? verifyModelInput.value.trim() : "",
       }),
       signal: AbortSignal.timeout(STAGE_APPLY_TIMEOUT_MS),
     });
@@ -597,7 +634,26 @@ const wireProviderCard = () => {
   for (const select of [gateProviderSelect, verifyProviderSelect]) {
     select.addEventListener("change", () => {
       setStageStatus("", "setup");
+      syncModelRowVisibility();
       updateStagesDirty();
+    });
+  }
+  for (const input of [gateModelInput, verifyModelInput]) {
+    input.addEventListener("input", () => {
+      setStageStatus("", "setup");
+      updateStagesDirty();
+    });
+    // These inputs live inside #provider-form, so a bare Enter would submit
+    // the API-KEY form (handleProviderSubmit) instead of applying stages.
+    // Route Enter to Apply, which is what the user means here.
+    input.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") {
+        return;
+      }
+      event.preventDefault();
+      if (!applyStagesButton.disabled) {
+        applyStagesButton.click();
+      }
     });
   }
   applyStagesButton.addEventListener("click", () => {

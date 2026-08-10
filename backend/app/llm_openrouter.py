@@ -750,3 +750,24 @@ class OpenRouterFactChecker(FactChecker):
             if len(sources) >= MAX_SOURCES:
                 break
         return sources
+
+
+def reset_openrouter_capability_latches() -> None:
+    """Forget everything learned about the PREVIOUS model's capabilities.
+
+    ``OpenRouterClaimGate``'s strict-mode latches and ``_ReasoningSupport``
+    are process-wide on purpose: structured-output and reasoning support are
+    properties of the model/account routing, not of a session, so they must
+    survive the per-session gate rebuilds.
+
+    They must NOT survive a model change. A latch set because model A's
+    providers lacked ``json_schema`` would silently downgrade a freshly
+    chosen model B to ``json_object`` mode forever — with no error and no way
+    for the user to tell. ``POST /setup/stages`` calls this whenever a slug
+    actually changes.
+    """
+    OpenRouterClaimGate._json_schema_unsupported = False
+    OpenRouterClaimGate._consecutive_strict_503s = 0
+    OpenRouterClaimGate._json_schema_retry_at = 0.0
+    _ReasoningSupport.unsupported = False
+    logger.info("reset OpenRouter capability latches after a model change")

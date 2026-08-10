@@ -118,17 +118,20 @@ Firefox-specific caveats:
 
 ## Backend details (advanced)
 
-`./backend/run.sh` is idempotent: it creates `backend/.venv` if missing, installs
-dependencies only when needed, and execs
-`uvicorn app.main:app --host 127.0.0.1 --port 8710`. To run the steps manually:
+`./backend/run.sh` is idempotent: it syncs the [uv](https://docs.astral.sh/uv/)
+environment and execs uvicorn. Dependencies live in `backend/pyproject.toml` and
+are pinned by `backend/uv.lock`. To run the steps manually:
 
 ```bash
 cd backend
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn app.main:app --host 127.0.0.1 --port 8710
+uv sync --inexact                      # creates .venv from uv.lock
+uv run --no-sync uvicorn app.main:app --host 127.0.0.1 --port 8710
+uv run pytest -m "not slow"            # tests
 ```
+
+`--inexact` and `--no-sync` matter: the optional GPU speech backend is installed
+with an accelerator-specific PyTorch wheel, and a plain `uv sync`/`uv run` would
+prune or downgrade it on every start.
 
 Check it is up: `curl http://127.0.0.1:8710/healthz` (echoes `configured` plus the
 active `llm_provider`, `gate_model`, and `verify_model` — all `null` until a key is
@@ -144,6 +147,47 @@ file. `.env` holds your real key — it is gitignored and must never be committe
 **First run:** the Whisper model (`distil-small.en`, int8, ~170 MB) is downloaded at
 startup — expect a one-time delay. On slow machines, set `WHISPER_MODEL=base` in
 `.env`.
+
+## Speech-to-text backends (CPU, CUDA, ROCm, XPU)
+
+Two engines, one filter stack — `STT_BACKEND` picks which:
+
+| | `faster-whisper` (default) | `torch` |
+|---|---|---|
+| Devices | cpu, cuda | cpu, **cuda**, **rocm**, **xpu** |
+| Model name | ctranslate2 (`distil-small.en`) | HF repo id (`openai/whisper-small.en`) |
+| Speed | fastest on CPU (int8) | needed for Intel/AMD GPUs |
+| Install | included | `./backend/scripts/install_stt_gpu.sh` |
+
+For an Intel Arc / Core Ultra iGPU, an AMD Radeon, or an NVIDIA card:
+
+```bash
+cd backend
+./scripts/install_stt_gpu.sh          # auto-detects your GPU
+./scripts/install_stt_gpu.sh xpu      # or force: xpu | rocm6.4 | cu128 | cpu
+```
+
+It uses uv's `--torch-backend`, which inspects the machine and fetches from the
+matching PyTorch index — a lock file cannot encode "whatever GPU this machine
+has". Then in `backend/.env`:
+
+```ini
+STT_BACKEND=torch
+WHISPER_DEVICE=auto                   # or cuda / rocm / xpu / cpu
+WHISPER_MODEL=openai/whisper-small.en
+```
+
+Notes worth knowing:
+
+- **`rocm` is spelled `cuda` inside PyTorch** (HIP reuses the CUDA API). The
+  backend maps it for you *and* verifies `torch.version.hip`, so a ROCm typo
+  fails loudly instead of silently running on CPU at a fraction of the speed.
+- The torch backend brings its own **Silero VAD** (reused from faster-whisper)
+  and computes real `avg_logprob`/`no_speech_prob`, because transformers
+  returns neither — without them two of the six hallucination filters would be
+  silently inactive.
+- Because uv hardlinks from a shared cache (`~/.cache/uv`), a PyTorch you
+  already installed for another uv project costs no extra disk here.
 
 ## Analytics & dashboard
 
@@ -200,6 +244,15 @@ Documented alternates (full rationale in `.env.example`):
 - `tencent/hy3:free` — technically excellent fit but **its free variant expires 2026-07-21**.
 - `nvidia/nemotron-3-ultra-550b-a55b:free` — not recommended (no structured outputs on
   the free endpoint, slow high-effort reasoning by default, worst measured uptime).
+
+**Choosing specific models.** Each stage's OpenRouter model is a slug you can
+set from the options page (Gate model slug / Verify model slug) or in `.env`
+(`OPENROUTER_GATE_MODEL` / `OPENROUTER_VERIFY_MODEL`). Slugs are validated
+against OpenRouter's live catalogue on Apply, so a typo is rejected immediately
+rather than surfacing as a runtime failure mid-stream — and a model works the
+day it launches. Note that a paid model and its `:free` variant are distinct
+slugs; the error message points that out when you hit it. Browse the catalogue
+at <https://openrouter.ai/models>.
 
 **Switching to Gemini:** pick Gemini on the extension's options page and paste your
 key (or manually set `LLM_PROVIDER=gemini` and `GEMINI_API_KEY` in `.env`; models:

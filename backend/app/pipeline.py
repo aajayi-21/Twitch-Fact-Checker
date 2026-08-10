@@ -49,7 +49,9 @@ from app.config import SENSITIVITY_THRESHOLDS, Settings
 from app.contradiction import ContradictionDetector
 from app.db import Database, DayCounter
 from app.fact_checker import FactChecker, QuotaExceededError, VerificationError
+from app.logging_setup import session_id_var
 from app.models import (
+    TOPICS,
     ClientConfig,
     ClientFrameMessage,
     ClientHello,
@@ -66,6 +68,17 @@ from app.rate_limit import QuotaCooldown, TokenBucket
 from app.transcriber import AudioRingBuffer, SessionTextState, Transcriber
 
 logger = logging.getLogger(__name__)
+
+
+def _format_duration(seconds: float) -> str:
+    """Compact human duration for log lines (e.g. "2m14s", "1h03m")."""
+    total = int(seconds)
+    if total < 60:
+        return f"{total}s"
+    if total < 3600:
+        return f"{total // 60}m{total % 60:02d}s"
+    return f"{total // 3600}h{(total % 3600) // 60:02d}m"
+
 
 VERIFY_QUEUE_MAXSIZE = 3
 OUTBOUND_QUEUE_MAXSIZE = 100
@@ -179,6 +192,8 @@ class SessionPipeline:
         self._speech_seconds = 0.0
         self._audio_seconds = 0.0
         self._verify_calls = 0
+        # Funnel tally for the end-of-session log line.
+        self._claim_outcomes: dict[str, int] = {}
         self._sensitivity: Sensitivity = hello.sensitivity
         # Seeded from hello, updated by config frames; "other" always enabled.
         self._enabled_topics: frozenset[str] = resolve_enabled_topics(
@@ -225,6 +240,26 @@ class SessionPipeline:
 
     async def run(self) -> None:
         """Run the live phase; on graceful stop, run the flush phase."""
+        # Stamp every log line this session emits (see app.logging_setup).
+        session_id_var.set(self._session_id)
+        started_at = time.monotonic()
+        source = " · ".join(
+            part
+            for part in (
+                self._platform,
+                self._channel,
+                f"{self._stream_title!r}" if self._stream_title else None,
+            )
+            if part
+        )
+        logger.info(
+            "session start: %s (sensitivity=%s topics=%d/%d transcripts=%s)",
+            source or "unidentified source",
+            self._sensitivity,
+            len(self._enabled_topics),
+            len(TOPICS),
+            "on" if self._send_transcripts else "off",
+        )
         if self._db is not None:
             await self._db.record_session_start(
                 session_id=self._session_id,
@@ -235,6 +270,7 @@ class SessionPipeline:
         try:
             await self._run_phases()
         finally:
+            self._log_session_summary(time.monotonic() - started_at)
             # Runs for graceful stop, preemption, disconnect, AND fatal
             # paths; app.db swallows write failures, so this can only lose
             # the row (with a warning), never mask the real outcome.
@@ -250,6 +286,35 @@ class SessionPipeline:
                     ),
                     stt_drop_counts=self._text_state.drop_counts,
                 )
+
+    def _log_session_summary(self, elapsed_s: float) -> None:
+        """One end-of-session line with the whole funnel.
+
+        This is the number people actually want after a stream: how much
+        speech was heard, how many claims survived each stage, what it cost.
+        Everything here is already tracked for the analytics row.
+        """
+        outcomes = ", ".join(
+            f"{outcome}={count}"
+            for outcome, count in sorted(self._claim_outcomes.items())
+        )
+        drops = ", ".join(
+            f"{reason}={count}"
+            for reason, count in sorted(self._text_state.drop_counts.items())
+        )
+        logger.info(
+            "session end after %s: audio=%.0fs speech=%.0fs | gate calls=%d "
+            "claims=%d [%s] | verify calls=%d ~$%.3f%s",
+            _format_duration(elapsed_s),
+            self._audio_seconds,
+            self._speech_seconds,
+            self._gate.calls_made,
+            sum(self._claim_outcomes.values()),
+            outcomes or "none",
+            self._verify_calls,
+            self._verify_calls * self._settings.cost_per_verify_usd,
+            f" | stt drops: {drops}" if drops else "",
+        )
 
     async def _run_phases(self) -> None:
         """The pre-analytics body of :meth:`run` (live phase, then flush)."""
@@ -368,11 +433,23 @@ class SessionPipeline:
                 return
             if not self._gate.should_run(time.monotonic()):
                 continue
+            gate_started = time.monotonic()
             try:
                 claims = await self._gate.run()
             except GateError as exc:
                 logger.warning("gate pass failed (batch dropped): %s", exc)
                 continue
+            logger.info(
+                "gate pass #%d in %.1fs -> %d claim(s)%s",
+                self._gate.calls_made,
+                time.monotonic() - gate_started,
+                len(claims),
+                "".join(
+                    f"\n    {claim.check_worthiness:.2f} [{claim.topic}] "
+                    f"{claim.claim_text!r}"
+                    for claim in claims
+                ),
+            )
             # ALL gate claims feed the contradiction detector, PRE-filter: a
             # contradiction between two low-stakes claims is still a
             # contradiction (report §4.2), and the gate's hard exclusions
@@ -430,6 +507,13 @@ class SessionPipeline:
                 continue
             if frame is None:
                 continue
+            logger.info(
+                "contradiction (%s): earlier %r vs now %r — %s",
+                frame.confidence,
+                frame.prior_claim,
+                frame.current_claim,
+                frame.explanation,
+            )
             await self._emit_queued(frame)
             if self._db is not None:
                 await self._db.record_contradiction(
@@ -575,6 +659,12 @@ class SessionPipeline:
                 len(audio) / 16000,
             )
             return
+        if segments and logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "stt +%d segment(s): %s",
+                len(segments),
+                " | ".join(segment.text for segment in segments),
+            )
         for segment in segments:
             self._gate.add_transcript(segment)
             self._speech_seconds += max(0.0, segment.end - segment.start)
@@ -694,6 +784,11 @@ class SessionPipeline:
         image_b64: str | None = None
         if self._settings.vision_enabled and has_visual_cue(claim.claim_text):
             image_b64 = self._select_frame()
+        logger.info(
+            "verifying %r%s",
+            claim.claim_text,
+            " with a captured frame" if image_b64 else "",
+        )
         try:
             verdict = await self._checker.check(
                 claim.claim_text, topic=claim.topic, image_b64=image_b64
@@ -716,6 +811,15 @@ class SessionPipeline:
             return
         # Emit FIRST so persistence never adds wire latency.
         await emit(VerdictFrame.from_verdict(verdict))
+        logger.info(
+            "verdict %s in %.1fs%s: %r -> %s [%s]",
+            verdict.label,
+            time.monotonic() - verify_started_at,
+            " (vision)" if image_b64 else "",
+            claim.claim_text,
+            verdict.explanation,
+            ", ".join(source.url for source in verdict.sources) or "no sources",
+        )
         await self._record_claim(claim, "verified")
         await self._record_verdict(claim, verdict, verify_started_at)
 
@@ -772,6 +876,7 @@ class SessionPipeline:
         except GateError as exc:
             logger.warning("final gate pass failed (batch dropped): %s", exc)
             return []
+        logger.info("final gate pass -> %d claim(s)", len(claims))
         return await self._filter_claims(claims, self._send_direct)
 
     # ------------------------------------------------------------------ #
@@ -779,7 +884,14 @@ class SessionPipeline:
     # ------------------------------------------------------------------ #
 
     async def _record_claim(self, claim: GateClaim, outcome: str) -> None:
-        """Fire-and-forget funnel row (app.db swallows all write failures)."""
+        """Fire-and-forget funnel row (app.db swallows all write failures).
+
+        The in-memory tally is kept even without a database so the
+        end-of-session log line is always complete. "pending" is not counted:
+        it is a placeholder that a terminal outcome later overwrites.
+        """
+        if outcome != "pending":
+            self._claim_outcomes[outcome] = self._claim_outcomes.get(outcome, 0) + 1
         if self._db is None:
             return
         await self._db.record_claim(

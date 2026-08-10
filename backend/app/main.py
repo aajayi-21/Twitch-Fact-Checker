@@ -20,10 +20,11 @@ from app.db import Database, DayCounter
 from app.debug import router as debug_router
 from app.feedback import router as feedback_router
 from app.llm_provider import LLMRuntime, build_llm_runtime, close_llm_runtime
+from app.logging_setup import banner, configure_logging
 from app.rate_limit import QuotaCooldown, TokenBucket
 from app.setup import router as setup_router
 from app.stats import router as stats_router
-from app.transcriber import Transcriber
+from app.transcriber import create_transcriber
 from app.ws import router as ws_router
 
 logger = logging.getLogger(__name__)
@@ -59,10 +60,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
       ``shutdown(wait=False, cancel_futures=True)``.
     """
     settings = Settings()
-    logging.basicConfig(
-        level=settings.log_level.upper(),
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    configure_logging(settings.log_level)
     cooldown = QuotaCooldown()
 
     app.state.settings = settings
@@ -77,40 +75,72 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.db = db
     app.state.verify_counter = DayCounter(initial=await db.count_checks_today())
 
-    transcriber = Transcriber(
-        model_name=settings.whisper_model,
-        device=settings.whisper_device,
-        compute_type=settings.whisper_compute_type,
-    )
+    # STT_BACKEND picks the engine (faster-whisper or torch); the pipeline
+    # never learns which one it got.
+    transcriber = create_transcriber(settings)
     # Blocking model load off the event loop; a failure here (bad model name,
-    # download error) propagates and aborts startup — deliberately loud.
+    # download error, unavailable accelerator) propagates and aborts startup
+    # — deliberately loud.
     await asyncio.to_thread(transcriber.load)
     app.state.transcriber = transcriber
     stt_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="stt")
     app.state.stt_executor = stt_executor
 
-    if app.state.llm_runtime.configured:
-        logger.info(
-            "backend %s ready: provider=%s gate=%s verify=%s whisper=%s "
-            "debug_endpoints=%s",
-            SERVER_VERSION,
-            settings.llm_provider,
-            settings.active_gate_model,
-            settings.active_verify_model,
-            settings.whisper_model,
-            settings.debug_endpoints,
-        )
+    configured = app.state.llm_runtime.configured
+    rows: list[tuple[str, str]] = [
+        ("listening", f"http://{settings.host}:{settings.port}"),
+        ("speech", transcriber.describe()),
+    ]
+    if configured:
+        rows += [
+            (
+                "gate",
+                f"{settings.resolved_gate_provider} · {settings.active_gate_model}",
+            ),
+            (
+                "verify",
+                f"{settings.resolved_verify_provider} · "
+                f"{settings.active_verify_model}",
+            ),
+        ]
     else:
+        rows.append(("gate/verify", "NOT CONFIGURED — add an API key"))
+    checks_today = app.state.verify_counter.value
+    rows += [
+        ("sensitivity", f"gate every {settings.gate_interval_s:.0f}s"),
+        (
+            "analytics",
+            f"{settings.db_path} · {checks_today} check(s) today "
+            f"(~${checks_today * settings.cost_per_verify_usd:.2f})",
+        ),
+        ("dashboard", f"http://{settings.host}:{settings.port}/dashboard"),
+        (
+            "extras",
+            f"vision={'on' if settings.vision_enabled else 'off'} "
+            f"transcripts={'on' if settings.send_transcripts else 'off'} "
+            f"debug_endpoints={'on' if settings.debug_endpoints else 'off'}",
+        ),
+    ]
+    logger.info(
+        "\n%s",
+        banner(rows, f"Live Stream Fact-Checker backend {SERVER_VERSION}"),
+    )
+    if not configured:
         logger.warning(
-            "backend %s started UNCONFIGURED: no API key yet — add one via "
-            "the extension options (POST /setup/credentials); whisper=%s",
-            SERVER_VERSION,
-            settings.whisper_model,
+            "no API key yet — add one from the extension's options page; "
+            "capture will refuse to start until then"
         )
     try:
         yield
     finally:
         stt_executor.shutdown(wait=False, cancel_futures=True)
+        # Release the speech model AFTER its executor is down, so no job is
+        # mid-inference. Matters most on GPUs, where the weights would
+        # otherwise hold VRAM for the whole process lifetime.
+        try:
+            transcriber.unload()
+        except Exception as exc:
+            logger.warning("error unloading the speech model: %s", exc)
         # Read the slot fresh: a setup hot-swap may have replaced the boot
         # runtime (the swap closes the OLD clients itself). close_llm_runtime
         # closes each DISTINCT stage client exactly once.

@@ -39,6 +39,7 @@ from pydantic import BaseModel
 
 from app import ws
 from app.config import Settings, resolve_env_file
+from app.llm_openrouter import reset_openrouter_capability_latches
 from app.llm_provider import LLMRuntime, build_llm_runtime, close_llm_runtime
 from app.rate_limit import QuotaCooldown
 
@@ -49,6 +50,8 @@ router = APIRouter()
 PROBE_TIMEOUT_S = 10.0
 OPENROUTER_KEY_URL = "https://openrouter.ai/api/v1/key"
 OPENROUTER_CREDITS_URL = "https://openrouter.ai/api/v1/credits"
+# Public, keyless, free: the catalogue used to validate model slugs.
+OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 
 Provider = Literal["openrouter", "gemini", "ollama"]
 
@@ -95,11 +98,20 @@ class StageStatus(BaseModel):
 
 class OpenRouterStatus(BaseModel):
     """``key_hint`` is the ONLY key material that ever leaves the backend:
-    an ellipsis plus the last four characters. ``credits`` is best-effort."""
+    an ellipsis plus the last four characters. ``credits`` is best-effort.
+
+    ``gate_model``/``verify_model`` are the stored OpenRouter slugs, reported
+    even when OpenRouter is not the active provider for that stage.
+    ``StageStatus.model`` shows only the ACTIVE provider's model, so without
+    these the options page could never prefill (or dirty-check) a slug for a
+    stage currently routed to Ollama or Gemini.
+    """
 
     configured: bool
     key_hint: str | None
     credits: CreditsInfo | None
+    gate_model: str
+    verify_model: str
 
 
 class GeminiStatus(BaseModel):
@@ -145,10 +157,18 @@ class SetupCredentialsRequest(BaseModel):
 
 
 class SetupStagesRequest(BaseModel):
-    """Body for POST /setup/stages — per-stage provider routing."""
+    """Body for POST /setup/stages — per-stage provider routing and models.
+
+    ``gate_model``/``verify_model`` are OpenRouter slugs (e.g.
+    ``"openai/gpt-oss-120b"``). Empty means "leave the stored slug alone",
+    which keeps this endpoint backward-compatible with clients that send only
+    the two provider fields.
+    """
 
     gate_provider: str = ""
     verify_provider: str = ""
+    gate_model: str = ""
+    verify_model: str = ""
 
 
 # --------------------------------------------------------------------------- #
@@ -252,6 +272,74 @@ async def validate_gemini_key(api_key: str) -> None:
             await client.aio.aclose()
         except Exception as exc:
             logger.debug("error closing Gemini probe client: %s", exc)
+
+
+class ModelSlugRejected(Exception):
+    """OpenRouter answered, and does not publish this model slug."""
+
+
+async def fetch_openrouter_model_slugs(
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> set[str]:
+    """Every model slug OpenRouter currently publishes.
+
+    ``GET /api/v1/models`` is public, free, and needs no key. Fetching the
+    live list (rather than hardcoding one) means a model works the day it
+    launches and a retired one is caught immediately.
+
+    ``transport`` is a test seam for ``httpx.MockTransport`` (same pattern as
+    :class:`app.embeddings.OllamaEmbedder`), so the suite never patches httpx
+    globally.
+
+    Raises:
+        ProviderUnreachable: on network failure, timeout, or a bad payload.
+    """
+    try:
+        async with httpx.AsyncClient(
+            timeout=PROBE_TIMEOUT_S, transport=transport
+        ) as http_client:
+            response = await http_client.get(OPENROUTER_MODELS_URL)
+    except httpx.HTTPError as exc:
+        raise ProviderUnreachable(
+            f"could not reach OpenRouter's model list: {exc}"
+        ) from exc
+    if response.status_code != 200:
+        raise ProviderUnreachable(
+            f"OpenRouter model list returned HTTP {response.status_code}"
+        )
+    try:
+        payload = response.json()
+        slugs = {
+            str(entry["id"]) for entry in payload["data"] if entry.get("id")
+        }
+    except (ValueError, KeyError, TypeError) as exc:
+        raise ProviderUnreachable(
+            f"malformed OpenRouter model list: {exc}"
+        ) from exc
+    if not slugs:
+        raise ProviderUnreachable("OpenRouter model list came back empty")
+    return slugs
+
+
+async def validate_openrouter_model(slug: str, known_slugs: set[str]) -> None:
+    """Check one slug against the live catalogue.
+
+    OpenRouter serves the same model under a paid and a ``:free`` id, and
+    those are distinct slugs — so an exact match is the right test, with the
+    near-miss surfaced to make the ``:free`` suffix mistake obvious.
+
+    Raises:
+        ModelSlugRejected: when the slug is not published.
+    """
+    if slug in known_slugs:
+        return
+    alternatives = sorted(
+        candidate
+        for candidate in known_slugs
+        if candidate.split(":", 1)[0] == slug.split(":", 1)[0]
+    )
+    hint = f" Did you mean: {', '.join(alternatives[:3])}?" if alternatives else ""
+    raise ModelSlugRejected(f"OpenRouter has no model {slug!r}.{hint}")
 
 
 async def probe_ollama(base_url: str) -> None:
@@ -420,6 +508,8 @@ async def _build_status(settings: Settings) -> SetupStatusResponse:
                 configured=settings.provider_configured("openrouter"),
                 key_hint=_key_hint(settings, "openrouter"),
                 credits=credits,
+                gate_model=settings.openrouter_gate_model,
+                verify_model=settings.openrouter_verify_model,
             ),
             gemini=GeminiStatus(
                 configured=settings.provider_configured("gemini"),
@@ -572,11 +662,15 @@ async def submit_credentials(
 async def submit_stages(
     body: SetupStagesRequest, request: Request
 ) -> SetupStatusResponse:
-    """Route each pipeline stage to a provider; persist + hot-swap.
+    """Route each pipeline stage to a provider and model; persist + hot-swap.
+
+    ``gate_model``/``verify_model`` are OpenRouter slugs, validated against
+    the live catalogue; empty leaves the stored slug untouched.
 
     Responses: 400 unknown provider (or ollama for verify — local verify is
-    not supported), 409 when a chosen provider is not configured (missing
-    key, or Ollama unreachable), 500 with a descriptive detail on
+    not supported) or an unknown model slug, 409 when a chosen provider is
+    not configured (missing key, or Ollama unreachable), 502 when
+    OpenRouter's catalogue is unreachable, 500 with a descriptive detail on
     persistence/rebuild failure. On success the runtime swap is atomic and
     the response mirrors GET /setup/status.
     """
@@ -618,11 +712,41 @@ async def submit_stages(
                 detail=f"{stage} provider {provider!r} has no API key configured",
             )
 
+    # Model slugs: empty means "keep the stored one". Both are validated in
+    # a single catalogue fetch so a two-model change costs one request.
+    gate_model = body.gate_model.strip()
+    verify_model = body.verify_model.strip()
+    requested_models = {
+        "gate_model": gate_model or current.openrouter_gate_model,
+        "verify_model": verify_model or current.openrouter_verify_model,
+    }
+    if gate_model or verify_model:
+        try:
+            known_slugs = await fetch_openrouter_model_slugs()
+        except ProviderUnreachable as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        for field, slug in requested_models.items():
+            if not slug:
+                raise HTTPException(
+                    status_code=400, detail=f"{field} must not be empty"
+                )
+            try:
+                await validate_openrouter_model(slug, known_slugs)
+            except ModelSlugRejected as exc:
+                raise HTTPException(
+                    status_code=400, detail=f"{field}: {exc}"
+                ) from exc
+
     env_path = resolve_env_file()
     try:
         upsert_env_values(
             env_path,
-            {"GATE_PROVIDER": gate_provider, "VERIFY_PROVIDER": verify_provider},
+            {
+                "GATE_PROVIDER": gate_provider,
+                "VERIFY_PROVIDER": verify_provider,
+                "OPENROUTER_GATE_MODEL": requested_models["gate_model"],
+                "OPENROUTER_VERIFY_MODEL": requested_models["verify_model"],
+            },
         )
     except (OSError, ValueError) as exc:
         raise HTTPException(
@@ -633,7 +757,16 @@ async def submit_stages(
     # Explicit kwargs beat any stale GATE_PROVIDER/VERIFY_PROVIDER in the
     # process environment (mirrors the credentials rebuild).
     new_settings = Settings(
-        gate_provider=gate_provider, verify_provider=verify_provider
+        gate_provider=gate_provider,
+        verify_provider=verify_provider,
+        openrouter_gate_model=requested_models["gate_model"],
+        openrouter_verify_model=requested_models["verify_model"],
     )
+    models_changed = (
+        requested_models["gate_model"] != current.openrouter_gate_model
+        or requested_models["verify_model"] != current.openrouter_verify_model
+    )
+    if models_changed:
+        reset_openrouter_capability_latches()
     await _swap_runtime(request, new_settings)
     return await _build_status(new_settings)

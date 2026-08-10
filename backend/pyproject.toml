@@ -1,10 +1,79 @@
+[project]
+name = "stream-fact-checker-backend"
+version = "0.1.0"
+description = "Local FastAPI backend for the Live Stream Fact-Checker extension"
+requires-python = ">=3.11"
+
+# Runtime dependencies. Bare lower bounds (no upper caps): this is an
+# application pinned by uv.lock, so the lock file — not this list — is what
+# reproduces an install.
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.8",
+    "pydantic-settings>=2.4",
+    # Speech-to-text, default backend (ctranslate2: CPU + CUDA only).
+    # Its bundled Silero VAD is also reused by the torch backend.
+    "faster-whisper>=1.0",
+    # llm_gemini.py uses the Interactions API (client.aio.interactions) as
+    # shipped in the 2.x line; older 1.x SDKs import fine but fail at runtime.
+    "google-genai>=2.12",
+    # llm_openrouter.py and llm_local.py talk to OpenRouter / any
+    # OpenAI-compatible local server through the OpenAI SDK.
+    "openai>=1.90",
+    "numpy>=1.26",
+    "rapidfuzz>=3.9",
+    "httpx>=0.27",
+]
+
+# GPU speech-to-text backend (STT_BACKEND=torch), needed for Intel XPU and
+# AMD ROCm — ctranslate2 reaches neither.
+#
+# This extra is NOT installed by `uv sync`; CPU users never pay for it. It is
+# declared here anyway for a specific reason: uv resolves extras into the
+# SAME universe as the base dependencies, so listing transformers pins a
+# `tokenizers` version compatible with both it and faster-whisper. Without
+# that, the lock picks the newest tokenizers faster-whisper allows and every
+# `uv sync`/`uv run` silently breaks a hand-installed transformers.
+#
+# Install it with ./scripts/install_stt_gpu.sh, which uses uv's hardware
+# detection (`--torch-backend=auto`) to pick the right wheel index — a lock
+# file cannot encode "whatever accelerator this machine has".
+[project.optional-dependencies]
+gpu = [
+    "torch>=2.6",
+    "transformers>=4.44",
+    "accelerate>=1.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "black>=24.4",
+    # scripts/stream_wav.py drives the WS protocol without a browser.
+    "websockets>=12.0",
+]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
-# Slow tests download and run the real Whisper model; run them explicitly
-# with:  .venv/bin/python -m pytest -m slow
+# Slow tests download and run a real speech model; run them explicitly with:
+#   uv run pytest -m slow
 addopts = "-m 'not slow'"
 markers = [
-    "slow: needs real whisper model",
+    "slow: needs a real speech model download",
 ]
+
+[tool.uv]
+# Keep the default group installed by `uv sync` so contributors get pytest
+# without extra flags.
+default-groups = ["dev"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]

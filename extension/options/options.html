@@ -134,6 +134,22 @@
               <option value="ollama">Ollama (local)</option>
             </select>
           </div>
+          <!-- Enter opens the API-key POST, not Apply, because these inputs
+               sit inside #provider-form — options.js suppresses that. -->
+          <div class="stage-row stage-model-row" data-provider-scope="gate" hidden>
+            <label class="stage-label" for="gate-model-input">
+              Gate model slug
+            </label>
+            <input
+              id="gate-model-input"
+              class="key-input stage-model-input"
+              type="text"
+              spellcheck="false"
+              autocomplete="off"
+              placeholder="e.g. google/gemma-4-26b-a4b-it:free"
+              aria-label="OpenRouter gate model slug"
+            />
+          </div>
           <div class="stage-row">
             <label class="stage-label" for="verify-provider-select">
               Verification
@@ -142,6 +158,20 @@
               <option value="openrouter">OpenRouter</option>
               <option value="gemini">Gemini</option>
             </select>
+          </div>
+          <div class="stage-row stage-model-row" data-provider-scope="verify" hidden>
+            <label class="stage-label" for="verify-model-input">
+              Verify model slug
+            </label>
+            <input
+              id="verify-model-input"
+              class="key-input stage-model-input"
+              type="text"
+              spellcheck="false"
+              autocomplete="off"
+              placeholder="e.g. openai/gpt-oss-120b"
+              aria-label="OpenRouter verify model slug"
+            />
           </div>
           <div class="stage-actions">
             <button type="button" class="button-save" id="apply-stages-button" disabled>
@@ -157,6 +187,10 @@
           <p class="field-help">
             The gate runs ~300 cheap calls/hour (great locally via Ollama);
             verification needs web search and stays on OpenRouter or Gemini.
+            Model slugs are checked against OpenRouter's live catalogue when
+            you Apply — browse them at
+            <a href="https://openrouter.ai/models" target="_blank"
+              rel="noopener noreferrer">openrouter.ai/models</a>.
           </p>
         </div>
       </form>
