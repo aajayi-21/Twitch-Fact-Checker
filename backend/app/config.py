@@ -24,6 +24,10 @@ SENSITIVITY_THRESHOLDS: dict[str, float] = {"low": 0.75, "medium": 0.55, "high":
 
 _DEFAULT_ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 
+# The analytics database lives next to `.env` by default; tests point DB_PATH
+# at temp files instead.
+_DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent / "fact_checker.db"
+
 
 def resolve_env_file() -> Path:
     """The ``.env`` path used for BOTH reading settings and setup persistence.
@@ -94,6 +98,12 @@ class Settings(BaseSettings):
 
     send_transcripts: bool = True
     debug_endpoints: bool = True
+
+    # Analytics persistence (app/db.py). One SQLite file; delete it to reset.
+    db_path: str = str(_DEFAULT_DB_PATH)
+    # Estimated marginal cost of ONE verification attempt (the web-search fee
+    # dominates; tokens are noise). Used for the popup/dashboard cost readouts.
+    cost_per_verify_usd: float = 0.005
 
     host: str = "127.0.0.1"
     port: int = 8710

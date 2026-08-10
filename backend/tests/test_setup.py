@@ -217,6 +217,8 @@ class TestUnconfiguredSurface:
             "llm_provider": None,
             "gate_model": None,
             "verify_model": None,
+            "checks_today": 0,
+            "est_cost_today_usd": 0.0,
         }
 
     def test_setup_status_is_all_null(self, unconfigured_client: TestClient) -> None:

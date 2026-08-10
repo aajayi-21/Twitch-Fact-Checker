@@ -87,10 +87,18 @@ class _FallbackNeeded(Exception):
     """
 
 
-def _normalize_claim(claim: str) -> str:
-    """Lowercase, strip punctuation, collapse whitespace (dedupe key)."""
+def normalize_claim(claim: str) -> str:
+    """Lowercase, strip punctuation, collapse whitespace (dedupe key).
+
+    Public: also the ``claims.normalized`` column in :mod:`app.db` and the
+    lexical-similarity key in :mod:`app.contradiction`.
+    """
     lowered = claim.lower().translate(str.maketrans("", "", string.punctuation))
     return " ".join(lowered.split())
+
+
+# Backwards-compatible alias (pre-analytics name).
+_normalize_claim = normalize_claim
 
 
 def _today() -> str:

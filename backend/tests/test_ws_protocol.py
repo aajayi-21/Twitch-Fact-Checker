@@ -95,6 +95,8 @@ class TestHealthz:
             "llm_provider": "gemini",
             "gate_model": "fake-gate-model",
             "verify_model": "fake-verify-model",
+            "checks_today": 0,
+            "est_cost_today_usd": 0.0,
         }
 
 
@@ -168,9 +170,15 @@ class TestDebugText:
         )
         assert response.status_code == 200
         body = response.json()
-        assert body["claims"] == [
-            {"claim_text": CLAIM, "check_worthiness": 0.9, "topic": "other"}
-        ]
+        # The server-generated claim id is opaque; assert it exists, then
+        # compare the model-produced fields exactly.
+        (claim_body,) = body["claims"]
+        assert claim_body.pop("id")
+        assert claim_body == {
+            "claim_text": CLAIM,
+            "check_worthiness": 0.9,
+            "topic": "other",
+        }
         assert len(body["verdicts"]) == 1
         verdict = body["verdicts"][0]
         assert verdict["label"] == "FALSE"
@@ -449,6 +457,9 @@ def make_fake_ws_app(executor: ThreadPoolExecutor) -> Any:
         llm_runtime=make_fake_llm_runtime(settings, FakeGenAIClient(), cooldown),
         verify_bucket=TokenBucket(rate_per_min=6000.0, burst=10),
         quota_cooldown=cooldown,
+        # Analytics slots: None disables persistence in SessionPipeline.
+        db=None,
+        verify_counter=None,
     )
     return SimpleNamespace(state=state)
 

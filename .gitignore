@@ -1,9 +1,11 @@
-# Secrets — never commit (backend/.env holds the real GEMINI_API_KEY)
+# Secrets — never commit (backend/.env holds the real API keys)
 .env
-.env*
-.env.old
-.end.example
+.env.*
+!.env.example
 backend/.env
+
+# Local analytics database (app/db.py; WAL sidecars included)
+backend/fact_checker.db*
 
 # Python
 backend/.venv/

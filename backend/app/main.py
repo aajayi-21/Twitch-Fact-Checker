@@ -16,10 +16,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
 from app.config import SERVER_VERSION, Settings
+from app.db import Database, DayCounter
 from app.debug import router as debug_router
+from app.feedback import router as feedback_router
 from app.llm_provider import LLMRuntime, build_llm_runtime, close_llm_client
 from app.rate_limit import QuotaCooldown, TokenBucket
 from app.setup import router as setup_router
+from app.stats import router as stats_router
 from app.transcriber import Transcriber
 from app.ws import router as ws_router
 
@@ -67,6 +70,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.verify_bucket = TokenBucket(rate_per_min=settings.verify_rpm, burst=2)
     app.state.llm_runtime = build_llm_runtime(settings, cooldown)
 
+    # Analytics persistence + the in-memory "checks today" counter (seeded
+    # from the db so a restart doesn't zero the popup readout).
+    db = Database(settings.db_path)
+    await db.open()
+    app.state.db = db
+    app.state.verify_counter = DayCounter(initial=await db.count_checks_today())
+
     transcriber = Transcriber(
         model_name=settings.whisper_model,
         device=settings.whisper_device,
@@ -109,6 +119,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 await close_llm_client(runtime.client)
             except Exception as exc:
                 logger.warning("error closing LLM client: %s", exc)
+        # The db closes LAST so in-flight session-end writes from cancelled
+        # websocket tasks have the best chance of landing; close() drains
+        # the db executor queue before shutting it down.
+        try:
+            await db.close()
+        except Exception as exc:
+            logger.warning("error closing analytics database: %s", exc)
 
 
 def create_app() -> FastAPI:
@@ -132,7 +149,9 @@ def create_app() -> FastAPI:
     # the backend is ever served on a LAN hostname, add it here.
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
     app.include_router(debug_router)
+    app.include_router(feedback_router)
     app.include_router(setup_router)
+    app.include_router(stats_router)
     app.include_router(ws_router)
 
     @app.get("/healthz")
@@ -144,6 +163,7 @@ def create_app() -> FastAPI:
         """
         settings: Settings = request.app.state.settings
         runtime: LLMRuntime = request.app.state.llm_runtime
+        counter: DayCounter = request.app.state.verify_counter
         configured = runtime.configured
         return {
             "status": "ok",
@@ -154,6 +174,10 @@ def create_app() -> FastAPI:
             "gate_model": runtime.settings.active_gate_model if configured else None,
             "verify_model": (
                 runtime.settings.active_verify_model if configured else None
+            ),
+            "checks_today": counter.value,
+            "est_cost_today_usd": round(
+                counter.value * settings.cost_per_verify_usd, 4
             ),
         }
 

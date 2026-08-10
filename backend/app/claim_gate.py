@@ -44,6 +44,10 @@ class ClaimGate(ABC):
         self._context_words: list[str] = []
         # -inf so the very first run only waits for MIN_NEW_WORDS.
         self._last_run_at = float("-inf")
+        # Actual LLM gate calls made (the empty-buffer short-circuit in
+        # run() does NOT count). Session-scoped for free — the gate is
+        # built fresh per session; the pipeline reads it at session end.
+        self.calls_made = 0
 
     def add_transcript(self, segment: TranscriptSegment) -> None:
         """Buffer one filtered transcript segment for the next gate pass."""
@@ -78,6 +82,7 @@ class ClaimGate(ABC):
         self._context_words = (self._context_words + new_text.split())[
             -self.CONTEXT_TAIL_WORDS :
         ]
+        self.calls_made += 1
         return await self.extract_claims(context, new_text)
 
     async def extract_claims(self, context: str, new_text: str) -> list[GateClaim]:

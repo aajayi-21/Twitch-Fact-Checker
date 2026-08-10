@@ -40,8 +40,11 @@ from typing import Any
 from fastapi import WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, ValidationError
 
+from uuid import uuid4
+
 from app.claim_gate import ClaimGate, GateError
 from app.config import SENSITIVITY_THRESHOLDS, Settings
+from app.db import Database, DayCounter
 from app.fact_checker import FactChecker, QuotaExceededError, VerificationError
 from app.models import (
     ClientConfig,
@@ -51,6 +54,7 @@ from app.models import (
     Sensitivity,
     StatusFrame,
     TranscriptFrame,
+    Verdict,
     VerdictFrame,
     resolve_enabled_topics,
 )
@@ -90,6 +94,8 @@ class SessionPipeline:
         fact_checker: FactChecker,
         verify_bucket: TokenBucket,
         quota_cooldown: QuotaCooldown,
+        db: Database | None = None,
+        verify_counter: DayCounter | None = None,
     ) -> None:
         self._websocket = websocket
         self._settings = settings
@@ -99,6 +105,18 @@ class SessionPipeline:
         self._checker = fact_checker
         self._bucket = verify_bucket
         self._cooldown = quota_cooldown
+        # Analytics (None in direct unit-test construction): every db call is
+        # fire-and-forget inside app.db — a persistence failure never touches
+        # the session.
+        self._db = db
+        self._verify_counter = verify_counter
+        self._session_id = uuid4().hex
+        self._platform = hello.platform
+        self._channel = hello.channel
+        self._stream_title = hello.stream_title
+        self._speech_seconds = 0.0
+        self._audio_seconds = 0.0
+        self._verify_calls = 0
         self._sensitivity: Sensitivity = hello.sensitivity
         # Seeded from hello, updated by config frames; "other" always enabled.
         self._enabled_topics: frozenset[str] = resolve_enabled_topics(
@@ -136,6 +154,34 @@ class SessionPipeline:
 
     async def run(self) -> None:
         """Run the live phase; on graceful stop, run the flush phase."""
+        if self._db is not None:
+            await self._db.record_session_start(
+                session_id=self._session_id,
+                platform=self._platform,
+                channel=self._channel,
+                title=self._stream_title,
+            )
+        try:
+            await self._run_phases()
+        finally:
+            # Runs for graceful stop, preemption, disconnect, AND fatal
+            # paths; app.db swallows write failures, so this can only lose
+            # the row (with a warning), never mask the real outcome.
+            if self._db is not None:
+                await self._db.record_session_end(
+                    session_id=self._session_id,
+                    speech_seconds=self._speech_seconds,
+                    audio_seconds=self._audio_seconds,
+                    gate_calls=self._gate.calls_made,
+                    verify_calls=self._verify_calls,
+                    est_cost_usd=round(
+                        self._verify_calls * self._settings.cost_per_verify_usd, 4
+                    ),
+                    stt_drop_counts=self._text_state.drop_counts,
+                )
+
+    async def _run_phases(self) -> None:
+        """The pre-analytics body of :meth:`run` (live phase, then flush)."""
         fatal_error = False
         try:
             async with asyncio.TaskGroup() as task_group:
@@ -253,7 +299,7 @@ class SessionPipeline:
                 logger.warning("gate pass failed (batch dropped): %s", exc)
                 continue
             for claim in await self._filter_claims(claims, self._emit_queued):
-                self._enqueue_claim(claim)
+                await self._enqueue_claim(claim)
                 await self._emit_queued(StatusFrame(claim=claim.claim_text))
 
     async def _verify_loop(self) -> None:
@@ -283,6 +329,7 @@ class SessionPipeline:
     # ------------------------------------------------------------------ #
 
     def _handle_audio(self, pcm_bytes: bytes) -> None:
+        self._audio_seconds += len(pcm_bytes) / 2 / 16000
         try:
             dropped_s = self._ring.append(pcm_bytes)
         except ValueError as exc:
@@ -367,6 +414,7 @@ class SessionPipeline:
             return
         for segment in segments:
             self._gate.add_transcript(segment)
+            self._speech_seconds += max(0.0, segment.end - segment.start)
             self._last_emitted_end = max(self._last_emitted_end, segment.end)
             if self._send_transcripts:
                 await emit(
@@ -396,6 +444,7 @@ class SessionPipeline:
                     threshold,
                     claim.claim_text,
                 )
+                await self._record_claim(claim, "below_threshold")
                 continue
             if claim.topic not in self._enabled_topics:
                 logger.info(
@@ -403,6 +452,7 @@ class SessionPipeline:
                     claim.topic,
                     claim.claim_text,
                 )
+                await self._record_claim(claim, "topic_skipped")
                 await emit(
                     StatusFrame(
                         stage="topic_skipped",
@@ -413,26 +463,33 @@ class SessionPipeline:
                 continue
             if self._checker.is_duplicate(claim.claim_text):
                 logger.info("dropping duplicate claim: %r", claim.claim_text)
+                await self._record_claim(claim, "duplicate")
                 continue
             accepted.append(claim)
         return accepted
 
-    def _enqueue_claim(self, claim: GateClaim) -> None:
+    async def _enqueue_claim(self, claim: GateClaim) -> None:
         """Put on the verify queue; when full, drop the OLDEST claim.
 
         The newest claim is the most relevant to the live conversation.
         No await between the ``full()`` check and the put, so this is
-        race-free on a single event loop.
+        race-free on a single event loop (the analytics awaits come after
+        the queue is consistent again).
         """
+        dropped: GateClaim | None = None
         if self._verify_queue.full():
             dropped = self._verify_queue.get_nowait()
             logger.warning(
                 "verify queue full; dropped oldest claim: %r", dropped.claim_text
             )
         self._verify_queue.put_nowait(claim)
+        if dropped is not None:
+            await self._record_claim(dropped, "queue_dropped")
+        await self._record_claim(claim, "pending")
 
     async def _verify_claim(self, claim: GateClaim, emit: FrameEmitter) -> None:
         """Cooldown check -> token bucket -> grounded check -> verdict frame."""
+        verify_started_at = time.monotonic()
         if self._cooldown.active:
             remaining_s = self._cooldown.remaining_s
             logger.warning(
@@ -440,6 +497,9 @@ class SessionPipeline:
                 remaining_s,
                 claim.claim_text,
             )
+            # The funnel enum has no cooldown slot; a cooldown drop is
+            # recorded as verify_failed (documented mapping).
+            await self._record_claim(claim, "verify_failed")
             await emit(
                 ErrorFrame(
                     code="quota_cooldown",
@@ -460,14 +520,20 @@ class SessionPipeline:
                 "session ended while throttled; dropping claim %r", claim.claim_text
             )
             return
+        # Count the ATTEMPT (cost is incurred whether or not it succeeds).
+        self._verify_calls += 1
+        if self._verify_counter is not None:
+            self._verify_counter.increment()
         try:
             verdict = await self._checker.check(claim.claim_text, topic=claim.topic)
         except QuotaExceededError as exc:
             logger.warning("quota exceeded: %s", exc)
+            await self._record_claim(claim, "verify_failed")
             await emit(ErrorFrame(code="quota_cooldown", message=str(exc), fatal=False))
             return
         except VerificationError as exc:
             logger.warning("verification failed for %r: %s", claim.claim_text, exc)
+            await self._record_claim(claim, "verify_failed")
             await emit(
                 ErrorFrame(
                     code="llm_failure",
@@ -476,7 +542,10 @@ class SessionPipeline:
                 )
             )
             return
+        # Emit FIRST so persistence never adds wire latency.
         await emit(VerdictFrame.from_verdict(verdict))
+        await self._record_claim(claim, "verified")
+        await self._record_verdict(claim, verdict, verify_started_at)
 
     # ------------------------------------------------------------------ #
     # Graceful-stop flush phase
@@ -532,6 +601,32 @@ class SessionPipeline:
             logger.warning("final gate pass failed (batch dropped): %s", exc)
             return []
         return await self._filter_claims(claims, self._send_direct)
+
+    # ------------------------------------------------------------------ #
+    # Analytics recording (no-ops when the pipeline has no Database)
+    # ------------------------------------------------------------------ #
+
+    async def _record_claim(self, claim: GateClaim, outcome: str) -> None:
+        """Fire-and-forget funnel row (app.db swallows all write failures)."""
+        if self._db is None:
+            return
+        await self._db.record_claim(
+            claim=claim, session_id=self._session_id, outcome=outcome
+        )
+
+    async def _record_verdict(
+        self, claim: GateClaim, verdict: Verdict, verify_started_at: float
+    ) -> None:
+        if self._db is None:
+            return
+        await self._db.record_verdict(
+            verdict=verdict,
+            claim_id=claim.id,
+            session_id=self._session_id,
+            latency_ms=int((time.monotonic() - verify_started_at) * 1000),
+            provider=self._settings.llm_provider,
+            model=self._settings.active_verify_model,
+        )
 
     # ------------------------------------------------------------------ #
     # Emission + small utilities

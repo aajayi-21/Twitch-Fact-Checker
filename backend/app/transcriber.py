@@ -51,6 +51,10 @@ class SessionTextState:
 
     emitted_tail_words: list[str] = field(default_factory=list)
     last_emitted_normalized: str = ""
+    # Per-session count of filtered segments by coarse drop reason (report
+    # §1 Tier-3 instrumentation): flushed into the analytics sessions row at
+    # session end so "how much non-speech reached Whisper" is measurable.
+    drop_counts: dict[str, int] = field(default_factory=dict)
 
 
 class AudioRingBuffer:
@@ -287,7 +291,11 @@ class Transcriber:
                 segment, normalized, last_emitted_end, text_state
             )
             if drop_reason is not None:
-                logger.debug("dropping segment (%s): %r", drop_reason, segment.text)
+                coarse_key, detail = drop_reason
+                text_state.drop_counts[coarse_key] = (
+                    text_state.drop_counts.get(coarse_key, 0) + 1
+                )
+                logger.debug("dropping segment (%s): %r", detail, segment.text)
                 continue
             self._register_emitted(normalized, text_state)
             emitted.append(segment)
@@ -299,28 +307,34 @@ class Transcriber:
         normalized: str,
         last_emitted_end: float,
         text_state: SessionTextState,
-    ) -> str | None:
-        """Why the segment must be dropped, or None to emit it."""
+    ) -> tuple[str, str] | None:
+        """``(coarse_key, detail)`` when the segment must be dropped, else None.
+
+        The coarse key feeds the per-session ``drop_counts`` instrumentation;
+        the detail keeps the precise numbers for debug logging.
+        """
         if not normalized:
-            return "empty text"
+            return "empty", "empty text"
         if segment.end <= last_emitted_end + self.OVERLAP_TRIM_TOLERANCE_S:
-            return (
+            return "overlap", (
                 f"overlap trim: end {segment.end:.2f} <= "
                 f"{last_emitted_end:.2f} + {self.OVERLAP_TRIM_TOLERANCE_S}"
             )
         if segment.no_speech_prob > self.MAX_NO_SPEECH_PROB:
-            return (
+            return "no_speech", (
                 f"no_speech_prob {segment.no_speech_prob:.2f} > "
                 f"{self.MAX_NO_SPEECH_PROB}"
             )
         if segment.avg_logprob < self.MIN_AVG_LOGPROB:
-            return f"avg_logprob {segment.avg_logprob:.2f} < {self.MIN_AVG_LOGPROB}"
+            return "low_confidence", (
+                f"avg_logprob {segment.avg_logprob:.2f} < {self.MIN_AVG_LOGPROB}"
+            )
         if normalized in self.HALLUCINATION_BLACKLIST:
-            return "hallucination blacklist"
+            return "blacklist", "hallucination blacklist"
         if normalized == text_state.last_emitted_normalized:
-            return "identical to previous segment (loop artifact)"
+            return "loop", "identical to previous segment (loop artifact)"
         if self._matches_emitted_suffix(normalized.split(), text_state):
-            return "suffix of previously emitted text (window overlap)"
+            return "suffix", "suffix of previously emitted text (window overlap)"
         return None
 
     def _matches_emitted_suffix(

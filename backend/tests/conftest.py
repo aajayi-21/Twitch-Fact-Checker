@@ -37,11 +37,13 @@ if str(BACKEND_DIR) not in sys.path:
 
 import inspect
 import json
+import tempfile
 from collections import deque
 from collections.abc import AsyncIterator, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager
 from typing import Any
+from uuid import uuid4
 
 import httpx
 import numpy as np
@@ -54,6 +56,7 @@ from openai.types.chat import ChatCompletion
 
 from app import ws as ws_module
 from app.config import Settings
+from app.db import Database, DayCounter
 from app.llm_gemini import GeminiClaimGate, GeminiFactChecker
 from app.llm_provider import LLMRuntime
 from app.main import create_app
@@ -500,6 +503,12 @@ def make_test_settings(**overrides: Any) -> Settings:
         "verify_timeout_s": 5.0,
         "send_transcripts": True,
         "debug_endpoints": True,
+        # Per-call unique temp path: safe for callers that never open a
+        # client (the file is only created by Database.open); the fake
+        # lifespan unlinks it (plus WAL sidecars) on teardown.
+        "db_path": str(
+            Path(tempfile.gettempdir()) / f"fact-checker-test-{uuid4().hex}.db"
+        ),
     }
     base.update(overrides)
     return Settings(**base)
@@ -556,10 +565,19 @@ def _install_fake_state(
         app.state.transcriber = transcriber
         executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="stt-test")
         app.state.stt_executor = executor
+        # Real Database on the per-test temp path (same contract as the real
+        # lifespan); torn down together with its WAL sidecars.
+        db = Database(settings.db_path)
+        await db.open()
+        app.state.db = db
+        app.state.verify_counter = DayCounter(initial=await db.count_checks_today())
         try:
             yield
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
+            await db.close()
+            for suffix in ("", "-wal", "-shm"):
+                Path(f"{settings.db_path}{suffix}").unlink(missing_ok=True)
 
     application.router.lifespan_context = fake_lifespan
 

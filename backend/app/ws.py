@@ -114,6 +114,8 @@ def _build_pipeline(websocket: WebSocket, hello: ClientHello) -> SessionPipeline
         ),
         verify_bucket=state.verify_bucket,
         quota_cooldown=state.quota_cooldown,
+        db=state.db,
+        verify_counter=state.verify_counter,
     )
 
 
