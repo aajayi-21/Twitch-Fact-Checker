@@ -32,10 +32,12 @@ already exited — writers stay temporally exclusive.
 import asyncio
 import json
 import logging
+import re
 import time
+from collections import deque
 from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from typing import Any, NamedTuple
 
 from fastapi import WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, ValidationError
@@ -44,10 +46,12 @@ from uuid import uuid4
 
 from app.claim_gate import ClaimGate, GateError
 from app.config import SENSITIVITY_THRESHOLDS, Settings
+from app.contradiction import ContradictionDetector
 from app.db import Database, DayCounter
 from app.fact_checker import FactChecker, QuotaExceededError, VerificationError
 from app.models import (
     ClientConfig,
+    ClientFrameMessage,
     ClientHello,
     ErrorFrame,
     GateClaim,
@@ -69,6 +73,63 @@ GATE_TICK_S = 1.0
 QUEUE_POLL_S = 0.25
 OVERLOAD_FRAME_INTERVAL_S = 10.0
 FLUSH_MIN_AUDIO_S = 0.5
+CONTRADICTION_QUEUE_MAXSIZE = 8
+
+# --------------------------------------------------------------------------- #
+# Vision (report §5): frame ring + visual-cue gating
+# --------------------------------------------------------------------------- #
+
+# Base64 length cap (~1.5 MB decoded JPEG) — anything bigger is not a 480p
+# stream frame and is dropped with a warning.
+MAX_FRAME_B64_LEN = 2_000_000
+# A frame older than this cannot be what the claim was pointing at.
+FRAME_MAX_AGE_S = 20.0
+MAX_STORED_FRAMES = 3
+
+# Deictic/visual cues: a claim containing one plausibly references something
+# ON SCREEN, so the temporally-closest captured frame is attached to its
+# verification. Known limitation (documented in the report): the gate
+# rewrites claims into self-contained sentences, so cues may not always
+# survive into claim_text — vision under-triggers rather than over-triggers.
+VISUAL_CUE_PHRASES: tuple[str, ...] = (
+    "look at this",
+    "look at that",
+    "looking at this",
+    "as you can see",
+    "you can see",
+    "on screen",
+    "on the screen",
+    "the screen says",
+    "it says here",
+    "says right here",
+    "right here",
+    "this chart",
+    "this graph",
+    "this article",
+    "this headline",
+    "this screenshot",
+    "this image",
+    "this picture",
+    "this clip",
+    "reading this",
+    "shown here",
+)
+_VISUAL_CUE_RE = re.compile(
+    "|".join(re.escape(phrase) for phrase in VISUAL_CUE_PHRASES), re.IGNORECASE
+)
+
+
+def has_visual_cue(text: str) -> bool:
+    """True when the text plausibly references something on screen."""
+    return _VISUAL_CUE_RE.search(text) is not None
+
+
+class StoredFrame(NamedTuple):
+    """One captured frame in the in-memory ring (NEVER persisted)."""
+
+    image_b64: str
+    captured_at_ms: int
+    received_at: float  # time.monotonic()
 
 # How a frame leaves the pipeline: queued (live phase) or sent directly
 # (flush phase, after the send loop has exited).
@@ -96,6 +157,7 @@ class SessionPipeline:
         quota_cooldown: QuotaCooldown,
         db: Database | None = None,
         verify_counter: DayCounter | None = None,
+        contradiction_detector: ContradictionDetector | None = None,
     ) -> None:
         self._websocket = websocket
         self._settings = settings
@@ -134,6 +196,15 @@ class SessionPipeline:
         self._verify_queue: asyncio.Queue[GateClaim] = asyncio.Queue(
             maxsize=VERIFY_QUEUE_MAXSIZE
         )
+        # Same-session contradiction detection (None = feature disabled,
+        # e.g. direct unit-test construction).
+        self._detector = contradiction_detector
+        self._contradiction_queue: asyncio.Queue[GateClaim] = asyncio.Queue(
+            maxsize=CONTRADICTION_QUEUE_MAXSIZE
+        )
+        # Captured stream frames, in-memory ONLY (privacy rule: frames are
+        # never persisted anywhere).
+        self._frames: deque[StoredFrame] = deque(maxlen=MAX_STORED_FRAMES)
         self._outbound: asyncio.Queue[dict[str, Any]] = asyncio.Queue(
             maxsize=OUTBOUND_QUEUE_MAXSIZE
         )
@@ -190,6 +261,10 @@ class SessionPipeline:
                 task_group.create_task(self._gate_loop(), name="gate")
                 task_group.create_task(self._verify_loop(), name="verify")
                 task_group.create_task(self._send_loop(), name="send")
+                if self._detector is not None:
+                    task_group.create_task(
+                        self._contradiction_loop(), name="contradiction"
+                    )
         except* WebSocketDisconnect:
             self._client_disconnected = True
             logger.info("client disconnected mid-session")
@@ -298,6 +373,13 @@ class SessionPipeline:
             except GateError as exc:
                 logger.warning("gate pass failed (batch dropped): %s", exc)
                 continue
+            # ALL gate claims feed the contradiction detector, PRE-filter: a
+            # contradiction between two low-stakes claims is still a
+            # contradiction (report §4.2), and the gate's hard exclusions
+            # already keep this to real assertions.
+            if self._detector is not None:
+                for claim in claims:
+                    self._enqueue_contradiction(claim)
             for claim in await self._filter_claims(claims, self._emit_queued):
                 await self._enqueue_claim(claim)
                 await self._emit_queued(StatusFrame(claim=claim.claim_text))
@@ -323,6 +405,53 @@ class SessionPipeline:
             except TimeoutError:
                 continue
             await self._send_direct_dict(frame)
+
+    async def _contradiction_loop(self) -> None:
+        """Serially run gated claims through the contradiction detector.
+
+        NOTHING here is ever fatal: an embedding/judge failure loses one
+        look, never the session. The flush phase deliberately does not feed
+        this loop — it is already dead by then, and a same-session
+        contradiction alert after the stream stopped has no audience.
+        """
+        while not self._stop_requested.is_set():
+            try:
+                claim = await asyncio.wait_for(
+                    self._contradiction_queue.get(), timeout=QUEUE_POLL_S
+                )
+            except TimeoutError:
+                continue
+            try:
+                frame = await self._detector.add(claim)
+            except Exception as exc:
+                logger.warning(
+                    "contradiction check failed for %r: %s", claim.claim_text, exc
+                )
+                continue
+            if frame is None:
+                continue
+            await self._emit_queued(frame)
+            if self._db is not None:
+                await self._db.record_contradiction(
+                    session_id=self._session_id,
+                    current_claim=frame.current_claim,
+                    prior_claim=frame.prior_claim,
+                    prior_claimed_at=frame.prior_claimed_at,
+                    confidence=frame.confidence,
+                    explanation=frame.explanation,
+                    emitted=True,
+                )
+
+    def _enqueue_contradiction(self, claim: GateClaim) -> None:
+        """Drop-OLDEST mirror of :meth:`_enqueue_claim` (newest is most
+        relevant to the live conversation)."""
+        if self._contradiction_queue.full():
+            dropped = self._contradiction_queue.get_nowait()
+            logger.debug(
+                "contradiction queue full; dropped oldest claim: %r",
+                dropped.claim_text,
+            )
+        self._contradiction_queue.put_nowait(claim)
 
     # ------------------------------------------------------------------ #
     # Frame handling
@@ -378,12 +507,46 @@ class SessionPipeline:
                 logger.info(
                     "enabled topics updated to %s", sorted(self._enabled_topics)
                 )
+        elif frame_type == "frame":
+            self._handle_video_frame(data)
         elif frame_type == "stop":
             logger.info("client requested graceful stop; flushing")
             self._graceful_stop = True
             self._stop_requested.set()
         else:
             logger.warning("ignoring unknown client frame type: %r", frame_type)
+
+    def _handle_video_frame(self, data: dict[str, Any]) -> None:
+        """Ring-buffer one captured frame; invalid/oversize frames drop."""
+        try:
+            frame = ClientFrameMessage.model_validate(data)
+        except ValidationError as exc:
+            logger.warning("ignoring invalid frame message: %s", exc)
+            return
+        if len(frame.image_b64) > MAX_FRAME_B64_LEN:
+            logger.warning(
+                "ignoring oversize frame (%d b64 chars > %d)",
+                len(frame.image_b64),
+                MAX_FRAME_B64_LEN,
+            )
+            return
+        self._frames.append(
+            StoredFrame(
+                image_b64=frame.image_b64,
+                captured_at_ms=frame.captured_at_ms,
+                received_at=time.monotonic(),
+            )
+        )
+
+    def _select_frame(self) -> str | None:
+        """The newest fresh frame, or None — a stale frame (captured well
+        before the claim was spoken) is worse than no frame."""
+        if not self._frames:
+            return None
+        newest = self._frames[-1]
+        if time.monotonic() - newest.received_at > FRAME_MAX_AGE_S:
+            return None
+        return newest.image_b64
 
     # ------------------------------------------------------------------ #
     # Shared pipeline steps (used by both the live and flush phases)
@@ -524,8 +687,17 @@ class SessionPipeline:
         self._verify_calls += 1
         if self._verify_counter is not None:
             self._verify_counter.increment()
+        # Vision (report §5): attach the freshest captured frame ONLY when
+        # the claim plausibly references something on screen. The checker's
+        # ladder guarantees an image can never fail a check that would
+        # succeed without it.
+        image_b64: str | None = None
+        if self._settings.vision_enabled and has_visual_cue(claim.claim_text):
+            image_b64 = self._select_frame()
         try:
-            verdict = await self._checker.check(claim.claim_text, topic=claim.topic)
+            verdict = await self._checker.check(
+                claim.claim_text, topic=claim.topic, image_b64=image_b64
+            )
         except QuotaExceededError as exc:
             logger.warning("quota exceeded: %s", exc)
             await self._record_claim(claim, "verify_failed")
@@ -611,7 +783,12 @@ class SessionPipeline:
         if self._db is None:
             return
         await self._db.record_claim(
-            claim=claim, session_id=self._session_id, outcome=outcome
+            claim=claim,
+            session_id=self._session_id,
+            outcome=outcome,
+            # Persisted for the report's §5.1 measurement: how often claims
+            # reference on-screen content (the frame itself is NEVER stored).
+            has_visual_cue=has_visual_cue(claim.claim_text),
         )
 
     async def _record_verdict(

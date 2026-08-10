@@ -20,6 +20,8 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 
 from app.config import SERVER_VERSION, Settings
+from app.contradiction import ContradictionDetector
+from app.embeddings import OllamaEmbedder
 from app.llm_provider import LLMRuntime, create_claim_gate, create_fact_checker
 from app.models import ClientHello, ErrorFrame, ReadyFrame
 from app.pipeline import SessionPipeline
@@ -102,13 +104,14 @@ def _build_pipeline(websocket: WebSocket, hello: ClientHello) -> SessionPipeline
     state = websocket.app.state
     runtime: LLMRuntime = state.llm_runtime
     settings: Settings = runtime.settings
+    claim_gate = create_claim_gate(settings, runtime.gate_client)
     return SessionPipeline(
         websocket=websocket,
         hello=hello,
         settings=settings,
         transcriber=state.transcriber,
         stt_executor=state.stt_executor,
-        claim_gate=create_claim_gate(settings, runtime.gate_client),
+        claim_gate=claim_gate,
         fact_checker=create_fact_checker(
             settings, runtime.verify_client, state.quota_cooldown
         ),
@@ -116,6 +119,14 @@ def _build_pipeline(websocket: WebSocket, hello: ClientHello) -> SessionPipeline
         quota_cooldown=state.quota_cooldown,
         db=state.db,
         verify_counter=state.verify_counter,
+        # Judge rides the session's own gate; the embedder is stateless
+        # per-call, degrading to lexical matching when Ollama is absent.
+        contradiction_detector=ContradictionDetector(
+            gate=claim_gate,
+            embedder=OllamaEmbedder(
+                settings.ollama_base_url, settings.ollama_embed_model
+            ),
+        ),
     )
 
 

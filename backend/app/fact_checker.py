@@ -134,36 +134,45 @@ class FactChecker(ABC):
         self._seen_normalized_claims.append(normalized)
         return False
 
-    async def check(self, claim: str, topic: Topic = "other") -> Verdict:
+    async def check(
+        self, claim: str, topic: Topic = "other", image_b64: str | None = None
+    ) -> Verdict:
         """Verify one claim; one retry on timeout; invariants always enforced.
 
         ``topic`` is the gate's classification for the claim; it is carried
         through onto the assembled :class:`Verdict` untouched (verification
         itself is topic-agnostic).
 
+        ``image_b64`` (a captured stream frame) gets ONE image-bearing
+        attempt under the HARD RULE that an image must never make a check
+        fail that would succeed without it: any non-quota failure of that
+        attempt falls through to the unchanged image-free ladder below. A
+        quota failure propagates immediately — the cooldown is tripped and a
+        retry would spend money to fail again.
+
         Raises:
             QuotaExceededError: on a quota failure (cooldown already tripped).
             VerificationError: on timeout after retry or exhausted fallbacks.
         """
-        try:
-            payload, sources, used_fallback = await asyncio.wait_for(
-                self._check_once(claim), timeout=self._verify_timeout_s
-            )
-        except asyncio.TimeoutError:
-            logger.warning(
-                "verification timed out after %.0fs, retrying once: %r",
-                self._verify_timeout_s,
-                claim,
-            )
+        result: tuple[VerdictPayload, list[Source], bool] | None = None
+        if image_b64 is not None:
             try:
-                payload, sources, used_fallback = await asyncio.wait_for(
-                    self._check_once(claim), timeout=self._verify_timeout_s
+                result = await asyncio.wait_for(
+                    self._check_once(claim, image_b64),
+                    timeout=self._verify_timeout_s,
                 )
-            except asyncio.TimeoutError as exc:
-                raise VerificationError(
-                    f"verification timed out twice "
-                    f"({self._verify_timeout_s:.0f}s each) for claim: {claim!r}"
-                ) from exc
+            except QuotaExceededError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "image-bearing verification failed (%s); retrying "
+                    "without the image: %r",
+                    exc,
+                    claim,
+                )
+        if result is None:
+            result = await self._check_text_only_with_retry(claim)
+        payload, sources, used_fallback = result
         payload = self._enforce_invariants(payload, sources)
         return Verdict(
             claim=claim,
@@ -174,25 +183,52 @@ class FactChecker(ABC):
             used_fallback=used_fallback,
         )
 
-    async def _check_once(
+    async def _check_text_only_with_retry(
         self, claim: str
+    ) -> tuple[VerdictPayload, list[Source], bool]:
+        """The pre-vision ladder: one timeout retry, image never involved."""
+        try:
+            return await asyncio.wait_for(
+                self._check_once(claim), timeout=self._verify_timeout_s
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "verification timed out after %.0fs, retrying once: %r",
+                self._verify_timeout_s,
+                claim,
+            )
+            try:
+                return await asyncio.wait_for(
+                    self._check_once(claim), timeout=self._verify_timeout_s
+                )
+            except asyncio.TimeoutError as exc:
+                raise VerificationError(
+                    f"verification timed out twice "
+                    f"({self._verify_timeout_s:.0f}s each) for claim: {claim!r}"
+                ) from exc
+
+    async def _check_once(
+        self, claim: str, image_b64: str | None = None
     ) -> tuple[VerdictPayload, list[Source], bool]:
         """Structured grounded call; on failure/unusable output run the fallback."""
         try:
-            payload, sources = await self._grounded_structured(claim)
+            payload, sources = await self._grounded_structured(claim, image_b64)
             return payload, sources, False
         except _FallbackNeeded as exc:
             logger.warning(
                 "grounded structured call unusable (%s); using fallback chain", exc
             )
-        payload, sources = await self._grounded_fallback(claim)
+        payload, sources = await self._grounded_fallback(claim, image_b64)
         return payload, sources, True
 
     @abstractmethod
     async def _grounded_structured(
-        self, claim: str
+        self, claim: str, image_b64: str | None = None
     ) -> tuple[VerdictPayload, list[Source]]:
         """Provider transport: grounded search + flat structured output.
+
+        ``image_b64`` (bare base64 JPEG), when set, is attached as an image
+        content part alongside the prompt (built with ``with_image=True``).
 
         Implementations must raise :class:`_FallbackNeeded` when the
         structured path is unsupported or its output is unparseable,
@@ -204,7 +240,7 @@ class FactChecker(ABC):
 
     @abstractmethod
     async def _grounded_fallback(
-        self, claim: str
+        self, claim: str, image_b64: str | None = None
     ) -> tuple[VerdictPayload, list[Source]]:
         """Provider transport: grounded plain-text call + lenient parse chain.
 

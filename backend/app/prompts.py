@@ -191,6 +191,20 @@ sources, including the key fact or number. No URLs.>
 """
 
 
+# Appended to verify prompts when a captured stream frame is attached. The
+# label rules stay structural: an image can never produce url_citation
+# sources, so the no-citations => UNVERIFIED invariant already caps what a
+# misread frame can do.
+VERIFY_IMAGE_NOTE = """\
+
+
+A frame captured from the live stream is attached. Use it ONLY if it is
+clearly legible and directly relevant to the claim; otherwise ignore it
+entirely. The label rules above are unchanged — never move off UNVERIFIED
+based on the image alone.
+"""
+
+
 CONTRADICTION_PROMPT_TEMPLATE = """\
 You compare two statements made by the SAME speaker at different points in ONE
 live stream, and decide whether they LOGICALLY CONTRADICT each other.
@@ -245,14 +259,18 @@ def build_gate_prompt(context: str, new_transcript: str) -> str:
     )
 
 
-def build_verify_prompt(claim: str, date: str) -> str:
+def build_verify_prompt(claim: str, date: str, with_image: bool = False) -> str:
     """Render the grounded structured verification prompt."""
-    return VERIFY_PROMPT_TEMPLATE.format(claim=claim, date=date)
+    prompt = VERIFY_PROMPT_TEMPLATE.format(claim=claim, date=date)
+    return prompt + VERIFY_IMAGE_NOTE if with_image else prompt
 
 
-def build_verify_fallback_prompt(claim: str, date: str) -> str:
+def build_verify_fallback_prompt(
+    claim: str, date: str, with_image: bool = False
+) -> str:
     """Render the grounded plain-text (LABEL:/EXPLANATION:) fallback prompt."""
-    return VERIFY_FALLBACK_PROMPT_TEMPLATE.format(claim=claim, date=date)
+    prompt = VERIFY_FALLBACK_PROMPT_TEMPLATE.format(claim=claim, date=date)
+    return prompt + VERIFY_IMAGE_NOTE if with_image else prompt
 
 
 def build_verdict_extraction_prompt(raw_text: str) -> str:

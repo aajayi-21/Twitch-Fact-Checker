@@ -199,14 +199,30 @@ class GeminiFactChecker(FactChecker):
         self._verify_model = verify_model
         self._extraction_model = extraction_model
 
+    @staticmethod
+    def _interaction_input(prompt: str, image_b64: str | None) -> Any:
+        """Plain string for text-only calls (pre-vision wire shape); a
+        text+image content-part list when a frame is attached."""
+        if image_b64 is None:
+            return prompt
+        return [
+            {"type": "text", "text": prompt},
+            {"type": "image", "data": image_b64, "mime_type": "image/jpeg"},
+        ]
+
     async def _grounded_structured(
-        self, claim: str
+        self, claim: str, image_b64: str | None = None
     ) -> tuple[VerdictPayload, list[Source]]:
         """Grounded search + flat structured output in a single Interactions call."""
         try:
             interaction = await self._client.aio.interactions.create(
                 model=self._verify_model,
-                input=build_verify_prompt(claim, _today()),
+                input=self._interaction_input(
+                    build_verify_prompt(
+                        claim, _today(), with_image=image_b64 is not None
+                    ),
+                    image_b64,
+                ),
                 tools=[{"type": "google_search"}],
                 response_format={
                     "type": "text",
@@ -228,7 +244,7 @@ class GeminiFactChecker(FactChecker):
         return payload, sources
 
     async def _grounded_fallback(
-        self, claim: str
+        self, claim: str, image_b64: str | None = None
     ) -> tuple[VerdictPayload, list[Source]]:
         """Grounded plain-text call -> lenient parse -> ungrounded extraction.
 
@@ -238,7 +254,12 @@ class GeminiFactChecker(FactChecker):
         try:
             interaction = await self._client.aio.interactions.create(
                 model=self._verify_model,
-                input=build_verify_fallback_prompt(claim, _today()),
+                input=self._interaction_input(
+                    build_verify_fallback_prompt(
+                        claim, _today(), with_image=image_b64 is not None
+                    ),
+                    image_b64,
+                ),
                 tools=[{"type": "google_search"}],
                 generation_config={"temperature": 0.0},
             )

@@ -494,12 +494,13 @@ class OpenRouterFactChecker(FactChecker):
         }
 
     async def _grounded_structured(
-        self, claim: str
+        self, claim: str, image_b64: str | None = None
     ) -> tuple[VerdictPayload, list[Source]]:
         """Web search + strict flat structured output in a single call."""
         try:
             response = await self._strict_grounded_completion(
-                build_verify_prompt(claim, _today())
+                build_verify_prompt(claim, _today(), with_image=image_b64 is not None),
+                image_b64=image_b64,
             )
         except Exception as exc:
             raise self._translate_api_error(
@@ -516,7 +517,9 @@ class OpenRouterFactChecker(FactChecker):
             raise _FallbackNeeded(f"structured output unparseable: {exc}") from exc
         return payload, sources
 
-    async def _strict_grounded_completion(self, prompt: str) -> Any:
+    async def _strict_grounded_completion(
+        self, prompt: str, image_b64: str | None = None
+    ) -> Any:
         """One strict verify completion, retried once without ``reasoning``.
 
         Same disambiguation as the gate's :meth:`OpenRouterClaimGate.
@@ -550,6 +553,7 @@ class OpenRouterFactChecker(FactChecker):
                 response_format=response_format,
                 extra_body=first_extra_body,
                 max_tokens=VERIFY_MAX_TOKENS,
+                image_b64=image_b64,
             )
         except openai.APIStatusError as exc:
             if (
@@ -562,12 +566,13 @@ class OpenRouterFactChecker(FactChecker):
                 response_format=response_format,
                 extra_body=build_extra_body(include_reasoning=False),
                 max_tokens=VERIFY_MAX_TOKENS,
+                image_b64=image_b64,
             )
             _mark_reasoning_unsupported(exc.status_code, self._verify_model)
             return response
 
     async def _grounded_fallback(
-        self, claim: str
+        self, claim: str, image_b64: str | None = None
     ) -> tuple[VerdictPayload, list[Source]]:
         """Web-plugin plain-text call -> lenient parse -> json_object extraction.
 
@@ -576,12 +581,15 @@ class OpenRouterFactChecker(FactChecker):
         """
         try:
             response = await self._create_completion(
-                build_verify_fallback_prompt(claim, _today()),
+                build_verify_fallback_prompt(
+                    claim, _today(), with_image=image_b64 is not None
+                ),
                 response_format=None,
                 extra_body=self._extra_body_with_reasoning(
                     {"plugins": [self._web_plugin()]}
                 ),
                 max_tokens=VERIFY_MAX_TOKENS,
+                image_b64=image_b64,
             )
         except Exception as exc:
             raise self._translate_api_error(
@@ -648,11 +656,26 @@ class OpenRouterFactChecker(FactChecker):
         response_format: dict[str, Any] | None,
         extra_body: dict[str, Any],
         max_tokens: int,
+        image_b64: str | None = None,
     ) -> Any:
-        """One verify-model completion with the per-call SDK timeout applied."""
+        """One verify-model completion with the per-call SDK timeout applied.
+
+        With ``image_b64`` the message content becomes OpenAI-style parts
+        (text + ``image_url`` data URI); plain string content otherwise, so
+        text-only call shapes stay byte-identical to the pre-vision wire.
+        """
+        content: Any = prompt
+        if image_b64 is not None:
+            content = [
+                {"type": "text", "text": prompt},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"},
+                },
+            ]
         kwargs: dict[str, Any] = {
             "model": self._verify_model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [{"role": "user", "content": content}],
             "temperature": 0.0,
             "max_tokens": max_tokens,
             "extra_body": extra_body,
