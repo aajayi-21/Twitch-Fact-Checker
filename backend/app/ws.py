@@ -108,9 +108,9 @@ def _build_pipeline(websocket: WebSocket, hello: ClientHello) -> SessionPipeline
         settings=settings,
         transcriber=state.transcriber,
         stt_executor=state.stt_executor,
-        claim_gate=create_claim_gate(settings, runtime.client),
+        claim_gate=create_claim_gate(settings, runtime.gate_client),
         fact_checker=create_fact_checker(
-            settings, runtime.client, state.quota_cooldown
+            settings, runtime.verify_client, state.quota_cooldown
         ),
         verify_bucket=state.verify_bucket,
         quota_cooldown=state.quota_cooldown,

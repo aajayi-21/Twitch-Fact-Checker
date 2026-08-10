@@ -509,6 +509,11 @@ def make_test_settings(**overrides: Any) -> Settings:
         "db_path": str(
             Path(tempfile.gettempdir()) / f"fact-checker-test-{uuid4().hex}.db"
         ),
+        # Dead port: an instant connection refusal on every machine, so
+        # ollama-touching paths (embeddings, reachability probes) degrade
+        # deterministically and the suite stays genuinely offline even on
+        # dev boxes running a real Ollama.
+        "ollama_base_url": "http://127.0.0.1:1/v1",
     }
     base.update(overrides)
     return Settings(**base)
@@ -526,7 +531,10 @@ def make_fake_llm_runtime(
         return LLMRuntime(settings=settings)
     return LLMRuntime(
         settings=settings,
-        client=genai_client,
+        # Same fake object for both stages (mirrors build_llm_runtime when
+        # gate and verify resolve to the same provider).
+        gate_client=genai_client,
+        verify_client=genai_client,
         gate=GeminiClaimGate(
             client=genai_client,
             model=settings.gemini_gate_model,
@@ -612,8 +620,13 @@ def _reset_current_pipeline() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
-def _reset_openrouter_process_latches() -> Iterator[None]:
-    """Isolate the process-wide OpenRouter latches between tests."""
+def _reset_llm_process_latches() -> Iterator[None]:
+    """Isolate the process-wide provider latches between tests.
+
+    RULE: every new process-wide latch (class attribute surviving session
+    rebuilds) needs a reset here.
+    """
+    from app.llm_local import LocalClaimGate
     from app.llm_openrouter import OpenRouterClaimGate, _ReasoningSupport
 
     def reset() -> None:
@@ -621,6 +634,7 @@ def _reset_openrouter_process_latches() -> Iterator[None]:
         OpenRouterClaimGate._consecutive_strict_503s = 0
         OpenRouterClaimGate._json_schema_retry_at = 0.0
         _ReasoningSupport.unsupported = False
+        LocalClaimGate._json_schema_unsupported = False
 
     reset()
     yield
@@ -635,6 +649,17 @@ def fake_genai_client() -> FakeGenAIClient:
 @pytest.fixture()
 def fake_openrouter_client() -> FakeOpenRouterClient:
     return FakeOpenRouterClient()
+
+
+# The local (Ollama) transport talks through the identical AsyncOpenAI
+# surface, so the OpenRouter fake covers it verbatim; the alias keeps test
+# intent readable.
+FakeLocalClient = FakeOpenRouterClient
+
+
+@pytest.fixture()
+def fake_local_client() -> FakeLocalClient:
+    return FakeLocalClient()
 
 
 @pytest.fixture()

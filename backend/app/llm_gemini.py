@@ -41,8 +41,15 @@ from app.fact_checker import (
     _FallbackNeeded,
     _today,
 )
-from app.models import GateClaim, GateResult, Source, VerdictPayload
+from app.models import (
+    ContradictionJudgement,
+    GateClaim,
+    GateResult,
+    Source,
+    VerdictPayload,
+)
 from app.prompts import (
+    build_contradiction_prompt,
     build_gate_prompt,
     build_verdict_extraction_prompt,
     build_verify_fallback_prompt,
@@ -122,6 +129,42 @@ class GeminiClaimGate(ClaimGate):
         except Exception as exc:
             raise GateError(f"gate call failed: {exc}") from exc
         return self._parse_gate_response(response)
+
+    async def judge_contradiction(
+        self, current: str, prior: str
+    ) -> ContradictionJudgement:
+        """One structured judge call on the gate model (no search)."""
+        try:
+            response = await asyncio.wait_for(
+                self._client.aio.models.generate_content(
+                    model=self._model,
+                    contents=build_contradiction_prompt(current, prior),
+                    config=genai_types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        response_schema=ContradictionJudgement,
+                        temperature=0.0,
+                    ),
+                ),
+                timeout=self._gate_timeout_s,
+            )
+        except asyncio.TimeoutError as exc:
+            raise GateError(
+                f"contradiction judge timed out after {self._gate_timeout_s:.0f}s"
+            ) from exc
+        except Exception as exc:
+            raise GateError(f"contradiction judge failed: {exc}") from exc
+        parsed = getattr(response, "parsed", None)
+        if isinstance(parsed, ContradictionJudgement):
+            return parsed
+        raw = (getattr(response, "text", None) or "").strip()
+        if not raw:
+            raise GateError("contradiction judge response contained no text")
+        try:
+            return ContradictionJudgement.model_validate_json(raw)
+        except ValidationError as exc:
+            raise GateError(
+                f"contradiction judgement failed schema validation: {exc}"
+            ) from exc
 
     @staticmethod
     def _parse_gate_response(

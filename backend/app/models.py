@@ -24,6 +24,8 @@ Label = Literal["TRUE", "FALSE", "MISLEADING", "UNVERIFIED"]
 
 Sensitivity = Literal["low", "medium", "high"]
 
+Confidence = Literal["low", "medium", "high"]
+
 Topic = Literal[
     "politics",
     "health",
@@ -141,6 +143,18 @@ class ClientStop(BaseModel):
     """Graceful end: server flushes, runs a final gate pass, closes 1000."""
 
     type: Literal["stop"]
+
+
+class ClientFrameMessage(BaseModel):
+    """One captured video frame (wire contract §Phase 6).
+
+    ``image_b64`` is a bare base64 JPEG (no ``data:`` prefix). Frames live
+    only in the session's in-memory ring — NEVER persisted (privacy rule).
+    """
+
+    type: Literal["frame"]
+    image_b64: str
+    captured_at_ms: int
 
 
 # --------------------------------------------------------------------------- #
@@ -309,6 +323,31 @@ class VerdictFrame(BaseModel):
     @classmethod
     def from_verdict(cls, verdict: Verdict) -> "VerdictFrame":
         return cls(**verdict.model_dump())
+
+
+class ContradictionJudgement(BaseModel):
+    """The contradiction judge's flat structured output (gate-model call)."""
+
+    contradicts: bool
+    confidence: Confidence
+    explanation: str
+
+
+class ContradictionFrame(BaseModel):
+    """Same-session self-contradiction alert (wire contract §Phase 5).
+
+    Deliberately NOT a verdict: it answers "is this consistent with what you
+    said earlier", never "is this true", and gets its own visual language in
+    the overlay. Only confidence == "high" judgements are ever emitted (the
+    detector enforces this).
+    """
+
+    type: Literal["contradiction"] = "contradiction"
+    current_claim: str
+    prior_claim: str
+    prior_claimed_at: str
+    confidence: Confidence
+    explanation: str
 
 
 class ErrorFrame(BaseModel):

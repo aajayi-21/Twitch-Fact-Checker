@@ -624,7 +624,7 @@ class SessionPipeline:
             claim_id=claim.id,
             session_id=self._session_id,
             latency_ms=int((time.monotonic() - verify_started_at) * 1000),
-            provider=self._settings.llm_provider,
+            provider=self._settings.resolved_verify_provider,
             model=self._settings.active_verify_model,
         )
 

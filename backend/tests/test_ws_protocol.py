@@ -93,6 +93,8 @@ class TestHealthz:
             "whisper_model": "fake-whisper.en",
             "configured": True,
             "llm_provider": "gemini",
+            "gate_provider": "gemini",
+            "verify_provider": "gemini",
             "gate_model": "fake-gate-model",
             "verify_model": "fake-verify-model",
             "checks_today": 0,

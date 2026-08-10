@@ -46,20 +46,26 @@ import openai
 from openai import AsyncOpenAI
 from pydantic import ValidationError
 
-from app.claim_gate import ClaimGate, GateError
+from app.claim_gate import (
+    GATE_JSON_SCHEMA,
+    ClaimGate,
+    GateError,
+    parse_contradiction_judgement,
+    parse_gate_result,
+)
 from app.fact_checker import (
     DEFAULT_RETRY_AFTER_S,
     FLAT_VERDICT_SCHEMA,
     MAX_SOURCES,
-    _JSON_FENCE_RE,
     FactChecker,
     QuotaExceededError,
     VerificationError,
     _FallbackNeeded,
     _today,
 )
-from app.models import TOPICS, GateClaim, GateResult, Source, VerdictPayload
+from app.models import ContradictionJudgement, GateClaim, Source, VerdictPayload
 from app.prompts import (
+    build_contradiction_prompt,
     build_gate_prompt,
     build_verdict_extraction_prompt,
     build_verify_fallback_prompt,
@@ -126,34 +132,8 @@ WEB_SEARCH_PROMPT = (
     "citations are collected separately from metadata."
 )
 
-# Strict gate schema, written out by hand (rather than generated from the
-# Pydantic model) so it contains no $refs/titles/numeric-bound keywords that
-# strict-mode validators are known to reject. Range enforcement for
-# check_worthiness still happens in Pydantic when the response is parsed.
-GATE_JSON_SCHEMA: dict[str, Any] = {
-    "name": "gate_result",
-    "strict": True,
-    "schema": {
-        "type": "object",
-        "properties": {
-            "claims": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "claim_text": {"type": "string"},
-                        "check_worthiness": {"type": "number"},
-                        "topic": {"type": "string", "enum": list(TOPICS)},
-                    },
-                    "required": ["claim_text", "check_worthiness", "topic"],
-                    "additionalProperties": False,
-                },
-            }
-        },
-        "required": ["claims"],
-        "additionalProperties": False,
-    },
-}
+# The strict gate schema lives in app.claim_gate (GATE_JSON_SCHEMA, imported
+# above): it is provider-neutral and shared with the local (Ollama) gate.
 
 # The verify schema is the shared flat two-field schema plus the strict-mode
 # additionalProperties requirement.
@@ -448,17 +428,36 @@ class OpenRouterClaimGate(ClaimGate):
 
     @staticmethod
     def _parse_gate_json(raw: str) -> list[GateClaim]:
-        """Robust parse (fences/prose tolerated) into ``GateResult.claims``."""
-        if not raw:
-            raise GateError("gate response contained no text to parse")
-        cleaned = _JSON_FENCE_RE.sub("", raw).strip()
-        start, end = cleaned.find("{"), cleaned.rfind("}")
-        if start == -1 or end <= start:
-            raise GateError(f"no JSON object found in gate response: {cleaned[:120]!r}")
+        """Robust parse into ``GateResult.claims`` (shared, provider-neutral)."""
+        return parse_gate_result(raw)
+
+    async def judge_contradiction(
+        self, current: str, prior: str
+    ) -> ContradictionJudgement:
+        """One ``json_object`` judge call on the gate model.
+
+        Deliberately does NOT touch the strict-latch machinery: three flat
+        fields need no schema enforcement, and keeping the latch semantics
+        purely gate-owned avoids cross-talk between the two call kinds.
+        """
+        prompt = build_contradiction_prompt(current, prior)
         try:
-            return GateResult.model_validate_json(cleaned[start : end + 1]).claims
-        except ValidationError as exc:
-            raise GateError(f"gate response failed schema validation: {exc}") from exc
+            raw = await self._complete(
+                prompt,
+                response_format={"type": "json_object"},
+                require_parameters=False,
+            )
+        except GateError:
+            raise
+        except openai.APITimeoutError as exc:
+            raise GateError(
+                f"contradiction judge timed out after {self._gate_timeout_s:.0f}s"
+            ) from exc
+        except openai.APIStatusError as exc:
+            raise _gate_api_error(exc) from exc
+        except Exception as exc:
+            raise GateError(f"contradiction judge failed: {exc}") from exc
+        return parse_contradiction_judgement(raw)
 
 
 class OpenRouterFactChecker(FactChecker):

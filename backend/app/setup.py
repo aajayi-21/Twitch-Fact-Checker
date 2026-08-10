@@ -39,7 +39,7 @@ from pydantic import BaseModel
 
 from app import ws
 from app.config import Settings, resolve_env_file
-from app.llm_provider import LLMRuntime, build_llm_runtime, close_llm_client
+from app.llm_provider import LLMRuntime, build_llm_runtime, close_llm_runtime
 from app.rate_limit import QuotaCooldown
 
 logger = logging.getLogger(__name__)
@@ -50,8 +50,15 @@ PROBE_TIMEOUT_S = 10.0
 OPENROUTER_KEY_URL = "https://openrouter.ai/api/v1/key"
 OPENROUTER_CREDITS_URL = "https://openrouter.ai/api/v1/credits"
 
-Provider = Literal["openrouter", "gemini"]
+Provider = Literal["openrouter", "gemini", "ollama"]
 
+# Stage routing: which providers each pipeline stage accepts. Ollama is
+# GATE-ONLY — local verify has no web-search grounding, so every verdict
+# would be downgraded to UNVERIFIED.
+GATE_PROVIDERS: tuple[str, ...] = ("openrouter", "gemini", "ollama")
+VERIFY_PROVIDERS: tuple[str, ...] = ("openrouter", "gemini")
+
+# Keyed providers only — Ollama has no key and no settings field to persist.
 _PROVIDER_ENV_KEYS: dict[str, str] = {
     "openrouter": "OPENROUTER_API_KEY",
     "gemini": "GEMINI_API_KEY",
@@ -60,6 +67,7 @@ _PROVIDER_SETTINGS_FIELDS: dict[str, str] = {
     "openrouter": "openrouter_api_key",
     "gemini": "gemini_api_key",
 }
+_KNOWN_PROVIDERS: frozenset[str] = frozenset({"openrouter", "gemini", "ollama"})
 
 
 class ProviderKeyRejected(Exception):
@@ -77,20 +85,50 @@ class CreditsInfo(BaseModel):
     usage: float
 
 
-class SetupStatusResponse(BaseModel):
-    """Shape shared by GET /setup/status and a successful credentials POST.
+class StageStatus(BaseModel):
+    """One pipeline stage's resolved provider + model + usability."""
 
-    ``key_hint`` is the ONLY key material that ever leaves the backend:
-    an ellipsis plus the last four characters. ``credits`` is populated for
-    OpenRouter only (Gemini has no free credits probe) and is best-effort.
-    """
+    provider: str | None
+    model: str | None
+    configured: bool
+
+
+class OpenRouterStatus(BaseModel):
+    """``key_hint`` is the ONLY key material that ever leaves the backend:
+    an ellipsis plus the last four characters. ``credits`` is best-effort."""
 
     configured: bool
-    provider: Provider | None
     key_hint: str | None
-    gate_model: str | None
-    verify_model: str | None
     credits: CreditsInfo | None
+
+
+class GeminiStatus(BaseModel):
+    configured: bool
+    key_hint: str | None
+
+
+class OllamaStatus(BaseModel):
+    """Keyless local provider: ``configured`` is always True; ``reachable``
+    is a live best-effort probe of the OpenAI-compatible endpoint."""
+
+    configured: bool
+    reachable: bool
+    base_url: str
+
+
+class ProvidersStatus(BaseModel):
+    openrouter: OpenRouterStatus
+    gemini: GeminiStatus
+    ollama: OllamaStatus
+
+
+class SetupStatusResponse(BaseModel):
+    """Shape shared by GET /setup/status and successful setup POSTs."""
+
+    configured: bool
+    gate: StageStatus
+    verify: StageStatus
+    providers: ProvidersStatus
 
 
 class SetupCredentialsRequest(BaseModel):
@@ -98,10 +136,19 @@ class SetupCredentialsRequest(BaseModel):
 
     Both fields default to ``""`` so missing keys surface as the contract's
     400 (via the handler's explicit checks) instead of FastAPI's 422.
+    ``api_key`` stays ``""`` for ``provider="ollama"`` (keyless
+    test-connection).
     """
 
     provider: str = ""
     api_key: str = ""
+
+
+class SetupStagesRequest(BaseModel):
+    """Body for POST /setup/stages — per-stage provider routing."""
+
+    gate_provider: str = ""
+    verify_provider: str = ""
 
 
 # --------------------------------------------------------------------------- #
@@ -207,6 +254,31 @@ async def validate_gemini_key(api_key: str) -> None:
             logger.debug("error closing Gemini probe client: %s", exc)
 
 
+async def probe_ollama(base_url: str) -> None:
+    """Probe the local OpenAI-compatible server (``GET {base_url}/models``).
+
+    Free and keyless. Also catches a misconfigured ``OLLAMA_BASE_URL`` (e.g.
+    one missing the ``/v1`` suffix) at setup time.
+
+    Raises:
+        ProviderUnreachable: on network failure, timeout, or non-200.
+    """
+    url = f"{base_url.rstrip('/')}/models"
+    try:
+        async with httpx.AsyncClient(timeout=PROBE_TIMEOUT_S) as http_client:
+            response = await http_client.get(url)
+    except httpx.HTTPError as exc:
+        raise ProviderUnreachable(
+            f"could not reach the local LLM server at {base_url} — "
+            f"is `ollama serve` running? ({exc})"
+        ) from exc
+    if response.status_code != 200:
+        raise ProviderUnreachable(
+            f"unexpected response from the local LLM server at {url} "
+            f"(HTTP {response.status_code})"
+        )
+
+
 # --------------------------------------------------------------------------- #
 # .env persistence
 # --------------------------------------------------------------------------- #
@@ -298,38 +370,131 @@ def _atomic_write(path: Path, content: str) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def _status_payload(
-    runtime: LLMRuntime, credits: CreditsInfo | None
-) -> SetupStatusResponse:
-    """The shared response shape for both endpoints; never leaks the key."""
-    if not runtime.configured:
-        return SetupStatusResponse(
-            configured=False,
-            provider=None,
-            key_hint=None,
-            gate_model=None,
-            verify_model=None,
-            credits=None,
-        )
-    settings = runtime.settings
-    return SetupStatusResponse(
-        configured=True,
-        provider=settings.llm_provider,
-        key_hint=f"…{settings.active_api_key[-4:]}",
-        gate_model=settings.active_gate_model,
-        verify_model=settings.active_verify_model,
-        credits=credits,
+def _key_hint(settings: Settings, provider: str) -> str | None:
+    """Last-4 hint for a keyed provider, None when unconfigured/keyless."""
+    if not settings.provider_configured(provider):
+        return None
+    key = getattr(settings, _PROVIDER_SETTINGS_FIELDS[provider], "").strip()
+    return f"…{key[-4:]}" if key else None
+
+
+def _stage_status(settings: Settings, provider: str, model: str) -> StageStatus:
+    return StageStatus(
+        provider=provider,
+        model=model,
+        configured=settings.provider_configured(provider),
     )
+
+
+async def _build_status(settings: Settings) -> SetupStatusResponse:
+    """The shared response shape for every setup endpoint.
+
+    Never leaks key material beyond last-4 hints. The OpenRouter credits
+    fetch and the Ollama reachability probe are both best-effort — a dead
+    local port answers instantly, so the probe is cheap in practice.
+    """
+    credits: CreditsInfo | None = None
+    # Fetch credits only when OpenRouter actually serves a stage — a stored
+    # key alone must not trigger an internet round-trip on every status poll.
+    openrouter_active = "openrouter" in {
+        settings.resolved_gate_provider,
+        settings.resolved_verify_provider,
+    }
+    if openrouter_active and settings.provider_configured("openrouter"):
+        credits = await fetch_openrouter_credits(settings.openrouter_api_key)
+    try:
+        await probe_ollama(settings.ollama_base_url)
+        ollama_reachable = True
+    except ProviderUnreachable:
+        ollama_reachable = False
+    return SetupStatusResponse(
+        configured=settings.is_configured,
+        gate=_stage_status(
+            settings, settings.resolved_gate_provider, settings.active_gate_model
+        ),
+        verify=_stage_status(
+            settings, settings.resolved_verify_provider, settings.active_verify_model
+        ),
+        providers=ProvidersStatus(
+            openrouter=OpenRouterStatus(
+                configured=settings.provider_configured("openrouter"),
+                key_hint=_key_hint(settings, "openrouter"),
+                credits=credits,
+            ),
+            gemini=GeminiStatus(
+                configured=settings.provider_configured("gemini"),
+                key_hint=_key_hint(settings, "gemini"),
+            ),
+            ollama=OllamaStatus(
+                configured=True,
+                reachable=ollama_reachable,
+                base_url=settings.ollama_base_url,
+            ),
+        ),
+    )
+
+
+async def _swap_runtime(request: Request, new_settings: Settings) -> None:
+    """Build + atomically install a runtime for ``new_settings``.
+
+    Shared hot-swap tail for credentials and stage changes: fresh cooldown,
+    atomic ``app.state`` swap, live-session preemption, and closing each of
+    the OLD runtime's distinct clients exactly once.
+
+    Raises:
+        HTTPException: 500 when the new runtime cannot be built (nothing is
+            swapped in that case).
+    """
+    try:
+        # A FRESH cooldown, installed together with the runtime below: the
+        # old provider's cooldown (and its "top up at ..." reason) must not
+        # bleed into the new provider. Any surviving old-provider session
+        # keeps tripping its own, now-orphaned instance instead.
+        new_cooldown = QuotaCooldown()
+        new_runtime = build_llm_runtime(new_settings, new_cooldown)
+    except Exception as exc:
+        logger.exception("failed to build the new provider runtime")
+        raise HTTPException(
+            status_code=500,
+            detail=f"settings saved but provider rebuild failed: {exc}",
+        ) from exc
+
+    old_runtime: LLMRuntime = request.app.state.llm_runtime
+    request.app.state.llm_runtime = new_runtime  # atomic hot-swap
+    request.app.state.quota_cooldown = new_cooldown
+    logger.info(
+        "provider stack hot-swapped: gate=%s/%s verify=%s/%s",
+        new_settings.resolved_gate_provider,
+        new_settings.active_gate_model,
+        new_settings.resolved_verify_provider,
+        new_settings.active_verify_model,
+    )
+    # Preempt any live session BEFORE closing the old clients: its session
+    # gate/checker hold those clients for the session's lifetime, so leaving
+    # the session running would silently break every subsequent gate/verify
+    # call. preempt() does not await task-group teardown, so an in-flight
+    # check may still touch an old client while it closes — benign, the
+    # dying session's per-item error handling absorbs it.
+    live_pipeline = ws.current_pipeline
+    if live_pipeline is not None:
+        await live_pipeline.preempt(
+            code="credentials_updated",
+            message=(
+                "API credentials were updated; this session was closed so "
+                "the new provider takes effect. Start capture again."
+            ),
+        )
+    try:
+        await close_llm_runtime(old_runtime)
+    except Exception as exc:
+        logger.warning("error closing the previous LLM clients: %s", exc)
 
 
 @router.get("/setup/status", response_model=SetupStatusResponse)
 async def setup_status(request: Request) -> SetupStatusResponse:
     """Current onboarding state (never returns key material beyond last-4)."""
     runtime: LLMRuntime = request.app.state.llm_runtime
-    credits: CreditsInfo | None = None
-    if runtime.configured and runtime.settings.llm_provider == "openrouter":
-        credits = await fetch_openrouter_credits(runtime.settings.openrouter_api_key)
-    return _status_payload(runtime, credits)
+    return await _build_status(runtime.settings)
 
 
 @router.post("/setup/credentials", response_model=SetupStatusResponse)
@@ -345,20 +510,30 @@ async def submit_credentials(
     GET /setup/status.
     """
     provider = body.provider.strip().lower()
-    if provider not in _PROVIDER_ENV_KEYS:
+    if provider not in _KNOWN_PROVIDERS:
         raise HTTPException(
             status_code=400,
-            detail="provider must be one of: openrouter, gemini",
+            detail="provider must be one of: openrouter, gemini, ollama",
         )
+
+    runtime: LLMRuntime = request.app.state.llm_runtime
+
+    if provider == "ollama":
+        # Keyless test-connection: probe, persist nothing, swap nothing.
+        try:
+            await probe_ollama(runtime.settings.ollama_base_url)
+        except ProviderUnreachable as exc:
+            logger.warning("ollama probe failed: %s", exc)
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return await _build_status(runtime.settings)
+
     api_key = body.api_key.strip()
     if not api_key:
         raise HTTPException(status_code=400, detail="api_key must be non-empty")
 
-    credits: CreditsInfo | None = None
     try:
         if provider == "openrouter":
             await validate_openrouter_key(api_key)
-            credits = await fetch_openrouter_credits(api_key)
         else:
             await validate_gemini_key(api_key)
     except ProviderKeyRejected as exc:
@@ -383,55 +558,82 @@ async def submit_credentials(
     # Rebuild Settings from the just-written file; the validated pair is
     # passed explicitly so a stale LLM_PROVIDER/key in the process
     # environment can never override what the user just validated.
-    try:
-        new_settings = Settings(
-            **{
-                "llm_provider": provider,
-                _PROVIDER_SETTINGS_FIELDS[provider]: api_key,
-            }
+    new_settings = Settings(
+        **{
+            "llm_provider": provider,
+            _PROVIDER_SETTINGS_FIELDS[provider]: api_key,
+        }
+    )
+    await _swap_runtime(request, new_settings)
+    return await _build_status(new_settings)
+
+
+@router.post("/setup/stages", response_model=SetupStatusResponse)
+async def submit_stages(
+    body: SetupStagesRequest, request: Request
+) -> SetupStatusResponse:
+    """Route each pipeline stage to a provider; persist + hot-swap.
+
+    Responses: 400 unknown provider (or ollama for verify — local verify is
+    not supported), 409 when a chosen provider is not configured (missing
+    key, or Ollama unreachable), 500 with a descriptive detail on
+    persistence/rebuild failure. On success the runtime swap is atomic and
+    the response mirrors GET /setup/status.
+    """
+    gate_provider = body.gate_provider.strip().lower()
+    verify_provider = body.verify_provider.strip().lower()
+    if gate_provider not in GATE_PROVIDERS:
+        raise HTTPException(
+            status_code=400,
+            detail="gate_provider must be one of: openrouter, gemini, ollama",
         )
-        # A FRESH cooldown, installed together with the runtime below: the
-        # old provider's cooldown (and its "top up at ..." reason) must not
-        # bleed into the new provider. Any surviving old-provider session
-        # keeps tripping its own, now-orphaned instance instead.
-        new_cooldown = QuotaCooldown()
-        new_runtime = build_llm_runtime(new_settings, new_cooldown)
-    except Exception as exc:
-        logger.exception("failed to build the new provider runtime")
+    if verify_provider not in VERIFY_PROVIDERS:
+        if verify_provider == "ollama":
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "local verify is not supported; verify_provider must be "
+                    "openrouter or gemini"
+                ),
+            )
+        raise HTTPException(
+            status_code=400,
+            detail="verify_provider must be one of: openrouter, gemini",
+        )
+
+    runtime: LLMRuntime = request.app.state.llm_runtime
+    current = runtime.settings
+    for stage, provider in (("gate", gate_provider), ("verify", verify_provider)):
+        if provider == "ollama":
+            try:
+                await probe_ollama(current.ollama_base_url)
+            except ProviderUnreachable as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"{stage} provider 'ollama' is not reachable: {exc}",
+                ) from exc
+        elif not current.provider_configured(provider):
+            raise HTTPException(
+                status_code=409,
+                detail=f"{stage} provider {provider!r} has no API key configured",
+            )
+
+    env_path = resolve_env_file()
+    try:
+        upsert_env_values(
+            env_path,
+            {"GATE_PROVIDER": gate_provider, "VERIFY_PROVIDER": verify_provider},
+        )
+    except (OSError, ValueError) as exc:
         raise HTTPException(
             status_code=500,
-            detail=f"credentials saved but provider rebuild failed: {exc}",
+            detail=f"could not persist stage routing to {env_path}: {exc}",
         ) from exc
 
-    old_runtime: LLMRuntime = request.app.state.llm_runtime
-    request.app.state.llm_runtime = new_runtime  # atomic hot-swap
-    request.app.state.quota_cooldown = new_cooldown
-    logger.info(
-        "provider hot-swapped: provider=%s gate=%s verify=%s (env file: %s)",
-        new_settings.llm_provider,
-        new_settings.active_gate_model,
-        new_settings.active_verify_model,
-        env_path,
+    # Explicit kwargs beat any stale GATE_PROVIDER/VERIFY_PROVIDER in the
+    # process environment (mirrors the credentials rebuild).
+    new_settings = Settings(
+        gate_provider=gate_provider, verify_provider=verify_provider
     )
-    # Preempt any live session BEFORE closing the old client: its session
-    # gate/checker hold that client for the session's lifetime, so leaving
-    # the session running would silently break every subsequent gate/verify
-    # call. preempt() does not await task-group teardown, so an in-flight
-    # check may still touch the old client while it closes — benign, the
-    # dying session's per-item error handling absorbs it.
-    live_pipeline = ws.current_pipeline
-    if live_pipeline is not None:
-        await live_pipeline.preempt(
-            code="credentials_updated",
-            message=(
-                "API credentials were updated; this session was closed so "
-                "the new provider takes effect. Start capture again."
-            ),
-        )
-    if old_runtime.client is not None:
-        try:
-            await close_llm_client(old_runtime.client)
-        except Exception as exc:
-            logger.warning("error closing the previous LLM client: %s", exc)
-
-    return _status_payload(new_runtime, credits)
+    await _swap_runtime(request, new_settings)
+    return await _build_status(new_settings)

@@ -63,6 +63,10 @@ BASE_ENV = (
     "# gemini section (key intentionally empty)\n"
     "GEMINI_API_KEY=\n"
     "WHISPER_MODEL=distil-small.en\n"
+    # Dead port so the status payload's ollama reachability probe refuses
+    # instantly and deterministically (offline-suite rule) even after
+    # Settings is rebuilt from this file.
+    "OLLAMA_BASE_URL=http://127.0.0.1:1/v1\n"
 )
 
 NOT_CONFIGURED_WS_MESSAGE = (
@@ -215,22 +219,44 @@ class TestUnconfiguredSurface:
             "whisper_model": "fake-whisper.en",
             "configured": False,
             "llm_provider": None,
+            "gate_provider": None,
+            "verify_provider": None,
             "gate_model": None,
             "verify_model": None,
             "checks_today": 0,
             "est_cost_today_usd": 0.0,
         }
 
-    def test_setup_status_is_all_null(self, unconfigured_client: TestClient) -> None:
+    def test_setup_status_reports_unconfigured_stages(
+        self, unconfigured_client: TestClient
+    ) -> None:
         response = unconfigured_client.get("/setup/status")
         assert response.status_code == 200
         assert response.json() == {
             "configured": False,
-            "provider": None,
-            "key_hint": None,
-            "gate_model": None,
-            "verify_model": None,
-            "credits": None,
+            "gate": {
+                "provider": "gemini",
+                "model": "fake-gate-model",
+                "configured": False,
+            },
+            "verify": {
+                "provider": "gemini",
+                "model": "fake-verify-model",
+                "configured": False,
+            },
+            "providers": {
+                "openrouter": {
+                    "configured": False,
+                    "key_hint": None,
+                    "credits": None,
+                },
+                "gemini": {"configured": False, "key_hint": None},
+                "ollama": {
+                    "configured": True,
+                    "reachable": False,
+                    "base_url": "http://127.0.0.1:1/v1",
+                },
+            },
         }
 
     def test_debug_text_is_409(self, unconfigured_client: TestClient) -> None:
@@ -352,11 +378,31 @@ class TestCredentialsSuccess:
         assert response.status_code == 200
         assert response.json() == {
             "configured": True,
-            "provider": "gemini",
-            "key_hint": "…abcd",
-            "gate_model": "gemini-3.1-flash-lite",
-            "verify_model": "gemini-3.5-flash",
-            "credits": None,  # credits are OpenRouter-only
+            "gate": {
+                "provider": "gemini",
+                "model": "gemini-3.1-flash-lite",
+                "configured": True,
+            },
+            "verify": {
+                "provider": "gemini",
+                "model": "gemini-3.5-flash",
+                "configured": True,
+            },
+            "providers": {
+                # The old OpenRouter key survives in the env file, so that
+                # provider stays configured (its key line is untouched).
+                "openrouter": {
+                    "configured": True,
+                    "key_hint": "…alue",
+                    "credits": None,
+                },
+                "gemini": {"configured": True, "key_hint": "…abcd"},
+                "ollama": {
+                    "configured": True,
+                    "reachable": False,
+                    "base_url": "http://127.0.0.1:1/v1",
+                },
+            },
         }
         assert probed_keys == [GEMINI_KEY]
 
@@ -414,9 +460,19 @@ class TestCredentialsSuccess:
         assert response.status_code == 200
         body = response.json()
         assert body["configured"] is True
-        assert body["provider"] == "openrouter"
-        assert body["key_hint"] == "…wxyz"
-        assert body["credits"] == {"total": 10.0, "usage": 1.25}
+        assert body["gate"] == {
+            "provider": "openrouter",
+            "model": "google/gemma-4-26b-a4b-it:free",
+            "configured": True,
+        }
+        assert body["verify"]["provider"] == "openrouter"
+        openrouter_status = body["providers"]["openrouter"]
+        assert openrouter_status["key_hint"] == "…wxyz"
+        assert openrouter_status["credits"] == {"total": 10.0, "usage": 1.25}
+        assert body["providers"]["gemini"] == {
+            "configured": False,
+            "key_hint": None,
+        }
         assert probed_keys == [OPENROUTER_KEY]
 
         content = temp_env_file.read_text(encoding="utf-8")
@@ -430,9 +486,12 @@ class TestCredentialsSuccess:
         # /setup/status mirrors the POST response (openrouter -> credits).
         status = unconfigured_client.get("/setup/status").json()
         assert status["configured"] is True
-        assert status["provider"] == "openrouter"
-        assert status["key_hint"] == "…wxyz"
-        assert status["credits"] == {"total": 10.0, "usage": 1.25}
+        assert status["verify"]["provider"] == "openrouter"
+        assert status["providers"]["openrouter"]["key_hint"] == "…wxyz"
+        assert status["providers"]["openrouter"]["credits"] == {
+            "total": 10.0,
+            "usage": 1.25,
+        }
 
     def test_key_never_appears_in_responses_or_logs(
         self,
@@ -454,7 +513,7 @@ class TestCredentialsSuccess:
         assert post.status_code == 200
         for response in (post, status, health):
             assert GEMINI_KEY not in response.text
-        assert post.json()["key_hint"] == "…abcd"
+        assert post.json()["providers"]["gemini"]["key_hint"] == "…abcd"
         for record in caplog.records:
             assert GEMINI_KEY not in record.getMessage()
 
@@ -719,7 +778,10 @@ class TestConfiguredBootFromEnvFile:
         def fake_transcriber_factory(**_kwargs: Any) -> FakeTranscriber:
             return FakeTranscriber()
 
-        def fake_create_llm_client(settings: Settings) -> FakeGenAIClient:
+        def fake_create_llm_client(
+            settings: Settings, provider: str
+        ) -> FakeGenAIClient:
+            assert provider == "gemini"
             assert settings.gemini_api_key == "AIza-boot-test-key"
             return boot_client
 
@@ -771,3 +833,193 @@ class TestIsConfigured:
     ) -> None:
         settings = Settings(llm_provider=provider, _env_file=None, **kwargs)
         assert settings.is_configured is expected
+
+
+# --------------------------------------------------------------------------- #
+# Per-stage providers: ollama credentials probe + POST /setup/stages
+# --------------------------------------------------------------------------- #
+
+# Env file with BOTH keyed providers usable, so stage flips between them are
+# legal and the post-swap Settings rebuild (which reads THIS file) stays
+# configured. Dead ollama port per the offline-suite rule.
+STAGES_ENV = (
+    "LLM_PROVIDER=gemini\n"
+    "GEMINI_API_KEY=AIza-stages-test-key\n"
+    "OPENROUTER_API_KEY=sk-or-stages-test-key\n"
+    "OLLAMA_BASE_URL=http://127.0.0.1:1/v1\n"
+)
+
+
+@pytest.fixture()
+def stages_env_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    env_path = tmp_path / "stages-test.env"
+    env_path.write_text(STAGES_ENV, encoding="utf-8")
+    monkeypatch.setenv("ENV_FILE", str(env_path))
+    return env_path
+
+
+def _probe_ollama_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def probe(base_url: str) -> None:
+        return None
+
+    monkeypatch.setattr(setup_api, "probe_ollama", probe)
+
+
+def _probe_ollama_down(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def probe(base_url: str) -> None:
+        raise ProviderUnreachable(f"no server at {base_url}")
+
+    monkeypatch.setattr(setup_api, "probe_ollama", probe)
+
+
+class TestOllamaCredentials:
+    def test_reachable_probe_returns_status_and_persists_nothing(
+        self,
+        unconfigured_client: TestClient,
+        temp_env_file: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _probe_ollama_ok(monkeypatch)
+        response = unconfigured_client.post(
+            "/setup/credentials", json={"provider": "ollama"}
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["providers"]["ollama"]["reachable"] is True
+        # Pure test-connection: nothing persisted, nothing swapped.
+        assert temp_env_file.read_text(encoding="utf-8") == BASE_ENV
+        assert body["configured"] is False  # keyed stages still unconfigured
+
+    def test_unreachable_probe_is_502_and_persists_nothing(
+        self,
+        unconfigured_client: TestClient,
+        temp_env_file: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _probe_ollama_down(monkeypatch)
+        response = unconfigured_client.post(
+            "/setup/credentials", json={"provider": "ollama"}
+        )
+        assert response.status_code == 502
+        assert "no server at" in response.json()["detail"]
+        assert temp_env_file.read_text(encoding="utf-8") == BASE_ENV
+
+
+class TestSetupStages:
+    @pytest.fixture()
+    def configured_client(
+        self,
+        stages_env_file: Path,
+        fake_genai_client: FakeGenAIClient,
+        fake_transcriber: FakeTranscriber,
+    ) -> Iterator[TestClient]:
+        """App booted with BOTH keyed providers usable (mirrors STAGES_ENV)."""
+        settings = make_test_settings(
+            gemini_api_key="AIza-stages-test-key",
+            openrouter_api_key="sk-or-stages-test-key",
+        )
+        with open_test_client(settings, fake_genai_client, fake_transcriber) as client:
+            yield client
+
+    def test_happy_path_persists_swaps_and_reports(
+        self,
+        configured_client: TestClient,
+        stages_env_file: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _install_fake_runtime_builder(monkeypatch, FakeGenAIClient())
+        response = configured_client.post(
+            "/setup/stages",
+            json={"gate_provider": "openrouter", "verify_provider": "gemini"},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["configured"] is True
+        assert body["gate"]["provider"] == "openrouter"
+        assert body["verify"]["provider"] == "gemini"
+        # Existing lines preserved byte-for-byte; the two stage keys appended.
+        assert stages_env_file.read_text(encoding="utf-8") == (
+            STAGES_ENV + "GATE_PROVIDER=openrouter\nVERIFY_PROVIDER=gemini\n"
+        )
+        # Hot-swap is visible on the very next status read (no restart).
+        status = configured_client.get("/setup/status").json()
+        assert status["gate"]["provider"] == "openrouter"
+        assert status["verify"]["provider"] == "gemini"
+
+    def test_ollama_gate_with_reachable_server(
+        self,
+        configured_client: TestClient,
+        stages_env_file: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _probe_ollama_ok(monkeypatch)
+        _install_fake_runtime_builder(monkeypatch, FakeGenAIClient())
+        response = configured_client.post(
+            "/setup/stages",
+            json={"gate_provider": "ollama", "verify_provider": "gemini"},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["gate"] == {
+            "provider": "ollama",
+            "model": "gemma3:4b",
+            "configured": True,
+        }
+        assert "GATE_PROVIDER=ollama" in stages_env_file.read_text(encoding="utf-8")
+
+    def test_unknown_gate_provider_is_400(
+        self, configured_client: TestClient, stages_env_file: Path
+    ) -> None:
+        response = configured_client.post(
+            "/setup/stages",
+            json={"gate_provider": "anthropic", "verify_provider": "gemini"},
+        )
+        assert response.status_code == 400
+        assert stages_env_file.read_text(encoding="utf-8") == STAGES_ENV
+
+    def test_ollama_verify_is_400_local_verify_unsupported(
+        self, configured_client: TestClient, stages_env_file: Path
+    ) -> None:
+        response = configured_client.post(
+            "/setup/stages",
+            json={"gate_provider": "ollama", "verify_provider": "ollama"},
+        )
+        assert response.status_code == 400
+        assert "local verify is not supported" in response.json()["detail"]
+        assert stages_env_file.read_text(encoding="utf-8") == STAGES_ENV
+
+    def test_unkeyed_stage_provider_is_409_naming_the_stage(
+        self,
+        stages_env_file: Path,
+        fake_genai_client: FakeGenAIClient,
+        fake_transcriber: FakeTranscriber,
+    ) -> None:
+        # Booted with NO openrouter key: routing verify there must 409.
+        settings = make_test_settings(
+            gemini_api_key="AIza-stages-test-key", openrouter_api_key=""
+        )
+        with open_test_client(
+            settings, fake_genai_client, fake_transcriber
+        ) as client:
+            response = client.post(
+                "/setup/stages",
+                json={"gate_provider": "gemini", "verify_provider": "openrouter"},
+            )
+        assert response.status_code == 409
+        assert "verify provider 'openrouter'" in response.json()["detail"]
+        assert stages_env_file.read_text(encoding="utf-8") == STAGES_ENV
+
+    def test_unreachable_ollama_gate_is_409_naming_the_stage(
+        self,
+        configured_client: TestClient,
+        stages_env_file: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _probe_ollama_down(monkeypatch)
+        response = configured_client.post(
+            "/setup/stages",
+            json={"gate_provider": "ollama", "verify_provider": "gemini"},
+        )
+        assert response.status_code == 409
+        assert "gate provider 'ollama'" in response.json()["detail"]
+        assert stages_env_file.read_text(encoding="utf-8") == STAGES_ENV

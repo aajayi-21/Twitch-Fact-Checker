@@ -116,3 +116,43 @@ class TestRequireLlmApiKey:
             _env_file=None,
         )
         settings.require_llm_api_key()
+
+
+class TestPerStageResolution:
+    def test_empty_overrides_follow_llm_provider(self) -> None:
+        settings = Settings(llm_provider="gemini", _env_file=None)
+        assert settings.resolved_gate_provider == "gemini"
+        assert settings.resolved_verify_provider == "gemini"
+
+    def test_overrides_win_over_llm_provider(self) -> None:
+        settings = Settings(
+            llm_provider="openrouter",
+            gate_provider="ollama",
+            verify_provider="gemini",
+            _env_file=None,
+        )
+        assert settings.resolved_gate_provider == "ollama"
+        assert settings.resolved_verify_provider == "gemini"
+
+    def test_ollama_is_always_configured(self) -> None:
+        settings = Settings(_env_file=None)
+        assert settings.provider_configured("ollama") is True
+        assert settings.provider_configured("nonsense") is False
+
+    def test_is_configured_needs_every_distinct_stage_provider(self) -> None:
+        base = dict(
+            llm_provider="openrouter",
+            gate_provider="ollama",
+            _env_file=None,
+        )
+        assert not Settings(openrouter_api_key="", **base).is_configured
+        assert Settings(openrouter_api_key="sk-or-x", **base).is_configured
+
+    def test_require_llm_api_key_skips_ollama(self) -> None:
+        settings = Settings(
+            llm_provider="gemini",
+            gate_provider="ollama",
+            gemini_api_key="AIza-x",
+            _env_file=None,
+        )
+        settings.require_llm_api_key()  # must not raise: ollama is keyless
