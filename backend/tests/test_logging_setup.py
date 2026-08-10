@@ -122,3 +122,43 @@ class TestBanner:
 
     def test_empty_rows_do_not_crash(self) -> None:
         assert "Title" in banner([], "Title")
+
+
+class TestUvicornAccessLogger:
+    """`--no-access-log` (which run.sh passes) must survive configure_logging.
+
+    uvicorn silences access logging by clearing the logger's handlers AND
+    setting propagate=False. Unconditionally re-enabling propagation to adopt
+    our formatter would resurrect one INFO line per request — and the
+    extension polls /healthz — burying the session log.
+    """
+
+    def test_silenced_access_logger_stays_silent(self) -> None:
+        access = logging.getLogger("uvicorn.access")
+        original_handlers, original_propagate = access.handlers, access.propagate
+        try:
+            # Exactly what uvicorn's Config does for --no-access-log.
+            access.handlers = []
+            access.propagate = False
+
+            configure_logging("INFO")
+
+            assert access.propagate is False
+            assert access.handlers == []
+        finally:
+            access.handlers, access.propagate = original_handlers, original_propagate
+
+    def test_active_access_logger_is_adopted(self) -> None:
+        """With access logging ON, uvicorn's own handler is replaced by ours."""
+        access = logging.getLogger("uvicorn.access")
+        original_handlers, original_propagate = access.handlers, access.propagate
+        try:
+            access.handlers = [logging.StreamHandler()]
+            access.propagate = False
+
+            configure_logging("INFO")
+
+            assert access.propagate is True
+            assert access.handlers == []
+        finally:
+            access.handlers, access.propagate = original_handlers, original_propagate

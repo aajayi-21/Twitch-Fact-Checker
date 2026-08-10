@@ -27,8 +27,10 @@ The following architecture is a recommendation that should be used as inspiratio
 ## 💻 Development Commands
 
 ### Backend (Python)
-*   **Install dependencies:** `cd backend && uv sync` (uv-managed; deps in
-    `backend/pyproject.toml`, pinned by `backend/uv.lock`)
+*   **Install dependencies:** `cd backend && uv sync --inexact` (uv-managed; deps in
+    `backend/pyproject.toml`, pinned by `backend/uv.lock`). `--inexact` is
+    required: a bare `uv sync` prunes the accelerator-specific torch wheel
+    that `install_stt_gpu.sh` installs, breaking `STT_BACKEND=torch`.
 *   **Run tests:** `cd backend && uv run pytest -m "not slow"`
 *   **GPU speech backend (XPU/CUDA/ROCm):** `./backend/scripts/install_stt_gpu.sh`
 The backend should be run using a local server

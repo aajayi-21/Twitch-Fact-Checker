@@ -53,6 +53,12 @@ OPENROUTER_CREDITS_URL = "https://openrouter.ai/api/v1/credits"
 # Public, keyless, free: the catalogue used to validate model slugs.
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 
+#: SetupStagesRequest field -> the .env key that persists it.
+_MODEL_ENV_KEYS = {
+    "gate_model": "OPENROUTER_GATE_MODEL",
+    "verify_model": "OPENROUTER_VERIFY_MODEL",
+}
+
 Provider = Literal["openrouter", "gemini", "ollama"]
 
 # Stage routing: which providers each pipeline stage accepts. Ollama is
@@ -309,10 +315,12 @@ async def fetch_openrouter_model_slugs(
         )
     try:
         payload = response.json()
+        # AttributeError guards a non-dict entry: without it a malformed
+        # payload escapes as an unhandled 500 instead of the documented 502.
         slugs = {
             str(entry["id"]) for entry in payload["data"] if entry.get("id")
         }
-    except (ValueError, KeyError, TypeError) as exc:
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
         raise ProviderUnreachable(
             f"malformed OpenRouter model list: {exc}"
         ) from exc
@@ -712,24 +720,34 @@ async def submit_stages(
                 detail=f"{stage} provider {provider!r} has no API key configured",
             )
 
-    # Model slugs: empty means "keep the stored one". Both are validated in
-    # a single catalogue fetch so a two-model change costs one request.
-    gate_model = body.gate_model.strip()
-    verify_model = body.verify_model.strip()
-    requested_models = {
-        "gate_model": gate_model or current.openrouter_gate_model,
-        "verify_model": verify_model or current.openrouter_verify_model,
+    # Model slugs: empty means "keep the stored one".
+    #
+    # Validation is keyed on a slug having CHANGED, not merely being present.
+    # The options page prefills these inputs with the stored slugs, so every
+    # Apply arrives with them populated; gating on presence would make a
+    # routing-only change (say, moving the gate to Ollama) fail with a 502
+    # whenever openrouter.ai is unreachable, and would let an unrelated stale
+    # slug 400 a valid change to the other stage. Changed slugs are validated
+    # together so a two-model change still costs one catalogue fetch.
+    stored_models = {
+        "gate_model": current.openrouter_gate_model,
+        "verify_model": current.openrouter_verify_model,
     }
-    if gate_model or verify_model:
+    requested_models = {
+        "gate_model": body.gate_model.strip() or stored_models["gate_model"],
+        "verify_model": body.verify_model.strip() or stored_models["verify_model"],
+    }
+    changed_models = {
+        field: slug
+        for field, slug in requested_models.items()
+        if slug != stored_models[field]
+    }
+    if changed_models:
         try:
             known_slugs = await fetch_openrouter_model_slugs()
         except ProviderUnreachable as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
-        for field, slug in requested_models.items():
-            if not slug:
-                raise HTTPException(
-                    status_code=400, detail=f"{field} must not be empty"
-                )
+        for field, slug in changed_models.items():
             try:
                 await validate_openrouter_model(slug, known_slugs)
             except ModelSlugRejected as exc:
@@ -738,16 +756,17 @@ async def submit_stages(
                 ) from exc
 
     env_path = resolve_env_file()
+    env_updates = {
+        "GATE_PROVIDER": gate_provider,
+        "VERIFY_PROVIDER": verify_provider,
+    }
+    # Persist only a slug the caller actually changed. Writing both on every
+    # stage POST would bake the code defaults into .env for users who never
+    # touch OpenRouter, freezing them against future default changes.
+    for field, slug in changed_models.items():
+        env_updates[_MODEL_ENV_KEYS[field]] = slug
     try:
-        upsert_env_values(
-            env_path,
-            {
-                "GATE_PROVIDER": gate_provider,
-                "VERIFY_PROVIDER": verify_provider,
-                "OPENROUTER_GATE_MODEL": requested_models["gate_model"],
-                "OPENROUTER_VERIFY_MODEL": requested_models["verify_model"],
-            },
-        )
+        upsert_env_values(env_path, env_updates)
     except (OSError, ValueError) as exc:
         raise HTTPException(
             status_code=500,
@@ -762,11 +781,10 @@ async def submit_stages(
         openrouter_gate_model=requested_models["gate_model"],
         openrouter_verify_model=requested_models["verify_model"],
     )
-    models_changed = (
-        requested_models["gate_model"] != current.openrouter_gate_model
-        or requested_models["verify_model"] != current.openrouter_verify_model
-    )
-    if models_changed:
+    if changed_models:
+        # The latches are process-wide and outlive this rebuild, so a new
+        # model would otherwise inherit the previous one's learned
+        # capabilities (e.g. "no json_schema support") forever.
         reset_openrouter_capability_latches()
     await _swap_runtime(request, new_settings)
     return await _build_status(new_settings)

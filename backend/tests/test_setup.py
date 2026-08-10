@@ -942,12 +942,13 @@ class TestSetupStages:
         assert body["gate"]["provider"] == "openrouter"
         assert body["verify"]["provider"] == "gemini"
         # Existing lines preserved byte-for-byte; the two stage keys appended.
+        # No OPENROUTER_*_MODEL lines: this request submitted no slug, and
+        # writing the code defaults would pin them into .env for a user who
+        # never chose a model.
         assert stages_env_file.read_text(encoding="utf-8") == (
             STAGES_ENV
             + "GATE_PROVIDER=openrouter\n"
             + "VERIFY_PROVIDER=gemini\n"
-            + "OPENROUTER_GATE_MODEL=google/gemma-4-26b-a4b-it:free\n"
-            + "OPENROUTER_VERIFY_MODEL=google/gemma-4-26b-a4b-it:free\n"
         )
         # Hot-swap is visible on the very next status read (no restart).
         status = configured_client.get("/setup/status").json()
@@ -1293,6 +1294,113 @@ class TestFetchOpenRouterModelSlugs:
             raise httpx.ConnectError("refused", request=request)
 
         with pytest.raises(ProviderUnreachable, match="could not reach"):
+            await setup_api.fetch_openrouter_model_slugs(
+                transport=httpx.MockTransport(handler)
+            )
+
+
+class TestStageSlugsOnlyValidateWhatChanged:
+    """Validation keys on a slug CHANGING, not on it merely being present.
+
+    The options page prefills these inputs with the stored slugs, so almost
+    every Apply arrives with them populated. Gating the catalogue fetch on
+    presence made a routing-only change depend on openrouter.ai being up, and
+    let a stale slug in the untouched field reject a valid change to the
+    other one.
+    """
+
+    @pytest.fixture()
+    def configured_client(
+        self,
+        stages_env_file: Path,
+        fake_genai_client: FakeGenAIClient,
+        fake_transcriber: FakeTranscriber,
+    ) -> Iterator[TestClient]:
+        settings = make_test_settings(
+            gemini_api_key="AIza-stages-test-key",
+            openrouter_api_key="sk-or-stages-test-key",
+        )
+        with open_test_client(settings, fake_genai_client, fake_transcriber) as client:
+            yield client
+
+    def test_resubmitting_the_stored_slug_skips_the_catalogue(
+        self, configured_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The prefilled, unchanged slug must not cost a network round-trip."""
+        calls: list[int] = []
+        _catalogue_ok(monkeypatch, calls)
+        _install_fake_runtime_builder(monkeypatch, FakeGenAIClient())
+        stored = "google/gemma-4-26b-a4b-it:free"
+        response = configured_client.post(
+            "/setup/stages",
+            json={
+                "gate_provider": "openrouter",
+                "verify_provider": "gemini",
+                "gate_model": stored,
+                "verify_model": stored,
+            },
+        )
+        assert response.status_code == 200
+        assert calls == []
+
+    def test_routing_change_survives_an_unreachable_catalogue(
+        self, configured_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Moving a stage to Ollama must not require openrouter.ai."""
+        _catalogue_down(monkeypatch)
+        _install_fake_runtime_builder(monkeypatch, FakeGenAIClient())
+        stored = "google/gemma-4-26b-a4b-it:free"
+        response = configured_client.post(
+            "/setup/stages",
+            json={
+                "gate_provider": "openrouter",
+                "verify_provider": "gemini",
+                "gate_model": stored,
+                "verify_model": stored,
+            },
+        )
+        assert response.status_code == 200
+
+    def test_only_the_changed_slug_is_validated_and_persisted(
+        self,
+        configured_client: TestClient,
+        stages_env_file: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        calls: list[int] = []
+        _catalogue_ok(monkeypatch, calls)
+        _install_fake_runtime_builder(monkeypatch, FakeGenAIClient())
+        stored = "google/gemma-4-26b-a4b-it:free"
+        response = configured_client.post(
+            "/setup/stages",
+            json={
+                "gate_provider": "openrouter",
+                "verify_provider": "openrouter",
+                "gate_model": "openai/gpt-oss-20b:free",
+                "verify_model": stored,
+            },
+        )
+        assert response.status_code == 200
+        env = stages_env_file.read_text(encoding="utf-8")
+        assert "OPENROUTER_GATE_MODEL=openai/gpt-oss-20b:free" in env
+        # The untouched field is not rewritten.
+        assert "OPENROUTER_VERIFY_MODEL" not in env
+        assert len(calls) == 1
+
+
+class TestCatalogueParsing:
+    async def test_non_dict_entry_is_a_502_not_a_500(self) -> None:
+        """entry.get() on a string raises AttributeError; it must be caught.
+
+        Uncaught, it escapes the ProviderUnreachable handler as an unhandled
+        500 instead of the documented 502.
+        """
+        import httpx
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"data": ["not-a-dict"]})
+
+        with pytest.raises(ProviderUnreachable, match="malformed"):
             await setup_api.fetch_openrouter_model_slugs(
                 transport=httpx.MockTransport(handler)
             )

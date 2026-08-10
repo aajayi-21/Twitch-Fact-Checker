@@ -258,13 +258,31 @@ class BaseTranscriber(ABC):
         model_name: str,
         device: str = "cpu",
         compute_type: str = "int8",
+        language: str | None = None,
     ) -> None:
         self._model_name = model_name
         self._device = device
         self._compute_type = compute_type
-        # English-only checkpoints reject a language kwarg mismatch; pin it.
-        self._language: str | None = "en" if model_name.endswith(".en") else None
+        # An explicit WHISPER_LANGUAGE wins; otherwise infer, because
+        # English-only checkpoints reject a mismatched language kwarg.
+        # ``None`` means "let Whisper detect it".
+        self._language: str | None = (
+            language
+            if language is not None
+            else ("en" if self._looks_english_only(model_name) else None)
+        )
         self._model: Any | None = None
+
+    @staticmethod
+    def _looks_english_only(model_name: str) -> bool:
+        """Whether a checkpoint name denotes an English-only Whisper model.
+
+        Handles both bare sizes ("small.en") and Hugging Face repo ids, where
+        the ".en" suffix sits on the last path segment
+        ("openai/whisper-small.en") rather than on the whole string.
+        """
+        tail = model_name.rsplit("/", 1)[-1].lower()
+        return tail.endswith(".en") or tail.endswith("-en")
 
     # ------------------------------------------------------------------ #
     # Engine hooks — the only things a backend must implement
@@ -518,6 +536,7 @@ def create_transcriber(settings: "Settings") -> BaseTranscriber:
             model_name=settings.whisper_model,
             device=settings.whisper_device,
             compute_type=settings.whisper_compute_type,
+            language=settings.whisper_language_or_none,
         )
     if backend == "torch":
         from app.stt_torch import TorchWhisperTranscriber

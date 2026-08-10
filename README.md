@@ -179,6 +179,19 @@ WHISPER_MODEL=openai/whisper-small.en
 
 Notes worth knowing:
 
+- **uv's own auto-detection has no Intel branch** — it probes for an NVIDIA
+  driver and an AMD ROCm arch, so on an Intel-only machine `--torch-backend=auto`
+  quietly resolves to the `+cpu` wheel and `torch.xpu.is_available()` is `False`.
+  The script detects Intel itself and upgrades `auto` to `xpu`; it also verifies
+  an accelerator is actually available afterwards and exits non-zero if not,
+  rather than leaving you on a CPU wheel that merely looks installed.
+- **Switching backends needs `--reinstall-package torch`** (the script passes it):
+  a bare `torch` requirement is already satisfied by whatever variant is present,
+  so re-running the install with a different `--torch-backend` is otherwise a
+  no-op that reports success and changes nothing.
+- **Intel also needs system packages** the wheels cannot provide — the Level Zero
+  loader and compute runtime (`libze1`, `libze-intel-gpu1`, `intel-opencl-icd` on
+  Debian/Ubuntu). Without them torch imports fine and silently falls back to CPU.
 - **`rocm` is spelled `cuda` inside PyTorch** (HIP reuses the CUDA API). The
   backend maps it for you *and* verifies `torch.version.hip`, so a ROCm typo
   fails loudly instead of silently running on CPU at a fraction of the speed.
@@ -188,6 +201,11 @@ Notes worth knowing:
   silently inactive.
 - Because uv hardlinks from a shared cache (`~/.cache/uv`), a PyTorch you
   already installed for another uv project costs no extra disk here.
+- **First inference on an accelerator is slow** — SYCL/CUDA kernels JIT-compile
+  on first use. Measured on an Intel Arc 140V (Lunar Lake), 11 s of speech,
+  steady state after warm-up: `whisper-small.en` runs **16.6× realtime on XPU vs
+  2.0× on CPU**, and `tiny.en` 51× vs 16×. The first window after startup takes
+  several seconds regardless; that is warm-up, not a hang.
 
 ## Analytics & dashboard
 

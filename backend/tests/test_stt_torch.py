@@ -284,3 +284,193 @@ class TestRealTorchModel:
             assert state.drop_counts.get("low_confidence", 0) > 0
         finally:
             transcriber.unload()
+
+    def test_generate_strips_the_forced_prefix_and_scoring_restores_it(self) -> None:
+        """Pin the transformers behaviour the scoring pass compensates for.
+
+        Asserting only "a hallucination is dropped" (above) cannot catch a
+        systematically too-low avg_logprob, because that bug drops MORE. This
+        checks the prefix directly: that ``sequences`` really does come back
+        without the start token, and that supplying it changes the score by
+        the double-digit margin that decides whether real speech survives.
+        """
+        import numpy as np
+        import torch
+
+        transcriber = TorchWhisperTranscriber(
+            "openai/whisper-tiny.en", device="cpu", compute_type="float32"
+        )
+        transcriber.load()
+        try:
+            start_id = transcriber._model.generation_config.decoder_start_token_id
+            assert transcriber._prefix_token_ids == [start_id]
+
+            samples = np.arange(16000 * 4) / 16000
+            tone = (0.3 * np.sin(2 * np.pi * 140 * samples)).astype(np.float32)
+            features = transcriber._processor(
+                tone, sampling_rate=16000, return_tensors="pt"
+            ).input_features.to(transcriber._dtype)
+            encoder_outputs = transcriber._model.model.encoder(features)
+            sequence = transcriber._model.generate(
+                encoder_outputs=encoder_outputs,
+                return_timestamps=True,
+                return_dict_in_generate=True,
+            )["sequences"][0]
+
+            # The behaviour that caused the bug: no <|startoftranscript|>.
+            assert int(sequence[0]) != start_id
+
+            corrected = transcriber._avg_logprob(encoder_outputs, sequence)
+            # Force the old, unprefixed path by clearing the prefix.
+            transcriber._prefix_token_ids = []
+            unprefixed = transcriber._avg_logprob(encoder_outputs, sequence)
+            assert corrected - unprefixed > 5.0, (
+                f"prefix correction is not being applied: {corrected} vs "
+                f"{unprefixed}"
+            )
+            assert torch.isfinite(torch.tensor(corrected))
+        finally:
+            transcriber.unload()
+
+
+class TestForcedDecoderPrefix:
+    """The scoring pass must rebuild the prefix ``generate`` strips.
+
+    Regression cover for a bug that dropped 100% of real speech:
+    transformers rebuilds ``sequences`` from the per-segment ``tokens``, which
+    excludes the forced ``<|startoftranscript|>`` prefix the decoder actually
+    saw. Teacher-forcing the bare sequence starts the decoder mid-utterance
+    and costs ~17 nats — far below ``MIN_AVG_LOGPROB = -1.0``, so every
+    correctly transcribed segment was filtered out as "low confidence".
+    """
+
+    @staticmethod
+    def _transcriber(prefix: list[int], multilingual: bool = False) -> Any:
+        transcriber = TorchWhisperTranscriber(
+            "openai/whisper-tiny.en", device="cpu", compute_type="float32"
+        )
+        transcriber._prefix_token_ids = prefix
+        transcriber._is_multilingual = multilingual
+        return transcriber
+
+    def test_english_only_prefix_is_the_start_token(self) -> None:
+        transcriber = self._transcriber([])
+        transcriber._model = SimpleNamespace(
+            generation_config=SimpleNamespace(decoder_start_token_id=50257)
+        )
+        assert transcriber._build_prefix_token_ids() == [50257]
+
+    def test_multilingual_prefix_adds_language_and_task(self) -> None:
+        transcriber = self._transcriber([], multilingual=True)
+        transcriber._language = "es"
+        transcriber._model = SimpleNamespace(
+            generation_config=SimpleNamespace(
+                decoder_start_token_id=50258,
+                lang_to_id={"<|es|>": 50262, "<|en|>": 50259},
+                task_to_id={"transcribe": 50360, "translate": 50359},
+            )
+        )
+        assert transcriber._build_prefix_token_ids() == [50258, 50262, 50360]
+
+    def test_prefix_is_prepended_before_scoring(self) -> None:
+        """The decoder must start on <|startoftranscript|>, not a timestamp."""
+        torch = pytest.importorskip("torch")
+        transcriber = self._transcriber([50257])
+        transcriber._torch = torch
+        seen: dict[str, Any] = {}
+
+        def stub(encoder_outputs: Any = None, decoder_input_ids: Any = None) -> Any:
+            seen["input"] = decoder_input_ids
+            length = int(decoder_input_ids.shape[1])
+            return SimpleNamespace(logits=torch.zeros(1, length, 6))
+
+        transcriber._model = stub
+        transcriber._avg_logprob(None, torch.tensor([1, 2, 3]))
+        assert seen["input"].tolist() == [[50257, 1, 2]]
+
+    def test_prefix_is_not_doubled_when_already_present(self) -> None:
+        """Future transformers may keep the prefix; tolerate both shapes."""
+        torch = pytest.importorskip("torch")
+        transcriber = self._transcriber([50257])
+        transcriber._torch = torch
+        seen: dict[str, Any] = {}
+
+        def stub(encoder_outputs: Any = None, decoder_input_ids: Any = None) -> Any:
+            seen["input"] = decoder_input_ids
+            length = int(decoder_input_ids.shape[1])
+            return SimpleNamespace(logits=torch.zeros(1, length, 6))
+
+        transcriber._model = stub
+        transcriber._avg_logprob(None, torch.tensor([50257, 1, 2, 3]))
+        assert seen["input"].tolist() == [[50257, 1, 2]]
+
+    def test_forced_prefix_tokens_are_excluded_from_the_mean(self) -> None:
+        """Averaging the forced tokens too would inflate every score.
+
+        Logits are built so the two prefix-derived targets score ~0.0 and the
+        three real tokens score exactly -3.0 each. The correct mean is -3.0;
+        averaging all five would give -1.8.
+        """
+        torch = pytest.importorskip("torch")
+        transcriber = self._transcriber([0, 1, 2])
+        transcriber._torch = torch
+        # -1.3398 = the logit that makes log_softmax(target) == -3.0 over a
+        # 6-way distribution whose other 5 logits are 0.
+        logits = torch.zeros(1, 5, 6)
+        for position, target in enumerate([1, 2, 3, 4, 5]):
+            logits[0, position, target] = 20.0 if position < 2 else -1.3398
+
+        def stub(encoder_outputs: Any = None, decoder_input_ids: Any = None) -> Any:
+            return SimpleNamespace(logits=logits)
+
+        transcriber._model = stub
+        result = transcriber._avg_logprob(None, torch.tensor([3, 4, 5]))
+        assert result == pytest.approx(-3.0, abs=0.01)
+
+
+class TestLanguageReachesBothBackends:
+    """WHISPER_LANGUAGE must not be a no-op on the default backend.
+
+    The setting was only threaded into the torch branch of the factory, so
+    the faster-whisper path silently kept inferring language from the model
+    NAME — a config knob that appeared to work and did nothing.
+    """
+
+    @pytest.mark.parametrize("backend", ["faster-whisper", "torch"])
+    def test_explicit_language_is_honoured(self, backend: str) -> None:
+        settings = Settings(
+            stt_backend=backend,
+            whisper_model="openai/whisper-small",
+            whisper_language="es",
+            _env_file=None,
+        )
+        assert create_transcriber(settings)._language == "es"
+
+    @pytest.mark.parametrize("backend", ["faster-whisper", "torch"])
+    def test_blank_language_still_infers_from_the_checkpoint(
+        self, backend: str
+    ) -> None:
+        settings = Settings(
+            stt_backend=backend,
+            whisper_model="openai/whisper-small.en",
+            whisper_language="",
+            _env_file=None,
+        )
+        assert create_transcriber(settings)._language == "en"
+
+    @pytest.mark.parametrize("backend", ["faster-whisper", "torch"])
+    def test_multilingual_checkpoint_defaults_to_autodetect(
+        self, backend: str
+    ) -> None:
+        settings = Settings(
+            stt_backend=backend,
+            whisper_model="openai/whisper-small",
+            whisper_language="",
+            _env_file=None,
+        )
+        assert create_transcriber(settings)._language is None
+
+    def test_repo_id_suffix_is_recognised_on_the_default_backend(self) -> None:
+        """"openai/whisper-small.en" — the ".en" is on the last path segment."""
+        transcriber = FasterWhisperTranscriber("openai/whisper-small.en")
+        assert transcriber._language == "en"

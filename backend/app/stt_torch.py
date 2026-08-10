@@ -190,35 +190,24 @@ class TorchWhisperTranscriber(BaseTranscriber):
         language: str | None = None,
     ) -> None:
         super().__init__(
-            model_name=model_name, device=device, compute_type=compute_type
+            model_name=model_name,
+            device=device,
+            compute_type=compute_type,
+            language=language,
         )
-        # Explicit setting wins; otherwise reuse the base class's ".en"
-        # heuristic, widened for Hugging Face repo ids like
-        # "distil-whisper/distil-small.en" and "openai/whisper-tiny.en".
-        if language is not None:
-            self._language = language
-        else:
-            self._language = "en" if self._looks_english_only(model_name) else None
         self._torch: Any | None = None
         self._processor: Any | None = None
         self._torch_device: str = "cpu"
         self._dtype: Any | None = None
         self._vad_options: Any | None = None
         self._warned_missing_scores = False
+        # Whisper's forced decoder prefix; rebuilt at load() because
+        # generate() strips it from the sequences it returns.
+        self._prefix_token_ids: list[int] = []
         # Authoritative after load(): English-only checkpoints REJECT the
         # language/task kwargs outright, so the name heuristic above is only
         # a pre-load guess.
         self._is_multilingual = False
-
-    @staticmethod
-    def _looks_english_only(model_name: str) -> bool:
-        """Whether a checkpoint name denotes an English-only Whisper model.
-
-        Handles HF repo ids, where the ".en" suffix sits on the last path
-        segment ("openai/whisper-small.en") rather than the whole string.
-        """
-        tail = model_name.rsplit("/", 1)[-1].lower()
-        return tail.endswith(".en") or tail.endswith("-en")
 
     def describe(self) -> str:
         return (
@@ -246,6 +235,22 @@ class TorchWhisperTranscriber(BaseTranscriber):
                 "not installed. Run ./scripts/install_stt_gpu.sh (it picks "
                 f"the right wheel for your GPU). Original error: {exc}"
             ) from exc
+
+        # Quiet the Hugging Face stack, which is imported here — too late for
+        # configure_logging to have reached it, and it re-sets its own logger
+        # level on import anyway. Two separate annoyances: transformers draws
+        # a several-hundred-step "Loading weights" bar straight to stderr,
+        # and huggingface_hub emits its "unauthenticated request" notice
+        # through BOTH its own handler and ours, so it lands twice. Both are
+        # kept at DEBUG, where a slow load is worth watching.
+        if not logger.isEnabledFor(logging.DEBUG):
+            try:
+                from transformers.utils import logging as hf_logging
+
+                hf_logging.disable_progress_bar()
+                logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
+            except Exception as exc:  # pragma: no cover - transformers drift
+                logger.debug("could not quiet the Hugging Face loggers: %s", exc)
 
         self._torch = torch
         self._torch_device = resolve_device(self._device, torch)
@@ -281,6 +286,7 @@ class TorchWhisperTranscriber(BaseTranscriber):
                 )
             if not self._is_multilingual:
                 self._language = "en"
+            self._prefix_token_ids = self._build_prefix_token_ids()
         except Exception as exc:
             raise RuntimeError(
                 f"failed to load Whisper model {self._model_name!r} "
@@ -455,12 +461,46 @@ class TorchWhisperTranscriber(BaseTranscriber):
                 )
             return 0.0
         segment_start = max(0, int(start_s * SAMPLE_RATE))
-        segment_end = min(total_samples, max(segment_start + 1, int(end_s * SAMPLE_RATE)))
+        segment_end = min(
+            total_samples, max(segment_start + 1, int(end_s * SAMPLE_RATE))
+        )
         overlap = 0
         for span_start, span_end in speech_spans:
-            overlap += max(0, min(segment_end, span_end) - max(segment_start, span_start))
+            overlap += max(
+                0, min(segment_end, span_end) - max(segment_start, span_start)
+            )
         ratio = overlap / max(1, segment_end - segment_start)
         return float(min(1.0, max(0.0, 1.0 - ratio)))
+
+    def _build_prefix_token_ids(self) -> list[int]:
+        """Whisper's forced decoder prefix, e.g. ``<|startoftranscript|>``.
+
+        Reconstructed because ``generate`` STRIPS it from the returned
+        ``sequences`` (they are rebuilt from the per-segment ``tokens``), yet
+        the decoder saw it while generating. Scoring without it starts the
+        decoder on a bare timestamp token and costs ~17 nats — enough to push
+        every correctly transcribed segment under ``MIN_AVG_LOGPROB`` and
+        drop all real speech. See :meth:`_avg_logprob`.
+        """
+        generation_config = self._model.generation_config
+        start_id = getattr(generation_config, "decoder_start_token_id", None)
+        if start_id is None:
+            return []
+        prefix = [int(start_id)]
+        if self._is_multilingual:
+            # Multilingual checkpoints force <|lang|><|task|> after the start
+            # token. With language=auto the real token is whatever generate
+            # detected; "en" is the best available guess and being wrong here
+            # costs a fraction of a nat, not the ~17 the start token costs.
+            lang_to_id = getattr(generation_config, "lang_to_id", None) or {}
+            lang_id = lang_to_id.get(f"<|{self._language or 'en'}|>")
+            if lang_id is not None:
+                prefix.append(int(lang_id))
+            task_to_id = getattr(generation_config, "task_to_id", None) or {}
+            task_id = task_to_id.get("transcribe")
+            if task_id is not None:
+                prefix.append(int(task_id))
+        return prefix
 
     def _avg_logprob(self, encoder_outputs: Any, sequence: Any) -> float:
         """Mean per-token log-probability of the generated sequence.
@@ -472,6 +512,13 @@ class TorchWhisperTranscriber(BaseTranscriber):
         encoder output that generation already used — the encoder is the
         expensive half, so the extra cost is small.
 
+        The forced prefix is prepended first (see
+        :meth:`_build_prefix_token_ids`) because ``sequences`` comes back
+        without it; only the tokens of ``sequence`` itself are then averaged,
+        so the forced tokens do not inflate the score. If a future
+        transformers keeps the prefix, the first token matches and nothing is
+        prepended.
+
         On failure it returns 0.0 (a "confident" value that lets the segment
         through) and warns once: the filter fails OPEN rather than silently
         discarding good speech.
@@ -480,6 +527,13 @@ class TorchWhisperTranscriber(BaseTranscriber):
         try:
             if sequence.numel() < 2:
                 return 0.0
+            scored_count = int(sequence.numel())
+            prefix = self._prefix_token_ids
+            if prefix and int(sequence[0]) != prefix[0]:
+                prefix_tensor = torch.tensor(
+                    prefix, dtype=sequence.dtype, device=sequence.device
+                )
+                sequence = torch.cat([prefix_tensor, sequence])
             decoder_input = sequence[:-1].unsqueeze(0)
             targets = sequence[1:]
             output = self._model(
@@ -487,6 +541,8 @@ class TorchWhisperTranscriber(BaseTranscriber):
             )
             logprobs = torch.log_softmax(output.logits.float(), dim=-1)
             token_logprobs = logprobs[0, torch.arange(targets.shape[0]), targets]
+            # Average over the generated tokens only, never the forced prefix.
+            token_logprobs = token_logprobs[-scored_count:]
             finite = token_logprobs[torch.isfinite(token_logprobs)]
             if finite.numel() == 0:
                 self._warn_missing_logprob()

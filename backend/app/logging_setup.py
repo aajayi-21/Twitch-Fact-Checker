@@ -136,16 +136,31 @@ def configure_logging(level: str) -> None:
     # uvicorn installs its own handlers/formatter before lifespan runs;
     # clearing them makes it inherit ours instead of double-printing in a
     # second format.
-    for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+    for name in ("uvicorn", "uvicorn.error"):
         uvicorn_logger = logging.getLogger(name)
         uvicorn_logger.handlers.clear()
         uvicorn_logger.propagate = True
+    # uvicorn.access needs care: `--no-access-log` (which run.sh passes)
+    # silences it by clearing its handlers AND setting propagate=False.
+    # Unconditionally re-enabling propagation would resurrect one INFO line
+    # per request — and the extension polls /healthz — burying the session
+    # log the rest of this module exists to make readable. A handler-less
+    # access logger means access logging is OFF, so leave it that way;
+    # adopt it only when uvicorn actually installed a handler.
+    access_logger = logging.getLogger("uvicorn.access")
+    if access_logger.handlers:
+        access_logger.handlers.clear()
+        access_logger.propagate = True
     # httpx logs one INFO line per request; at DEBUG the Hugging Face and
     # OpenAI clients are louder still. Keep third parties at WARNING unless
     # the user explicitly asked for DEBUG.
     if level.upper() != "DEBUG":
         for noisy in ("httpx", "httpcore", "urllib3", "filelock", "transformers"):
             logging.getLogger(noisy).setLevel(logging.WARNING)
+        # huggingface_hub re-logs warnings it ALSO prints to stderr itself,
+        # so its "unauthenticated request" notice appears twice on every
+        # model load. ERROR keeps real failures while dropping the duplicate.
+        logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
 
 
 def banner(lines: list[tuple[str, str]], title: str) -> str:

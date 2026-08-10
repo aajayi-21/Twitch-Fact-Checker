@@ -133,7 +133,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
-        stt_executor.shutdown(wait=False, cancel_futures=True)
+        # cancel_futures drops QUEUED windows; wait=True then blocks for the
+        # one that is already running. Both halves matter: without the wait,
+        # shutdown returns while a transcription is still in flight and the
+        # unload below frees the model out from under it (on a GPU that means
+        # releasing device memory mid-kernel). The wait is bounded by a single
+        # ~4 s window, and runs off the event loop so shutdown stays async.
+        await asyncio.to_thread(
+            stt_executor.shutdown, wait=True, cancel_futures=True
+        )
         # Release the speech model AFTER its executor is down, so no job is
         # mid-inference. Matters most on GPUs, where the weights would
         # otherwise hold VRAM for the whole process lifetime.
