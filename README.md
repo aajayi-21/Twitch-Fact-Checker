@@ -59,7 +59,8 @@ Chrome (extension)                              Local backend (127.0.0.1:8710)
 └─────────────────────────────────┘           └───────────────────────────────┘
 ```
 
-No database, no build step, no auth — everything runs locally, single user.
+No build step, no auth — everything runs locally, single user. Analytics live in
+one SQLite file (`backend/fact_checker.db`; delete it to reset).
 
 ## Backend details (advanced)
 
@@ -90,6 +91,41 @@ file. `.env` holds your real key — it is gitignored and must never be committe
 startup — expect a one-time delay. On slow machines, set `WHISPER_MODEL=base` in
 `.env`.
 
+## Analytics & dashboard
+
+Every session records its funnel to `backend/fact_checker.db`: which claims were
+gated, why they were dropped (below threshold / topic filter / duplicate / queue),
+verdicts with latency and sources, and your 👍/👎 feedback from the overlay (the
+seed of a self-growing eval set). Open **http://127.0.0.1:8710/dashboard** for
+today's stat tiles, the verdict-label distribution, the claim funnel, per-channel
+cards (rates only appear at ≥30 adjudicated verdicts — below that there is no
+honest signal), and a recent-sessions table with per-session detail. The popup
+shows a live "Checks today: N · ~$X.XX" readout. Raw JSON: `GET /stats/summary`,
+`/stats/channels`, `/stats/sessions`. Delete the `.db` file to reset everything.
+
+## Self-contradiction alerts
+
+Separately from web-grounded fact-checks, the backend remembers what was claimed
+earlier in the SAME session and flags high-confidence logical contradictions
+("Earlier: 'I've never been to Japan' · Just now: 'I've been to Japan twice'") as
+amber two-quote toasts. Candidate pairs are retrieved with Ollama embeddings
+(`nomic-embed-text`) when Ollama is running, or a built-in lexical fallback when
+it isn't, and judged by the gate model. The doctrine mirrors verification:
+default to NO flag — mind-changes, jokes, and restatements never count, and only
+high-confidence judgements surface.
+
+## On-screen claims (experimental, opt-in)
+
+Enable **"Send video frames for on-screen claims"** in the options page and the
+extension captures a small (≤480p) screenshot of the stream every 5 seconds
+alongside the audio. When a claim references something visible ("as you can see,
+this chart…"), the freshest frame is attached to that verification call so the
+model can actually look at the chart. Privacy posture: frames go only to your
+local backend, are held in a 3-frame in-memory ring, are forwarded to the LLM
+provider only for visual-cue claims, and are **never stored anywhere**. An
+attached image can never make a check fail (or a verdict stronger) than it would
+have been without it — the no-citations ⇒ UNVERIFIED rule is unchanged.
+
 ## LLM provider, models, costs
 
 **Default: OpenRouter.** Both pipeline stages (claim gate + verification) run on
@@ -115,6 +151,27 @@ Documented alternates (full rationale in `.env.example`):
 key (or manually set `LLM_PROVIDER=gemini` and `GEMINI_API_KEY` in `.env`; models:
 `GEMINI_GATE_MODEL` / `GEMINI_VERIFY_MODEL`). Search grounding requires a paid-tier
 Gemini key, which is why OpenRouter is the default.
+
+**Per-stage providers & Ollama (local gate).** The two pipeline stages can run on
+different providers: the claim gate makes ~300 cheap ungrounded calls/hour (this is
+what burns OpenRouter's free-tier daily cap), while verification makes 5–20
+grounded calls/hour. Routing the gate to a local **Ollama** model eliminates ~95%
+of hosted API calls with hard grammar-constrained JSON output — the recommended
+setup for anyone with a GPU:
+
+```bash
+ollama pull gemma3:4b          # gate model (OLLAMA_GATE_MODEL)
+ollama pull nomic-embed-text   # embeddings for contradiction detection
+```
+
+Then on the options page: select **Ollama → Test connection**, and set **Claim
+detection (gate)** to Ollama under stage routing (verification stays on
+OpenRouter/Gemini — local verify is not supported because it has no web-search
+grounding). Env equivalents: `GATE_PROVIDER=ollama`, `VERIFY_PROVIDER=openrouter`,
+`OLLAMA_BASE_URL=http://127.0.0.1:11434/v1` (any OpenAI-compatible server works:
+LM Studio, vLLM, llama.cpp). A cold local model's first call can exceed
+`GATE_TIMEOUT_S=15` — raise it or set a longer Ollama `keep_alive` if the first
+gate pass times out.
 
 **Costs & limits (OpenRouter):**
 
