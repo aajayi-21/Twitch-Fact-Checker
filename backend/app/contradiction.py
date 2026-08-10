@@ -41,9 +41,15 @@ logger = logging.getLogger(__name__)
 # scale; both mark "same territory, worth a judge look".
 COSINE_THRESHOLD = 0.55
 LEXICAL_THRESHOLD = 70.0
-# At/above this token_set_ratio the pair is a restatement (the fact
-# checker's dedupe zone) — never a contradiction candidate.
-NEAR_IDENTICAL_RATIO = 85.0
+# At/above this token_set_ratio the pair is treated as a verbatim/subset
+# restatement and never judged. Deliberately HIGH (not the dedupe zone's
+# 85): token_set_ratio is negation-blind — measured direct-negation
+# contradictions ("I have never been to Japan" / "I have been to Japan
+# twice") score 85–91, exactly the pairs this feature exists to catch.
+# Subset restatements still hit 100; paraphrase restatements below 95 cost
+# one judge call, and the judge prompt's "restating is NOT a contradiction"
+# rule handles them.
+NEAR_IDENTICAL_RATIO = 95.0
 TOP_K = 3
 # Modest self-throttle on judge calls (they ride the gate model; on hosted
 # gates they share its rate budget).

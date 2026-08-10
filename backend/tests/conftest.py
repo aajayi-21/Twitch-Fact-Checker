@@ -662,6 +662,53 @@ def fake_local_client() -> FakeLocalClient:
     return FakeLocalClient()
 
 
+def make_judgement_response(
+    contradicts: bool, confidence: str = "high", explanation: str = "They clash."
+) -> "FakeGenerateContentResponse":
+    """A scripted Gemini judge result (rides the generate_results queue)."""
+    from app.models import ContradictionJudgement
+
+    return FakeGenerateContentResponse(
+        parsed=ContradictionJudgement(
+            contradicts=contradicts,
+            confidence=confidence,  # type: ignore[arg-type]
+            explanation=explanation,
+        )
+    )
+
+
+class FakeEmbedder:
+    """Scripted stand-in for app.embeddings.OllamaEmbedder.
+
+    ``results`` items: a list of vectors (one per input text), or an
+    exception instance to raise. Unscripted call -> AssertionError.
+    """
+
+    def __init__(self) -> None:
+        self.results: deque[Any] = deque()
+        self.calls: list[list[str]] = []
+
+    async def embed(self, texts: list[str]) -> list[Any]:
+        self.calls.append(list(texts))
+        if not self.results:
+            raise AssertionError("unscripted FakeEmbedder.embed call")
+        item = self.results.popleft()
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+
+def make_frame_message(
+    image_b64: str = "aGVsbG8=", captured_at_ms: int = 1_700_000_000_000
+) -> dict[str, Any]:
+    """A valid client->server video-frame message (wire contract §Phase 6)."""
+    return {
+        "type": "frame",
+        "image_b64": image_b64,
+        "captured_at_ms": captured_at_ms,
+    }
+
+
 @pytest.fixture()
 def fake_transcriber() -> FakeTranscriber:
     return FakeTranscriber()
