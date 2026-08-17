@@ -18,6 +18,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from app.config import SERVER_VERSION, Settings
 from app.db import Database, DayCounter
 from app.debug import router as debug_router
+from app.events import EventHub
 from app.feedback import router as feedback_router
 from app.llm_provider import LLMRuntime, build_llm_runtime, close_llm_runtime
 from app.logging_setup import banner, configure_logging
@@ -74,6 +75,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.sessions = SessionRegistry(
         scope=settings.session_preempt_scope, max_sessions=settings.max_sessions
     )
+    # Fan-out seam for non-socket consumers. The viewer backend never
+    # subscribes anything, so this costs one truth test per emitted frame; the
+    # streamer backend (backend/streamer) attaches the chat bot and the
+    # overlay/control pages to it.
+    app.state.events = EventHub(settings.event_queue_maxsize)
 
     # Analytics persistence + the in-memory "checks today" counter (seeded
     # from the db so a restart doesn't zero the popup readout).

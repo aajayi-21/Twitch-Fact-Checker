@@ -111,6 +111,9 @@ def _build_pipeline(websocket: WebSocket, hello: ClientHello) -> SessionPipeline
         quota_cooldown=state.quota_cooldown,
         db=state.db,
         verify_counter=state.verify_counter,
+        # Fan-out to non-socket consumers. Inert (and free) until something
+        # subscribes, which on the viewer backend is never.
+        event_hub=getattr(state, "events", None),
         # Judge rides the session's own gate; the embedder is stateless
         # per-call, degrading to lexical matching when Ollama is absent.
         contradiction_detector=ContradictionDetector(

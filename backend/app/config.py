@@ -161,6 +161,10 @@ class Settings(BaseSettings):
     # Concurrent capture sessions, once the scope allows any. Kept small for the
     # single-STT-worker reason above; raising it does not add throughput.
     max_sessions: int = 4
+    # Per-subscriber mailbox depth on the event hub (app/events.py). Deep
+    # enough to ride out a page repaint, shallow enough that a wedged consumer
+    # shows up as dropped events rather than unbounded memory.
+    event_queue_maxsize: int = 64
 
     # Analytics persistence (app/db.py). One SQLite file; delete it to reset.
     db_path: str = str(_DEFAULT_DB_PATH)

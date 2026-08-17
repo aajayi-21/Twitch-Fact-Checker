@@ -56,6 +56,7 @@ from openai.types.chat import ChatCompletion
 
 from app.config import Settings
 from app.db import Database, DayCounter
+from app.events import EventHub
 from app.llm_gemini import GeminiClaimGate, GeminiFactChecker
 from app.llm_provider import LLMRuntime
 from app.main import create_app
@@ -592,6 +593,9 @@ def _install_fake_state(
         app.state.sessions = SessionRegistry(
             scope=settings.session_preempt_scope, max_sessions=settings.max_sessions
         )
+        # Fan-out hub (same contract as the real lifespan). Inert until a test
+        # subscribes, so it changes nothing for the suite at large.
+        app.state.events = EventHub(settings.event_queue_maxsize)
         app.state.transcriber = transcriber
         executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="stt-test")
         app.state.stt_executor = executor
