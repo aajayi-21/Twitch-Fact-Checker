@@ -144,6 +144,24 @@ class Settings(BaseSettings):
     # the extension's opt-in capture toggle is on; they are never persisted.
     vision_enabled: bool = True
 
+    # Which live sessions a new /ws/audio connection preempts (app/sessions.py):
+    #   global  - any existing session (DEFAULT — today's behaviour, unchanged).
+    #   channel - same (platform, channel) only, so two channels coexist.
+    #   none    - never preempt (load tests, deliberate multi-tab).
+    #
+    # Default stays "global" deliberately. Only the global scope can preempt on
+    # CONNECT; the channel scope cannot know the channel until the hello parses,
+    # so it leaves the old session alive for up to HELLO_TIMEOUT_S — losing the
+    # §3.2 promptness rule the extension's reconnect relies on. And it buys
+    # little: the STT executor has ONE worker, so concurrent sessions serialize
+    # on a single Whisper model rather than adding throughput. The deployment
+    # unit for multiple channels is one backend PROCESS per channel (which is
+    # also what the business analysis's "one VPS, <=5 channels" describes).
+    session_preempt_scope: Literal["global", "channel", "none"] = "global"
+    # Concurrent capture sessions, once the scope allows any. Kept small for the
+    # single-STT-worker reason above; raising it does not add throughput.
+    max_sessions: int = 4
+
     # Analytics persistence (app/db.py). One SQLite file; delete it to reset.
     db_path: str = str(_DEFAULT_DB_PATH)
     # Estimated marginal cost of ONE verification attempt (the web-search fee

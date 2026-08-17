@@ -54,7 +54,6 @@ from fastapi.testclient import TestClient
 from google.genai.interactions import Interaction
 from openai.types.chat import ChatCompletion
 
-from app import ws as ws_module
 from app.config import Settings
 from app.db import Database, DayCounter
 from app.llm_gemini import GeminiClaimGate, GeminiFactChecker
@@ -62,6 +61,7 @@ from app.llm_provider import LLMRuntime
 from app.main import create_app
 from app.models import GateClaim, GateResult, TranscriptSegment
 from app.rate_limit import QuotaCooldown, TokenBucket
+from app.sessions import SessionRegistry
 from app.transcriber import SessionTextState
 
 SAMPLE_RATE = 16000
@@ -587,6 +587,11 @@ def _install_fake_state(
         # The hot-swappable slot ws.py/debug.py fetch the provider stack
         # through (same contract as the real lifespan).
         app.state.llm_runtime = make_fake_llm_runtime(settings, genai_client, cooldown)
+        # Live-session registry (same contract as the real lifespan). Being
+        # per-app is what replaced the old autouse global-reset fixture.
+        app.state.sessions = SessionRegistry(
+            scope=settings.session_preempt_scope, max_sessions=settings.max_sessions
+        )
         app.state.transcriber = transcriber
         executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="stt-test")
         app.state.stt_executor = executor
@@ -626,14 +631,6 @@ def open_test_client(
         headers={"host": "127.0.0.1"},
     ) as test_client:
         yield test_client
-
-
-@pytest.fixture(autouse=True)
-def _reset_current_pipeline() -> Iterator[None]:
-    """Isolate the module-global live-session slot between tests."""
-    ws_module.current_pipeline = None
-    yield
-    ws_module.current_pipeline = None
 
 
 @pytest.fixture(autouse=True)

@@ -1,16 +1,17 @@
 """``/ws/audio`` endpoint: hello handshake, preemption, session lifecycle.
 
-Single-user by design: a new connection PREEMPTS any existing one (the old
-socket receives ``{"type":"error","code":"superseded","fatal":true}`` and a
-1000 close). Extension reconnects therefore self-heal with zero session
-bookkeeping on either side.
+Sessions live in ``app.state.sessions`` (:class:`app.sessions.SessionRegistry`),
+which also owns the preemption rule. Under the default ``"channel"`` scope a
+new connection preempts only sessions on the same ``(platform, channel)`` — so
+an extension reconnect on one channel still self-heals with zero bookkeeping,
+while two different channels coexist (which the streamer bot needs). See
+``app/sessions.py`` for the scopes and for why capacity stays small.
+
+The preempted socket receives ``{"type":"error","code":"superseded",
+"fatal":true}`` and a 1000 close, exactly as before.
 
 Close codes (§2.1): 1000 normal (stop / superseded), 1008 protocol violation
-(bad or missing hello), 1011 internal fatal error.
-
-``current_pipeline`` is the module attribute consumed by ``app.debug`` — when
-a session is live, ``POST /debug/text`` pushes verdict frames onto it via
-``enqueue_frame`` so popups appear on a real Twitch tab from a curl.
+(bad or missing hello), 1011 internal fatal error or at-capacity.
 """
 
 import asyncio
@@ -23,8 +24,9 @@ from app.config import SERVER_VERSION, Settings
 from app.contradiction import ContradictionDetector
 from app.embeddings import OllamaEmbedder
 from app.llm_provider import LLMRuntime, create_claim_gate, create_fact_checker
-from app.models import ClientHello, ErrorFrame, ReadyFrame
+from app.models import ClientHello, ErrorCode, ErrorFrame, ReadyFrame
 from app.pipeline import SessionPipeline
+from app.sessions import SessionLimitExceeded, SessionRegistry
 
 NOT_CONFIGURED_MESSAGE = (
     "Backend has no API key yet — add one in the extension options."
@@ -35,16 +37,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 HELLO_TIMEOUT_S = 5.0
-
-# The one live session, if any — single-user by design.
-current_pipeline: SessionPipeline | None = None
-
-# Serializes the preempt-then-register handoff in ``audio_ws``. Without it, a
-# connection suspended inside ``preempt()`` (which awaits a send/close on the
-# old socket) leaves a window in which a third connection sees the
-# already-preempted pipeline, gets ``preempt()``'s synchronous early return,
-# and registers — ending with TWO live pipelines and an orphaned slot.
-_registration_lock = asyncio.Lock()
 
 
 async def _receive_hello(websocket: WebSocket) -> ClientHello | None:
@@ -76,18 +68,18 @@ async def _receive_hello(websocket: WebSocket) -> ClientHello | None:
     return None
 
 
-async def _reject_not_configured(websocket: WebSocket) -> None:
-    """Error frame + close 1011 for a hello on an unconfigured backend."""
-    logger.warning("rejecting /ws/audio connection: backend not configured")
+async def _reject(
+    websocket: WebSocket, *, code: ErrorCode, message: str, close_code: int
+) -> None:
+    """Deliver a fatal error frame and close; never raises."""
+    logger.warning("rejecting /ws/audio connection: %s", code)
     try:
         await websocket.send_json(
-            ErrorFrame(
-                code="not_configured", message=NOT_CONFIGURED_MESSAGE, fatal=True
-            ).model_dump()
+            ErrorFrame(code=code, message=message, fatal=True).model_dump()
         )
-        await websocket.close(code=1011)
+        await websocket.close(code=close_code)
     except Exception as exc:
-        logger.debug("could not deliver not_configured rejection: %s", exc)
+        logger.debug("could not deliver %s rejection: %s", code, exc)
 
 
 def _build_pipeline(websocket: WebSocket, hello: ClientHello) -> SessionPipeline:
@@ -132,14 +124,15 @@ def _build_pipeline(websocket: WebSocket, hello: ClientHello) -> SessionPipeline
 
 @router.websocket("/ws/audio")
 async def audio_ws(websocket: WebSocket) -> None:
-    """Accept -> preempt existing -> hello -> ready -> run the pipeline."""
-    global current_pipeline
+    """Accept -> preempt superseded -> hello -> ready -> run the pipeline."""
+    registry: SessionRegistry = websocket.app.state.sessions
     await websocket.accept()
 
-    # Preempt promptly on connect (§3.2) so the old session dies without
-    # waiting up to 5 s for this connection's hello.
-    if current_pipeline is not None:
-        await current_pipeline.preempt()
+    # Global scope only: preempt promptly on connect (§3.2) so the old session
+    # dies without waiting up to 5 s for this connection's hello. Under the
+    # default channel scope this is a no-op — the channel is not known until
+    # the hello parses, so the preempt happens inside register() instead.
+    await registry.preempt_on_accept()
 
     hello = await _receive_hello(websocket)
     if hello is None:
@@ -149,20 +142,26 @@ async def audio_ws(websocket: WebSocket) -> None:
     # fatal not_configured error frame and a 1011 close — no session starts.
     runtime: LLMRuntime = websocket.app.state.llm_runtime
     if not runtime.configured:
-        await _reject_not_configured(websocket)
+        await _reject(
+            websocket,
+            code="not_configured",
+            message=NOT_CONFIGURED_MESSAGE,
+            close_code=1011,
+        )
         return
 
-    async with _registration_lock:
-        # Re-read under the lock: another connection may have raced us in
-        # while we awaited the hello. The lock keeps preempt+register atomic
-        # with respect to other registrants, so exactly one pipeline is live
-        # once the dust settles (§2.1 single-user invariant). The old
-        # pipeline's ``finally`` may still clear the slot concurrently; that
-        # is harmless — it identity-checks, and we overwrite here anyway.
-        if current_pipeline is not None:
-            await current_pipeline.preempt()
-        pipeline = _build_pipeline(websocket, hello)
-        current_pipeline = pipeline
+    # Construction moved OUT of the lock (it must precede register(), which
+    # needs the pipeline's channel key). It is pure and side-effect-free, so
+    # nothing observable happens until the registry accepts it.
+    pipeline = _build_pipeline(websocket, hello)
+    try:
+        await registry.register(pipeline)
+    except SessionLimitExceeded as exc:
+        await _reject(
+            websocket, code="too_many_sessions", message=str(exc), close_code=1011
+        )
+        return
+
     settings: Settings = websocket.app.state.settings
     try:
         await websocket.send_json(
@@ -181,5 +180,4 @@ async def audio_ws(websocket: WebSocket) -> None:
             logger.debug("websocket close failed: %s", close_exc)
     finally:
         pipeline.close()
-        if current_pipeline is pipeline:
-            current_pipeline = None
+        registry.unregister(pipeline)

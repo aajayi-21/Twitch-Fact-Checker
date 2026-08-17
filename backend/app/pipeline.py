@@ -65,6 +65,7 @@ from app.models import (
     resolve_enabled_topics,
 )
 from app.rate_limit import QuotaCooldown, TokenBucket
+from app.sessions import ChannelKey, channel_key
 from app.transcriber import AudioRingBuffer, SessionTextState, Transcriber
 
 logger = logging.getLogger(__name__)
@@ -237,6 +238,29 @@ class SessionPipeline:
     # ------------------------------------------------------------------ #
     # Public interface
     # ------------------------------------------------------------------ #
+
+    @property
+    def session_id(self) -> str:
+        """Analytics/registry id for this session (also the log stamp)."""
+        return self._session_id
+
+    @property
+    def platform(self) -> str | None:
+        return self._platform
+
+    @property
+    def channel(self) -> str | None:
+        return self._channel
+
+    @property
+    def channel_key(self) -> ChannelKey:
+        """Normalized ``(platform, channel)`` — the preemption key."""
+        return channel_key(self._platform, self._channel)
+
+    @property
+    def preempted(self) -> bool:
+        """True once :meth:`preempt` has run (the slot is on its way out)."""
+        return self._preempted
 
     async def run(self) -> None:
         """Run the live phase; on graceful stop, run the flush phase."""

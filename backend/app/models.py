@@ -82,6 +82,9 @@ ErrorCode = Literal[
     # Fatal: a setup credentials hot-swap ended this session so the new
     # provider/key takes effect; the client should prompt a fresh Start.
     "credentials_updated",
+    # Fatal: MAX_SESSIONS capture sessions are already live. Capacity is
+    # bounded by the single STT worker, not by bookkeeping (app/sessions.py).
+    "too_many_sessions",
 ]
 
 
