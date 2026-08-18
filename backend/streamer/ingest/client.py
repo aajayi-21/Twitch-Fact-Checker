@@ -210,6 +210,17 @@ class IngestSocket:
         except websockets.ConnectionClosed:
             self.dropped_frames += 1
 
+    async def send_json(self, payload: dict) -> None:
+        """Best-effort control/frame message; silently dropped while down
+        (same doctrine as PCM — a stale video frame helps nobody)."""
+        websocket = self._ws
+        if websocket is None:
+            return
+        try:
+            await websocket.send(json.dumps(payload))
+        except websockets.ConnectionClosed:
+            pass
+
     async def send_stop(self) -> None:
         websocket = self._ws
         if websocket is not None:

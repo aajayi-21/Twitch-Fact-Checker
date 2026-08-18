@@ -202,3 +202,74 @@ class TestCliSurface:
             parse_topics("sports,astrology")
         assert parse_topics("sports, health") == ["sports", "health"]
         assert parse_topics(None) is None
+
+
+class TestVideoCapture:
+    def test_ffmpeg_argv_without_video_is_unchanged(self) -> None:
+        from streamer.ingest.sources import ffmpeg_argv
+
+        argv = ffmpeg_argv()
+        assert "-vn" in argv
+        assert "image2pipe" not in " ".join(argv)
+
+    def test_ffmpeg_argv_with_video_adds_the_mjpeg_output(self) -> None:
+        """Golden shape: audio still on pipe:1, one <=480p frame per 5 s as
+        MJPEG on the PASSED fd (pipe:N addresses the child's fd N)."""
+        from streamer.ingest.sources import ffmpeg_argv
+
+        argv = ffmpeg_argv(video_fd=7)
+        joined = " ".join(argv)
+        assert "-vn" not in argv
+        assert "pipe:1" in argv  # audio output unchanged
+        assert "pipe:7" in argv  # frames on the passed fd
+        assert "fps=1/5,scale=-2:480" in joined
+        assert argv[argv.index("-c:v") + 1] == "mjpeg"
+        # Audio mapping is explicit once there are two outputs.
+        assert "0:a:0" in argv and "0:v:0" in argv
+
+    def test_split_mjpeg_extracts_whole_frames_and_keeps_the_tail(self) -> None:
+        from streamer.ingest.sources import split_mjpeg
+
+        jpeg_a = b"\xff\xd8AAAA\xff\xd9"
+        jpeg_b = b"\xff\xd8BBBB\xff\xd9"
+        partial = b"\xff\xd8CC"  # no EOI yet
+
+        frames, rest = split_mjpeg(jpeg_a + jpeg_b + partial)
+        assert frames == [jpeg_a, jpeg_b]
+        assert rest == partial  # prepended to the next read
+
+        frames, rest = split_mjpeg(rest + b"CC\xff\xd9")
+        assert frames == [b"\xff\xd8CCCC\xff\xd9"]
+        assert rest == b""
+
+    def test_split_mjpeg_drops_junk_before_the_first_frame(self) -> None:
+        from streamer.ingest.sources import split_mjpeg
+
+        frames, rest = split_mjpeg(b"junk\xff\xd8XX\xff\xd9")
+        assert frames == [b"\xff\xd8XX\xff\xd9"]
+        assert rest == b""
+
+    def test_split_mjpeg_handles_empty_and_frameless_input(self) -> None:
+        from streamer.ingest.sources import split_mjpeg
+
+        assert split_mjpeg(b"") == ([], b"")
+        assert split_mjpeg(b"no frames here") == ([], b"")
+
+    def test_video_flag_switches_the_default_quality(self, tmp_path: Path) -> None:
+        args = build_parser().parse_args(["twitch.tv/foo", "--video"])
+        assert args.quality is None  # default resolution happens in resolve
+        # (The actual StreamlinkSource spawn needs binaries; quality logic is
+        # covered by the explicit-audio_only rejection below.)
+
+    def test_video_with_audio_only_quality_is_a_clear_error(self) -> None:
+        from streamer.ingest.sources import SourceError, StreamlinkSource
+
+        with pytest.raises(SourceError, match="audio_only carries no frames"):
+            StreamlinkSource("twitch.tv/foo", quality="audio_only,worst", video=True)
+
+    def test_video_on_a_wav_source_is_rejected(self, tmp_path: Path) -> None:
+        path = tmp_path / "fixture.wav"
+        write_wav(path)
+        args = build_parser().parse_args([str(path), "--source", "wav", "--video"])
+        with pytest.raises(SystemExit, match="streamlink source only"):
+            resolve_source(args)

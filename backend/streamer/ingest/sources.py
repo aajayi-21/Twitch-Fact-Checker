@@ -217,10 +217,17 @@ def streamlink_argv(target: str, quality: str, extra: list[str]) -> list[str]:
     ]
 
 
-def ffmpeg_argv() -> list[str]:
+# One frame per this many seconds when --video is on (matches the browser
+# extension's capture cadence); frames are scaled to <=480p like the
+# extension's, and the backend caps the wire size anyway.
+VIDEO_FRAME_INTERVAL_S = 5
+VIDEO_FRAME_HEIGHT = 480
+
+
+def ffmpeg_argv(video_fd: int | None = None) -> list[str]:
     # -nostdin is mandatory: without it ffmpeg eats the terminal's stdin and
     # breaks Ctrl-C for the whole process group.
-    return [
+    argv = [
         "ffmpeg",
         "-hide_banner",
         "-loglevel",
@@ -228,7 +235,12 @@ def ffmpeg_argv() -> list[str]:
         "-nostdin",
         "-i",
         "pipe:0",
-        "-vn",
+    ]
+    if video_fd is None:
+        argv += ["-vn"]
+    else:
+        argv += ["-map", "0:a:0"]
+    argv += [
         "-ac",
         "1",
         "-ar",
@@ -239,6 +251,40 @@ def ffmpeg_argv() -> list[str]:
         "pcm_s16le",
         "pipe:1",
     ]
+    if video_fd is not None:
+        # Second output: an MJPEG stream of one <=480p frame every 5 s onto a
+        # PASSED fd (pipe:N addresses the child's fd N; create_subprocess_exec
+        # with pass_fds keeps parent fd numbers, so N is just the fd itself).
+        argv += [
+            "-map",
+            "0:v:0",
+            "-vf",
+            f"fps=1/{VIDEO_FRAME_INTERVAL_S},scale=-2:{VIDEO_FRAME_HEIGHT}",
+            "-f",
+            "image2pipe",
+            "-c:v",
+            "mjpeg",
+            f"pipe:{video_fd}",
+        ]
+    return argv
+
+
+def split_mjpeg(buffer: bytes) -> tuple[list[bytes], bytes]:
+    """Split a concatenated-MJPEG byte stream into whole JPEGs + remainder.
+
+    Pure: scans for SOI (FFD8) .. EOI (FFD9) pairs, returns complete frames
+    and whatever partial tail must be prepended to the next read.
+    """
+    frames: list[bytes] = []
+    while True:
+        start = buffer.find(b"\xff\xd8")
+        if start < 0:
+            return frames, b""  # no frame start: junk before SOI is dropped
+        end = buffer.find(b"\xff\xd9", start + 2)
+        if end < 0:
+            return frames, buffer[start:]  # partial frame: keep for next read
+        frames.append(buffer[start : end + 2])
+        buffer = buffer[end + 2 :]
 
 
 class StreamlinkSource(AudioSource):
@@ -258,22 +304,47 @@ class StreamlinkSource(AudioSource):
         *,
         quality: str = "audio_only,worst",
         extra_args: list[str] | None = None,
+        video: bool = False,
     ) -> None:
         identity = derive_identity(target)
         if identity.platform == "twitch" and identity.channel is None:
             raise SourceError(f"cannot parse a Twitch channel from {target!r}")
+        if video and "audio_only" in quality:
+            raise SourceError(
+                "--video needs a video quality; use e.g. --quality 480p,worst "
+                "(audio_only carries no frames)"
+            )
         require_binaries("streamlink", "ffmpeg")
         self._target = (
             target if "//" in target or "." in target else (f"twitch.tv/{target}")
         )
         self._quality = quality
         self._extra = extra_args or []
+        self._video = video
+        # Freshest-frame mailbox: drop-oldest, tiny — the backend keeps its
+        # own 3-frame ring, and only the newest frame can match "as you can
+        # see, this chart…".
+        self._video_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=2)
+        self._video_transport: asyncio.ReadTransport | None = None
         self._procs: list[asyncio.subprocess.Process] = []
         self._stderr_ring: deque[str] = deque(maxlen=20)
         self._closing = False
 
     def describe(self) -> str:
-        return f"{self._target} [{self._quality}]"
+        suffix = " +video" if self._video else ""
+        return f"{self._target} [{self._quality}]{suffix}"
+
+    async def video_frames(self) -> AsyncIterator[bytes]:
+        """Whole JPEG frames (one per ~5 s) while the pipeline runs.
+
+        Runs across respawns: the queue belongs to the source, each spawn
+        attaches a fresh reader that feeds it.
+        """
+        while not self._closing:
+            try:
+                yield await asyncio.wait_for(self._video_queue.get(), timeout=1.0)
+            except TimeoutError:
+                continue
 
     async def frames(self) -> AsyncIterator[bytes]:
         backoff_s = 0.5
@@ -312,6 +383,11 @@ class StreamlinkSource(AudioSource):
         # Kernel-to-kernel pipe; both parent fds MUST close or ffmpeg never
         # sees EOF when streamlink dies and the source hangs forever.
         read_fd, write_fd = os.pipe()
+        frame_read: int | None = None
+        frame_write: int | None = None
+        if self._video:
+            frame_read, frame_write = os.pipe()
+            os.set_inheritable(frame_write, True)
         try:
             streamlink = await asyncio.create_subprocess_exec(
                 *streamlink_argv(self._target, self._quality, self._extra),
@@ -319,18 +395,46 @@ class StreamlinkSource(AudioSource):
                 stderr=asyncio.subprocess.PIPE,
             )
             ffmpeg = await asyncio.create_subprocess_exec(
-                *ffmpeg_argv(),
+                *ffmpeg_argv(video_fd=frame_write),
                 stdin=read_fd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                pass_fds=(frame_write,) if frame_write is not None else (),
             )
         finally:
             os.close(read_fd)
             os.close(write_fd)
+            if frame_write is not None:
+                os.close(frame_write)  # child holds its copy; parent's must go
         self._procs = [streamlink, ffmpeg]
         for process, tag in ((streamlink, "streamlink"), (ffmpeg, "ffmpeg")):
             asyncio.ensure_future(self._drain_stderr(process, tag))
+        if frame_read is not None:
+            await self._attach_video_reader(frame_read)
         return ffmpeg
+
+    async def _attach_video_reader(self, frame_read: int) -> None:
+        loop = asyncio.get_running_loop()
+        reader = asyncio.StreamReader()
+        protocol = asyncio.StreamReaderProtocol(reader)
+        transport, _ = await loop.connect_read_pipe(
+            lambda: protocol, os.fdopen(frame_read, "rb")
+        )
+        self._video_transport = transport
+        asyncio.ensure_future(self._pump_video(reader))
+
+    async def _pump_video(self, reader: asyncio.StreamReader) -> None:
+        """MJPEG stream -> whole JPEGs -> the drop-oldest frame mailbox."""
+        pending = b""
+        while True:
+            chunk = await reader.read(65536)
+            if not chunk:
+                return  # ffmpeg died; the audio loop handles the respawn
+            jpegs, pending = split_mjpeg(pending + chunk)
+            for jpeg in jpegs:
+                if self._video_queue.full():
+                    self._video_queue.get_nowait()  # freshest frame wins
+                self._video_queue.put_nowait(jpeg)
 
     async def _drain_stderr(
         self, process: asyncio.subprocess.Process, tag: str
@@ -344,6 +448,9 @@ class StreamlinkSource(AudioSource):
                 print(f"[{tag}] {text}", file=sys.stderr)
 
     async def _terminate(self) -> None:
+        if self._video_transport is not None:
+            self._video_transport.close()
+            self._video_transport = None
         for process in self._procs:
             if process.returncode is None:
                 process.terminate()

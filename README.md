@@ -250,7 +250,16 @@ viewer backend: its own entry point, port (**8711**), and database
 
 **Every stream (<1 minute):** `uv run fact-checker-ingest twitch.tv/<you>`
 (pulls your published stream via streamlink+ffmpeg), or
-`--source device --device <loopback>` for zero-delay local capture.
+`--source device --device <loopback>` for zero-delay local capture. Add
+`--video` to also capture a ≤480p frame every 5 s for on-screen claims ("as
+you can see, this chart…") — same privacy posture as the extension's toggle:
+frames go only to your local backend, live in a 3-frame memory ring, and are
+never stored.
+
+**Live pipeline controls** — the panel's *Pipeline* card mirrors the
+extension's options, applied to the running session instantly: sensitivity
+(low/medium/high), the vision gate (whether captured frames are used in
+verification), and a live-transcript view (panel-only, never on the overlay).
 
 **What actually posts** — deliberately much less than what gets checked:
 FALSE/MISLEADING only, ≥2 citations across ≥2 distinct reputable domains

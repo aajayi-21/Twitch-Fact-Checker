@@ -155,6 +155,11 @@
     padding: 6px 8px; width: 100%;
   }
   .hint-inline { color: var(--muted); font-size: 12px; }
+  #transcript-box {
+    font: 13px/1.5 ui-monospace, monospace; color: var(--muted);
+    background: #14141b; border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px 10px; margin-top: 8px; max-height: 8em; overflow-y: auto;
+  }
   #settings-error { color: var(--false); }
   #settings-ok { color: var(--true); }
   #topic-rows label { margin: 3px 0; }
@@ -275,6 +280,35 @@
   land here for one-keystroke approval: J/K select · Enter post · X skip.
   Items expire after 3 minutes — a late fact-check is noise.</div>
   <div id="queue"></div>
+</div>
+
+<h2>Pipeline (live session)</h2>
+<div class="card" id="pipeline-card">
+  <div class="row" style="align-items:center">
+    <span>Sensitivity</span>
+    <span class="segmented" id="sens-seg">
+      <button data-sens="low">Low</button>
+      <button data-sens="medium">Medium</button>
+      <button data-sens="high">High</button>
+    </span>
+    <span class="hint">applies to the running session instantly — more
+    sensitive = more claims checked = more spend. The CLI's
+    <code>--sensitivity</code> sets the startup default.</span>
+  </div>
+  <div class="row" style="align-items:center">
+    <label><input type="checkbox" id="pipe-vision">
+      Use on-screen frames in verification (vision)</label>
+    <span class="hint">frames arrive only if a client sends them —
+    <code>fact-checker-ingest --video</code> or the extension's capture
+    toggle. Held in a 3-frame memory ring, never stored; a frame can never
+    make a verdict stronger than it would be without it.</span>
+  </div>
+  <div class="row" style="align-items:center">
+    <label><input type="checkbox" id="pipe-transcript"> Live transcript</label>
+    <span class="hint">stream the raw transcript here (never on the overlay).</span>
+  </div>
+  <div id="transcript-box" style="display:none"></div>
+  <div class="hint" id="pipeline-note"></div>
 </div>
 
 <h2>Bot settings</h2>
@@ -609,6 +643,47 @@
     }
   };
 
+  // ---- pipeline card (instant-apply, like the extension's live options) -- //
+  let wantTranscripts = false;
+
+  const renderPipeline = (state) => {
+    const session = (state.sessions || [])[0];
+    for (const button of $("sens-seg").querySelectorAll("button")) {
+      button.disabled = !session;
+      button.setAttribute("aria-pressed",
+        String(Boolean(session) && session.sensitivity === button.dataset.sens));
+    }
+    $("pipe-vision").checked = Boolean(state.vision_enabled);
+    $("pipeline-note").textContent = session
+      ? "" : "No live session — start the ingest CLI; sensitivity and "
+             + "transcripts apply to a running session.";
+  };
+
+  const postPipeline = async (body) => {
+    try {
+      renderPipeline(await post("/session/config", body));
+    } catch (error) { alert(error.message || error); }
+  };
+  for (const button of $("sens-seg").querySelectorAll("button")) {
+    button.onclick = () => postPipeline({ sensitivity: button.dataset.sens });
+  }
+  $("pipe-vision").onchange = () =>
+    postPipeline({ vision_enabled: $("pipe-vision").checked });
+  $("pipe-transcript").onchange = () => {
+    wantTranscripts = $("pipe-transcript").checked;
+    $("transcript-box").style.display = wantTranscripts ? "block" : "none";
+    postPipeline({ send_transcripts: wantTranscripts });
+    // Re-subscribe with (or without) transcript events.
+    if (socket) socket.close();
+  };
+
+  const appendTranscript = (text) => {
+    const box = $("transcript-box");
+    box.appendChild(el("div", null, text));
+    while (box.children.length > 8) box.removeChild(box.firstChild);
+    box.scrollTop = box.scrollHeight;
+  };
+
   $("probation-btn").onclick = () => {
     const active = status?.bot?.probation?.active;
     const warning = active
@@ -713,6 +788,7 @@
       status = await getJson("/bot/status");
       $("error-banner").style.display = "none";
       render();
+      renderPipeline(await getJson("/session/config"));
       renderFeed(await getJson("/bot/posts?limit=40"));
     } catch {
       $("error-banner").style.display = "block";
@@ -733,8 +809,18 @@
 
   let socket = null;
   const connectEvents = () => {
-    socket = new WebSocket(`ws://${location.host}/ws/events`);
-    socket.onmessage = () => refresh(); // any event: re-pull authoritative state
+    const types = "verdict,status,contradiction,error"
+      + (wantTranscripts ? ",transcript" : "");
+    socket = new WebSocket(`ws://${location.host}/ws/events?types=${types}`);
+    socket.onmessage = (message) => {
+      let payload;
+      try { payload = JSON.parse(message.data); } catch { return; }
+      if (payload.type === "event" && payload.frame?.type === "transcript") {
+        appendTranscript(payload.frame.text || "");
+        return; // transcript lines are high-volume; no full refresh per line
+      }
+      refresh(); // anything else: re-pull authoritative state
+    };
     socket.onclose = () => setTimeout(connectEvents, 2000);
     socket.onerror = () => socket.close();
   };
