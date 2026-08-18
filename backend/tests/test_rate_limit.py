@@ -108,3 +108,55 @@ class TestQuotaCooldown:
         cooldown.trip(5.0, reason="OpenRouter credits exhausted; top up.")
         cooldown.trip(1.0)
         assert cooldown.reason == "OpenRouter credits exhausted; top up."
+
+
+class TestTryAcquire:
+    def test_takes_available_tokens_without_waiting(self) -> None:
+        bucket = TokenBucket(rate_per_min=600.0, burst=2)
+        assert bucket.try_acquire() is True
+        assert bucket.try_acquire() is True
+
+    def test_returns_false_when_empty_instead_of_waiting(self) -> None:
+        bucket = TokenBucket(rate_per_min=600.0, burst=2)
+        assert bucket.try_acquire() is True
+        assert bucket.try_acquire() is True
+        started = time.monotonic()
+        assert bucket.try_acquire() is False  # a chat caller drops, never queues
+        assert time.monotonic() - started < 0.01
+
+    async def test_idle_refill_makes_try_acquire_succeed_again(self) -> None:
+        bucket = TokenBucket(rate_per_min=600.0, burst=1)  # 10 tokens/s
+        assert bucket.try_acquire() is True
+        assert bucket.try_acquire() is False
+        await asyncio.sleep(0.15)
+        assert bucket.try_acquire() is True
+
+    async def test_steal_during_sleep_does_not_drive_tokens_negative(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression for the latent acquire() bug: it used to sleep once and
+        decrement unconditionally, so a try_acquire() stealing the refilled
+        token during the sleep pushed _tokens below zero and silently raised
+        the effective rate. The while-loop fix makes acquire re-check.
+
+        The steal is forced INSIDE acquire's sleep (via a patched sleep that
+        grabs the token right before waking) so the interleave is
+        deterministic rather than a race against the refill clock.
+        """
+        bucket = TokenBucket(rate_per_min=600.0, burst=1)  # 10 tokens/s
+        await bucket.acquire()  # bucket now empty
+        real_sleep = asyncio.sleep
+        steals: list[bool] = []
+
+        async def stealing_sleep(delay: float) -> None:
+            # Oversleep slightly so the refill has definitely credited a full
+            # token, then steal it just before acquire wakes and re-checks.
+            await real_sleep(delay + 0.03)
+            if not steals:
+                steals.append(bucket.try_acquire())
+
+        monkeypatch.setattr("app.rate_limit.asyncio.sleep", stealing_sleep)
+        await asyncio.wait_for(bucket.acquire(), timeout=5.0)
+
+        assert steals == [True]  # the steal really happened mid-wait
+        assert bucket._tokens >= 0.0  # and acquire re-checked instead of going negative

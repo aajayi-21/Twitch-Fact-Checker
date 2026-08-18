@@ -33,14 +33,36 @@ class TokenBucket:
         self._tokens = min(self._burst, self._tokens + elapsed * self._rate_per_s)
 
     async def acquire(self) -> None:
-        """Take one token, sleeping exactly until one is available."""
+        """Take one token, sleeping exactly until one is available.
+
+        The wait is a ``while`` loop, not an ``if``: :meth:`try_acquire` is
+        synchronous and does not take the lock, so a token that refilled
+        during the sleep may already be gone when we wake. Decrementing
+        unconditionally here would drive ``_tokens`` negative and silently
+        raise the effective rate.
+        """
         async with self._lock:
             self._refill()
-            if self._tokens < 1.0:
+            while self._tokens < 1.0:
                 wait_s = (1.0 - self._tokens) / self._rate_per_s
                 await asyncio.sleep(wait_s)
                 self._refill()
             self._tokens -= 1.0
+
+    def try_acquire(self) -> bool:
+        """Take one token WITHOUT waiting; ``False`` means none available.
+
+        For callers where a delayed action is worthless (chat posting: a
+        verdict sent minutes late reads as being about the wrong moment).
+        Synchronous and lock-free on purpose — no await between the refill
+        and the decrement, so on a single event loop it cannot interleave
+        with anything, including a sleeping :meth:`acquire`.
+        """
+        self._refill()
+        if self._tokens < 1.0:
+            return False
+        self._tokens -= 1.0
+        return True
 
 
 class QuotaCooldown:

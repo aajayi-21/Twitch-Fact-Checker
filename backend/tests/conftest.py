@@ -68,6 +68,26 @@ from app.transcriber import SessionTextState
 SAMPLE_RATE = 16000
 
 
+class FakeClock:
+    """Injectable monotonic clock for the streamer limiters and policy.
+
+    Those components all take a ``now: Callable[[], float]`` precisely so a
+    60-minute sliding window or a 15-minute mute can be tested without real
+    sleeps — the suite never waits on wall time for time-window logic.
+    """
+
+    def __init__(self, start: float = 1_000.0) -> None:
+        self._now = start
+
+    def __call__(self) -> float:
+        return self._now
+
+    def advance(self, seconds: float) -> None:
+        if seconds < 0:
+            raise ValueError("a monotonic clock cannot go backwards")
+        self._now += seconds
+
+
 async def _resolve_scripted(queue: deque[Any], name: str, call: dict[str, Any]) -> Any:
     """Shared scripted-queue semantics for every fake LLM client.
 
