@@ -24,9 +24,7 @@ def parse_js_object_literal(source: str, name: str) -> dict[str, str]:
     A regex, not a JS parser — deliberately brittle: if the extension's
     format changes enough to break this, a human should look anyway.
     """
-    match = re.search(
-        rf"{name}\s*=\s*Object\.freeze\(\{{(.*?)\}}\)", source, re.DOTALL
-    )
+    match = re.search(rf"{name}\s*=\s*Object\.freeze\(\{{(.*?)\}}\)", source, re.DOTALL)
     assert match, f"{name} not found"
     body = match.group(1)
     entries: dict[str, str] = {}

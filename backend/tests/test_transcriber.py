@@ -383,7 +383,5 @@ class TestDropCounts:
         )
         state = SessionTextState()
         segments = transcriber.transcribe_window(AUDIO, 0.0, 0.0, state)
-        assert [segment.text for segment in segments] == [
-            "a real sentence spoken here"
-        ]
+        assert [segment.text for segment in segments] == ["a real sentence spoken here"]
         assert state.drop_counts == {"blacklist": 1, "no_speech": 1}

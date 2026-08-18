@@ -17,8 +17,13 @@ def make_record(
     name: str = "app.pipeline", level: int = logging.INFO, msg: str = "hello %s"
 ) -> logging.LogRecord:
     return logging.LogRecord(
-        name=name, level=level, pathname=__file__, lineno=1,
-        msg=msg, args=("world",), exc_info=None,
+        name=name,
+        level=level,
+        pathname=__file__,
+        lineno=1,
+        msg=msg,
+        args=("world",),
+        exc_info=None,
     )
 
 

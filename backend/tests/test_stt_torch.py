@@ -121,9 +121,7 @@ class TestEnglishOnlyDetection:
         assert TorchWhisperTranscriber._looks_english_only(model_name) is False
 
     def test_explicit_language_overrides_the_heuristic(self) -> None:
-        transcriber = TorchWhisperTranscriber(
-            "openai/whisper-large-v3", language="de"
-        )
+        transcriber = TorchWhisperTranscriber("openai/whisper-large-v3", language="de")
         assert transcriber._language == "de"
 
 
@@ -139,9 +137,7 @@ class TestNoSpeechProb:
     ) -> None:
         assert transcriber._no_speech_prob([(0, 64000)], 0.0, 4.0, 64000) == 0.0
 
-    def test_empty_vad_is_no_speech(
-        self, transcriber: TorchWhisperTranscriber
-    ) -> None:
+    def test_empty_vad_is_no_speech(self, transcriber: TorchWhisperTranscriber) -> None:
         assert transcriber._no_speech_prob([], 0.0, 4.0, 64000) == 1.0
 
     def test_partial_coverage_is_proportional(
@@ -459,9 +455,7 @@ class TestLanguageReachesBothBackends:
         assert create_transcriber(settings)._language == "en"
 
     @pytest.mark.parametrize("backend", ["faster-whisper", "torch"])
-    def test_multilingual_checkpoint_defaults_to_autodetect(
-        self, backend: str
-    ) -> None:
+    def test_multilingual_checkpoint_defaults_to_autodetect(self, backend: str) -> None:
         settings = Settings(
             stt_backend=backend,
             whisper_model="openai/whisper-small",
@@ -471,6 +465,6 @@ class TestLanguageReachesBothBackends:
         assert create_transcriber(settings)._language is None
 
     def test_repo_id_suffix_is_recognised_on_the_default_backend(self) -> None:
-        """"openai/whisper-small.en" — the ".en" is on the last path segment."""
+        """ "openai/whisper-small.en" — the ".en" is on the last path segment."""
         transcriber = FasterWhisperTranscriber("openai/whisper-small.en")
         assert transcriber._language == "en"

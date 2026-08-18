@@ -537,9 +537,7 @@ class TestVisionLadder:
             await checker.check(CLAIM, image_b64="anImage=")
         assert checker.calls == ["anImage="]
 
-    async def test_no_image_keeps_the_old_ladder(
-        self, cooldown: QuotaCooldown
-    ) -> None:
+    async def test_no_image_keeps_the_old_ladder(self, cooldown: QuotaCooldown) -> None:
         checker = _ScriptedChecker(cooldown)
         checker.script = [VerdictPayload(label="TRUE", explanation="ok")]
         verdict = await checker.check(CLAIM)

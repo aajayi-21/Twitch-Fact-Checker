@@ -946,9 +946,7 @@ class TestSetupStages:
         # writing the code defaults would pin them into .env for a user who
         # never chose a model.
         assert stages_env_file.read_text(encoding="utf-8") == (
-            STAGES_ENV
-            + "GATE_PROVIDER=openrouter\n"
-            + "VERIFY_PROVIDER=gemini\n"
+            STAGES_ENV + "GATE_PROVIDER=openrouter\n" + "VERIFY_PROVIDER=gemini\n"
         )
         # Hot-swap is visible on the very next status read (no restart).
         status = configured_client.get("/setup/status").json()
@@ -1007,9 +1005,7 @@ class TestSetupStages:
         settings = make_test_settings(
             gemini_api_key="AIza-stages-test-key", openrouter_api_key=""
         )
-        with open_test_client(
-            settings, fake_genai_client, fake_transcriber
-        ) as client:
+        with open_test_client(settings, fake_genai_client, fake_transcriber) as client:
             response = client.post(
                 "/setup/stages",
                 json={"gate_provider": "gemini", "verify_provider": "openrouter"},
