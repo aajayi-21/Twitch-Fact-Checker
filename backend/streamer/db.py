@@ -122,8 +122,17 @@ CREATE TABLE IF NOT EXISTS chat_engagement (
 );
 """
 
-# chat_posts.status values.
-POST_STATUSES = ("posted", "queued", "suppressed", "failed", "expired", "skipped")
+# chat_posts.status values. "dry_run" is a would-have-posted row: the exact
+# message, recorded but never sent — the pre-launch review artifact.
+POST_STATUSES = (
+    "posted",
+    "queued",
+    "suppressed",
+    "failed",
+    "expired",
+    "skipped",
+    "dry_run",
+)
 
 # Fields a partial chat_channels upsert may touch. An upsert must only write
 # what the caller supplied — a `!fc cap 6` must never clobber the armed_at.
