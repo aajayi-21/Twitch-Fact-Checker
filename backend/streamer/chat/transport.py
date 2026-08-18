@@ -338,6 +338,12 @@ class TwitchIRCTransport:
     def room_id(self) -> str | None:
         return self._room_id
 
+    def update_token(self, token: str) -> None:
+        """Swap the credential; takes effect on the NEXT connect. Used by the
+        refresh path — a live IRC connection survives an expired token, so
+        there is nothing to do until the next handshake anyway."""
+        self._token = token.removeprefix("oauth:").strip()
+
     # -- lifecycle ------------------------------------------------------- #
 
     async def connect(self) -> None:
