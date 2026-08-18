@@ -159,14 +159,31 @@ class ChannelBot:
     # ------------------------------------------------------------------ #
 
     async def load_channel_state(self) -> None:
-        """Pull persisted mode/mute/probation so a restart never re-enables
-        what a human turned off."""
+        """Pull persisted mode/mute/probation/config so a restart never
+        re-enables what a human turned off — nor forgets what they tuned."""
         row = await self._db.fetch_chat_channel(self.platform, self.channel)
         if row is None:
             return
         self.trusted = bool(row["trusted"])
         self.approved_posts = int(row["approved_posts"])
         self.retractions = int(row["retractions"])
+        # config_json first (the tuned knobs), then the mode COLUMN on top:
+        # the column is the kill-switch record (!fc off writes it strictly),
+        # so on any divergence the column wins.
+        config_raw = row["config_json"]
+        if config_raw and config_raw != "{}":
+            import json
+
+            try:
+                self.policy = self.policy.with_config(json.loads(config_raw))
+            except (ValueError, TypeError) as exc:
+                # A bad persisted config must not brick the bot; defaults are
+                # the safe fallback and the problem is logged loudly.
+                logger.error(
+                    "ignoring invalid persisted channel config (%s); "
+                    "running on defaults",
+                    exc,
+                )
         mode = row["mode"]
         if mode in ("auto", "review", "off") and mode != self.policy.mode:
             self.policy = self._policy_with(mode=mode)
@@ -589,17 +606,70 @@ class ChannelBot:
         await self.transport.send(text)
 
     def _policy_with(self, **changes: Any) -> PostingPolicy:
-        from dataclasses import asdict
-
-        current = asdict(self.policy)
-        current.update(changes)
-        return PostingPolicy(**current)
+        # Single validated path: !fc, the panel, and the persisted config all
+        # build policies through with_config, so no route can skip a clamp.
+        return self.policy.with_config(changes)
 
     async def _persist_mode(self, mode: str) -> None:
         self.policy = self._policy_with(mode=mode)
         await self._db.upsert_chat_channel(
             platform=self.platform, channel=self.channel, mode=mode
         )
+
+    async def apply_settings(self, changes: dict[str, Any]) -> None:
+        """The control panel's settings write: validate, swap, persist.
+
+        Raises :class:`PolicyConfigError` on unknown keys or clamp
+        violations — the caller turns that into a 400 with the exact message,
+        so the panel shows WHY a value was refused instead of clamping it
+        silently (a silently-mutated safety setting is a lie in the UI).
+        """
+        new_policy = self.policy.with_config(changes)
+        self.policy = new_policy
+        fields: dict[str, Any] = {"config_json": self._config_json()}
+        if "mode" in changes:
+            # The mode column is the kill-switch record; keep it in step.
+            fields["mode"] = new_policy.mode
+        await self._db.upsert_chat_channel(
+            platform=self.platform, channel=self.channel, **fields
+        )
+
+    async def set_trusted(self, trusted: bool) -> None:
+        """End (or reinstate) probation from the panel. Loud on purpose."""
+        self.trusted = trusted
+        await self._db.upsert_chat_channel(
+            platform=self.platform, channel=self.channel, trusted=int(trusted)
+        )
+        logger.warning(
+            "probation %s for #%s via control panel",
+            "ENDED" if trusted else "REINSTATED",
+            self.channel,
+        )
+
+    async def retract(self, handle: str, *, by: str) -> bool:
+        """Retract a posted verdict: fixed public wording + a feedback row.
+
+        Shared by ``!fc retract`` and the panel's Retract button; the appeal
+        path and the eval set are the same mechanism either way.
+        """
+        row = await self._db.fetch_chat_post_by_handle(
+            self.platform, self.channel, handle
+        )
+        if row is None or row["status"] != "posted" or row["retracted_at"]:
+            return False
+        retraction = format_retraction(handle)
+        if retraction is not None and not self.dry_run:
+            await self.transport.send(retraction)
+        await self._db.mark_chat_post_retracted(
+            post_id=row["id"], retracted_by_user_id=by
+        )
+        self.retractions += 1
+        await self._db.upsert_chat_channel(
+            platform=self.platform, channel=self.channel, retractions=self.retractions
+        )
+        if row["verdict_id"]:
+            await self._db.record_feedback(row["verdict_id"], "down", None, None)
+        return True
 
     # -- viewer verbs ----------------------------------------------------- #
 
@@ -761,27 +831,7 @@ class ChannelBot:
         handle = cmd.valid_handle(args[0]) if args else None
         if handle is None:
             return
-        row = await self._db.fetch_chat_post_by_handle(
-            self.platform, self.channel, handle
-        )
-        if row is None or row["status"] != "posted" or row["retracted_at"]:
-            return
-        retraction = format_retraction(handle)
-        if retraction is not None and not self.dry_run:
-            await self.transport.send(retraction)
-        await self._db.mark_chat_post_retracted(
-            post_id=row["id"], retracted_by_user_id=message.user_id
-        )
-        self.retractions += 1
-        await self._db.upsert_chat_channel(
-            platform=self.platform,
-            channel=self.channel,
-            retractions=self.retractions,
-        )
-        if row["verdict_id"]:
-            # A retraction is automatically an eval-set row: the appeal path
-            # and the measurement are the same mechanism.
-            await self._db.record_feedback(row["verdict_id"], "down", None, None)
+        await self.retract(handle, by=message.user_id)
 
     # -- broadcaster verbs -------------------------------------------------- #
 
@@ -872,14 +922,7 @@ class ChannelBot:
         return sum(1 for stamp in self._chat_activity if stamp > cutoff)
 
     def _config_json(self) -> str:
+        """The FULL policy, so a restart restores every tuned knob."""
         import json
 
-        return json.dumps(
-            {
-                "posts_per_hour": self.policy.posts_per_hour,
-                "labels": sorted(self.policy.labels),
-                "topics": sorted(self.policy.topics),
-                "min_check_worthiness": self.policy.min_check_worthiness,
-                "template": self.policy.template,
-            }
-        )
+        return json.dumps(self.policy.to_config())

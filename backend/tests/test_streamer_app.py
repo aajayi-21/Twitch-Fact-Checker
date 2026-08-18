@@ -233,3 +233,125 @@ class TestTwitchSetupRoutes:
             streamer_client.post("/setup/twitch/device/poll", json={}).status_code
             == 409
         )
+
+
+def install_bot(client: TestClient):
+    """Attach a real ChannelBot (fake transport) to the running test app."""
+    from streamer.chat.bot import ChannelBot
+    from streamer.chat.policy import PostingPolicy
+    from tests.test_chat_bot import CHANNEL, FakeChatTransport
+
+    state = client.app.state
+    bot = ChannelBot(
+        platform="twitch",
+        channel=CHANNEL,
+        transport=FakeChatTransport(),  # type: ignore[arg-type]
+        db=state.db,
+        hub=state.events,
+        registry=state.sessions,
+        allowlist=frozenset({CHANNEL}),
+        policy=PostingPolicy(mode="auto"),
+        dry_run=True,
+    )
+    state.chat_bot = bot
+    return bot
+
+
+class TestSettingsRoutes:
+    def test_get_settings_serves_the_full_policy(
+        self, streamer_client: TestClient
+    ) -> None:
+        install_bot(streamer_client)
+        config = streamer_client.get("/bot/settings").json()
+        # Every knob the panel renders comes from this one payload.
+        for key in (
+            "mode",
+            "labels",
+            "topics",
+            "min_check_worthiness",
+            "min_sources",
+            "posts_per_hour",
+            "min_gap_s",
+            "claim_cooldown_s",
+            "topic_cooldown_s",
+            "max_claim_age_s",
+            "template",
+            "sources_style",
+            "source_tiers_extra",
+        ):
+            assert key in config, key
+
+    def test_partial_update_applies_and_reads_back(
+        self, streamer_client: TestClient
+    ) -> None:
+        bot = install_bot(streamer_client)
+        response = streamer_client.post(
+            "/bot/settings",
+            json={"posts_per_hour": 3, "template": "compact"},
+        )
+        assert response.status_code == 200
+        assert response.json()["bot"]["settings"]["posts_per_hour"] == 3
+        assert bot.policy.template == "compact"
+        assert bot.policy.mode == "auto"  # untouched
+
+    def test_clamp_violation_is_a_400_with_the_reason(
+        self, streamer_client: TestClient
+    ) -> None:
+        """Refused loudly, never clamped silently — a form showing a value
+        the backend quietly rewrote would be lying."""
+        bot = install_bot(streamer_client)
+        response = streamer_client.post("/bot/settings", json={"posts_per_hour": 50})
+        assert response.status_code == 400
+        assert "posts_per_hour must be 1..12" in response.json()["detail"]
+        assert bot.policy.posts_per_hour == 6  # unchanged
+
+    def test_unknown_key_is_a_400(self, streamer_client: TestClient) -> None:
+        install_bot(streamer_client)
+        response = streamer_client.post("/bot/settings", json={"nonsense": 1})
+        assert response.status_code == 400
+        assert "unknown settings" in response.json()["detail"]
+
+    def test_unverified_stays_unconfigurable_via_the_api(
+        self, streamer_client: TestClient
+    ) -> None:
+        install_bot(streamer_client)
+        response = streamer_client.post(
+            "/bot/settings", json={"labels": ["FALSE", "UNVERIFIED"]}
+        )
+        assert response.status_code == 400
+        assert "UNVERIFIED" in response.json()["detail"]
+
+    def test_trust_toggles_probation_in_the_status(
+        self, streamer_client: TestClient
+    ) -> None:
+        install_bot(streamer_client)
+        status = streamer_client.post("/bot/trust", json={"trusted": True}).json()
+        assert status["bot"]["probation"]["active"] is False
+        status = streamer_client.post("/bot/trust", json={"trusted": False}).json()
+        assert status["bot"]["probation"]["active"] is True
+
+    def test_retract_validates_the_handle(self, streamer_client: TestClient) -> None:
+        install_bot(streamer_client)
+        assert (
+            streamer_client.post(
+                "/bot/retract", json={"handle": "/ban all"}
+            ).status_code
+            == 400
+        )
+        assert (
+            streamer_client.post("/bot/retract", json={"handle": "abcd12"}).status_code
+            == 404  # valid shape, no such post
+        )
+
+    def test_settings_routes_409_without_a_bot(
+        self, streamer_client: TestClient
+    ) -> None:
+        for method, path, body in (
+            ("get", "/bot/settings", None),
+            ("post", "/bot/settings", {}),
+            ("post", "/bot/trust", {"trusted": True}),
+            ("post", "/bot/retract", {"handle": "abcd"}),
+        ):
+            call = getattr(streamer_client, method)
+            response = call(path, json=body) if body is not None else call(path)
+            assert response.status_code == 409, path

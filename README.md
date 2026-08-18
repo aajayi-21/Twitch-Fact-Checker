@@ -260,7 +260,10 @@ New channels start in **review mode** (you approve each post, one keystroke in
 the dock) and graduate to auto after 10 approvals; `!fc trust` skips the
 probation. **Dry run is on by default**: the bot evaluates and records the
 exact message it *would* have sent — read a full stream's worth in the panel,
-then flip "Go live". Mid-stream control is chat-first: `!fc mute [30m]`,
+then flip "Go live". Every policy knob is editable in the panel's **Bot
+settings** (labels, topics, pace, confidence bar, message shape, source-tier
+overrides, probation) — hard safety clamps are refused with the reason, never
+silently rewritten. Mid-stream control is chat-first: `!fc mute [30m]`,
 `!fc off`, `!fc wrong <id>` (public retraction + a feedback row), `!fc help`
 for the rest — mods can use all of them, from a phone.
 

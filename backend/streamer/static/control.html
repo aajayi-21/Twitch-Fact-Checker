@@ -136,12 +136,36 @@
                   border: 1px solid var(--false); color: var(--false);
                   border-radius: 9px; padding: 8px 12px; margin-bottom: 10px; }
   .hint { color: var(--muted); font-size: 13px; margin-top: 6px; }
+  /* ---- settings form ---- */
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+           margin-bottom: 12px; }
+  fieldset { border: 1px solid var(--border); border-radius: 10px;
+             padding: 10px 12px; }
+  legend { color: var(--muted); font-size: 12px; text-transform: uppercase;
+           letter-spacing: 0.06em; padding: 0 6px; }
+  fieldset label { display: block; margin: 6px 0; font-size: 14px; }
+  fieldset input[type="number"], fieldset select {
+    font: inherit; color: var(--text); background: #14141b;
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 5px 8px; width: 100%; margin-top: 3px;
+  }
+  fieldset textarea {
+    font: 13px ui-monospace, monospace; color: var(--text);
+    background: #14141b; border: 1px solid var(--border); border-radius: 8px;
+    padding: 6px 8px; width: 100%;
+  }
+  .hint-inline { color: var(--muted); font-size: 12px; }
+  #settings-error { color: var(--false); }
+  #settings-ok { color: var(--true); }
+  #topic-rows label { margin: 3px 0; }
   /* ---- dock layout: narrow OBS docks collapse to essentials ---- */
   @media (max-width: 520px) {
     body { padding: 8px; font-size: 14px; }
     #dots { width: 100%; margin-left: 0; }
-    #setup, #feed-card { display: none; }  /* dock shows bar + queue only */
+    /* dock shows bar + queue only */
+    #setup, #feed-card, #settings-card { display: none; }
     #mute-btn { width: 100%; }
+    .grid2 { grid-template-columns: 1fr; }
   }
 </style>
 </head>
@@ -253,6 +277,88 @@
   <div id="queue"></div>
 </div>
 
+<h2>Bot settings</h2>
+<div class="card" id="settings-card">
+  <div class="hint" id="settings-disabled">Connect Twitch first — settings
+  apply to the running bot.</div>
+  <form id="settings-form" style="display:none" onsubmit="return false">
+    <div class="grid2">
+      <fieldset>
+        <legend>Labels that may post</legend>
+        <label><input type="checkbox" id="lab-FALSE"> FALSE</label>
+        <label><input type="checkbox" id="lab-MISLEADING"> MISLEADING</label>
+        <label><input type="checkbox" id="lab-TRUE"> TRUE
+          <span class="hint-inline">(off by default — corrections are the format)</span></label>
+        <div class="hint">UNVERIFIED can never post; that is not a setting.</div>
+      </fieldset>
+      <fieldset>
+        <legend>Topics to post about</legend>
+        <label><input type="checkbox" id="topics-master"> <strong>All topics</strong></label>
+        <div id="topic-rows"></div>
+      </fieldset>
+    </div>
+    <div class="grid2">
+      <fieldset>
+        <legend>Pace</legend>
+        <label>Posts per hour (1–12)
+          <input type="number" id="set-posts_per_hour" min="1" max="12"></label>
+        <label>Minimum gap between posts, s (≥45)
+          <input type="number" id="set-min_gap_s" min="45" max="1800"></label>
+        <label>Same-claim cooldown, s (≥600)
+          <input type="number" id="set-claim_cooldown_s" min="600" max="86400"></label>
+        <label>Same-topic cooldown, s
+          <input type="number" id="set-topic_cooldown_s" min="0" max="3600"></label>
+        <div class="hint">Hard ceilings the form cannot cross: 12/hour, and an
+        un-configurable 3-posts-per-10-minutes guard underneath everything.</div>
+      </fieldset>
+      <fieldset>
+        <legend>Confidence bar</legend>
+        <label>Min check-worthiness (0.60–0.95)
+          <input type="number" id="set-min_check_worthiness" min="0.60" max="0.95" step="0.01"></label>
+        <label>Min citations (2–5)
+          <input type="number" id="set-min_sources" min="2" max="5"></label>
+        <label>Max claim age, s (20–180)
+          <input type="number" id="set-max_claim_age_s" min="20" max="180"></label>
+        <div class="hint">Floors that always hold: ≥2 distinct domains, best
+        source tier A/B, no tier-D source, never fallback-parsed verdicts,
+        tier-A required for politics/health.</div>
+      </fieldset>
+    </div>
+    <div class="grid2">
+      <fieldset>
+        <legend>Message shape</legend>
+        <label>Template
+          <select id="set-template">
+            <option value="standard">standard — label · claim · why · sources</option>
+            <option value="compact">compact — no explanation</option>
+            <option value="verbose">verbose — longer, 3 sources</option>
+          </select></label>
+        <label>Sources shown as
+          <select id="set-sources_style">
+            <option value="domain">domains (safe everywhere)</option>
+            <option value="url">full URL (needs mod link permission)</option>
+          </select></label>
+      </fieldset>
+      <fieldset>
+        <legend>Source tier overrides</legend>
+        <textarea id="set-tiers" rows="4" spellcheck="false"
+          placeholder="one per line, e.g.&#10;localpaper.example=B&#10;somesite.com=C"></textarea>
+        <div class="hint">Promote unknown domains or demote known ones.
+        The deny-list (reddit, x, fandom…) cannot be promoted — by design.</div>
+      </fieldset>
+    </div>
+    <div class="row">
+      <button class="primary" id="settings-apply">Apply settings</button>
+      <span class="hint" id="settings-error"></span>
+      <span class="hint" id="settings-ok"></span>
+    </div>
+    <div class="row" id="probation-row">
+      <span class="hint" id="probation-text"></span>
+      <button id="probation-btn"></button>
+    </div>
+  </form>
+</div>
+
 <h2>Recent decisions</h2>
 <div class="card" id="feed-card">
   <div class="hint">Every verdict the pipeline produced and what happened to
@@ -360,6 +466,7 @@
       box.appendChild(row);
       container.appendChild(box);
     });
+    renderSettings(bot);
   };
 
   const renderFeed = (rows) => {
@@ -381,10 +488,134 @@
         row.status + (row.reason && row.reason !== "ok" ? ` · ${row.reason}` : ""));
       chip.dataset.status = row.status;
       chipCell.appendChild(chip);
+      if (row.status === "posted" && !row.retracted_at && row.handle) {
+        // Same mechanism as !fc retract: fixed public wording + a feedback
+        // row that feeds the eval set.
+        const retract = el("button", null, "Retract");
+        retract.style.marginLeft = "8px";
+        retract.onclick = () => {
+          if (confirm(`Publicly retract check ${row.handle}? This posts a `
+                      + "retraction message and records the verdict as wrong."))
+            act("/bot/retract", { handle: row.handle });
+        };
+        chipCell.appendChild(retract);
+      }
+      if (row.retracted_at) chipCell.appendChild(el("span", "chip", "retracted"));
       tr.appendChild(chipCell);
       tr.appendChild(el("td", "msg", row.message_text || row.reason));
       body.appendChild(tr);
     }
+  };
+
+  // ---- settings form ----------------------------------------------------- //
+  const NUMERIC_KEYS = [
+    "posts_per_hour", "min_gap_s", "claim_cooldown_s", "topic_cooldown_s",
+    "min_check_worthiness", "min_sources", "max_claim_age_s",
+  ];
+  let settingsDirty = false;
+  let topicSlugs = [];
+  $("settings-form").addEventListener("input", () => { settingsDirty = true; });
+
+  const buildTopicRows = (topics) => {
+    topicSlugs = topics.map((topic) => topic.slug);
+    const container = $("topic-rows");
+    for (const topic of topics) {
+      const label = el("label");
+      const box = el("input");
+      box.type = "checkbox";
+      box.id = `topic-${topic.slug}`;
+      label.appendChild(box);
+      const dot = el("span");
+      dot.style.cssText = `display:inline-block;width:9px;height:9px;`
+        + `border-radius:50%;margin:0 6px;background:${topic.color}`;
+      label.appendChild(dot);
+      label.appendChild(document.createTextNode(topic.label));
+      container.appendChild(label);
+    }
+    $("topics-master").addEventListener("change", () => {
+      for (const slug of topicSlugs)
+        $(`topic-${slug}`).checked = $("topics-master").checked;
+      settingsDirty = true;
+    });
+  };
+
+  const renderSettings = (bot) => {
+    const form = $("settings-form");
+    const hasSettings = bot && bot.settings;
+    $("settings-disabled").style.display = hasSettings ? "none" : "block";
+    form.style.display = hasSettings ? "block" : "none";
+    if (!hasSettings) return;
+    // Probation row always reflects reality (it is not a form field).
+    const probation = bot.probation || {};
+    $("probation-text").textContent = probation.active
+      ? `Probation: review-mode until ${10 - (probation.approved_posts || 0)} `
+        + "more approvals (or end it now)."
+      : "Probation passed — auto mode available.";
+    $("probation-btn").textContent = probation.active
+      ? "End probation" : "Reinstate probation";
+    // Never clobber a half-edited form; values land after Apply/refresh.
+    if (settingsDirty) return;
+    const config = bot.settings;
+    for (const label of ["FALSE", "MISLEADING", "TRUE"])
+      $(`lab-${label}`).checked = config.labels.includes(label);
+    for (const slug of topicSlugs)
+      $(`topic-${slug}`).checked = config.topics.includes(slug);
+    $("topics-master").checked = topicSlugs.every(
+      (slug) => config.topics.includes(slug));
+    for (const key of NUMERIC_KEYS) $(`set-${key}`).value = config[key];
+    $("set-template").value = config.template;
+    $("set-sources_style").value = config.sources_style;
+    $("set-tiers").value = Object.entries(config.source_tiers_extra || {})
+      .map(([domain, tier]) => `${domain}=${tier}`).join("\n");
+  };
+
+  const collectSettings = () => {
+    const tiers = {};
+    for (const line of $("set-tiers").value.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const [domain, tier] = trimmed.split("=").map((part) => part.trim());
+      if (!domain || !tier) throw new Error(`bad tier line: "${trimmed}"`);
+      tiers[domain.toLowerCase()] = tier.toUpperCase();
+    }
+    const config = {
+      labels: ["FALSE", "MISLEADING", "TRUE"].filter(
+        (label) => $(`lab-${label}`).checked),
+      topics: topicSlugs.filter((slug) => $(`topic-${slug}`).checked),
+      template: $("set-template").value,
+      sources_style: $("set-sources_style").value,
+      source_tiers_extra: tiers,
+    };
+    for (const key of NUMERIC_KEYS) config[key] = Number($(`set-${key}`).value);
+    return config;
+  };
+
+  $("settings-apply").onclick = async () => {
+    $("settings-error").textContent = "";
+    $("settings-ok").textContent = "";
+    let config;
+    try { config = collectSettings(); }
+    catch (error) { $("settings-error").textContent = String(error.message); return; }
+    try {
+      status = await post("/bot/settings", config);
+      settingsDirty = false;
+      $("settings-ok").textContent = "Applied ✓";
+      setTimeout(() => { $("settings-ok").textContent = ""; }, 2000);
+      render();
+    } catch (error) {
+      // The backend's 400 carries the exact clamp message — show it verbatim
+      // rather than silently rewriting the value: a lying form is worse.
+      $("settings-error").textContent = String(error.message || error);
+    }
+  };
+
+  $("probation-btn").onclick = () => {
+    const active = status?.bot?.probation?.active;
+    const warning = active
+      ? "End probation? The bot may then AUTO-POST without human approval "
+        + "(in auto mode, once dry run is off)."
+      : "Reinstate probation? New posts will queue for approval again.";
+    if (confirm(warning)) act("/bot/trust", { trusted: Boolean(active) });
   };
 
   // ---- actions (POST returns the authoritative status) ------------------- //
@@ -496,6 +727,9 @@
   };
   $("overlay-url").textContent = `${location.origin}/overlay`;
   $("dock-url").textContent = `${location.origin}/control`;
+  fetch("/meta/topics").then((r) => r.json())
+    .then((payload) => { buildTopicRows(payload.topics); render(); })
+    .catch(() => {});
 
   let socket = null;
   const connectEvents = () => {

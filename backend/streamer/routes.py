@@ -249,6 +249,14 @@ def _bot_status(request: Request) -> dict[str, Any]:
             "posts_this_hour": bot.history.posts_in_window(3600.0, now=now),
             "posts_per_hour": bot.policy.posts_per_hour,
             "labels": sorted(bot.policy.labels),
+            # The full policy, so the panel's settings form renders every
+            # knob from one authoritative source.
+            "settings": bot.policy.to_config(),
+            "probation": {
+                "active": not bot.trusted,
+                "approved_posts": bot.approved_posts,
+                "retractions": bot.retractions,
+            },
             "queue": [
                 {
                     "post_id": pending.post_id,
@@ -349,6 +357,71 @@ async def skip_queued(post_id: str, request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail="chat bot is not configured")
     if not await bot.skip(post_id, skipped_by="control-panel"):
         raise HTTPException(status_code=404, detail="unknown queue item")
+    return _bot_status(request)
+
+
+@router.get("/bot/settings")
+async def get_settings(request: Request) -> dict[str, Any]:
+    bot = _bot_of(request)
+    if bot is None:
+        raise HTTPException(status_code=409, detail="chat bot is not configured")
+    return bot.policy.to_config()
+
+
+@router.post("/bot/settings")
+async def update_settings(body: dict[str, Any], request: Request) -> dict[str, Any]:
+    """Partial policy update. A clamp violation is a 400 carrying the exact
+    reason — a safety knob is refused loudly, never clamped silently (a UI
+    showing a value the policy quietly rewrote would be lying)."""
+    from streamer.chat.policy import PolicyConfigError
+
+    bot = _bot_of(request)
+    if bot is None:
+        raise HTTPException(status_code=409, detail="chat bot is not configured")
+    try:
+        await bot.apply_settings(body)
+    except PolicyConfigError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _bot_status(request)
+
+
+class TrustRequest(BaseModel):
+    trusted: bool
+
+
+@router.post("/bot/trust")
+async def set_trust(body: TrustRequest, request: Request) -> dict[str, Any]:
+    """End (or reinstate) review-mode probation. The chat path for this is
+    broadcaster-only (!fc trust); the panel path is the operator's — on a
+    self-hosted single-channel box those are the same person, and the
+    action logs loudly either way."""
+    bot = _bot_of(request)
+    if bot is None:
+        raise HTTPException(status_code=409, detail="chat bot is not configured")
+    await bot.set_trusted(body.trusted)
+    return _bot_status(request)
+
+
+class RetractRequest(BaseModel):
+    handle: str
+
+
+@router.post("/bot/retract")
+async def retract_post(body: RetractRequest, request: Request) -> dict[str, Any]:
+    """Panel-side retraction: same fixed wording + feedback row as
+    ``!fc retract`` — the appeal path and the eval set stay one mechanism."""
+    from streamer.chat.commands import valid_handle
+
+    bot = _bot_of(request)
+    if bot is None:
+        raise HTTPException(status_code=409, detail="chat bot is not configured")
+    handle = valid_handle(body.handle)
+    if handle is None:
+        raise HTTPException(status_code=400, detail="bad handle")
+    if not await bot.retract(handle, by="control-panel"):
+        raise HTTPException(
+            status_code=404, detail="no posted, unretracted verdict with that handle"
+        )
     return _bot_status(request)
 
 

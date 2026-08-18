@@ -472,3 +472,47 @@ class TestInMemoryPostHistory:
             )
             is False
         )
+
+
+class TestSerialization:
+    def test_roundtrip_is_lossless(self) -> None:
+        policy = PostingPolicy(
+            mode="auto",
+            labels=frozenset({"FALSE", "TRUE"}),
+            topics=frozenset({"sports", "other"}),
+            posts_per_hour=3,
+            source_tiers_extra={"localpaper.example": "B"},
+        )
+        restored = PostingPolicy().with_config(policy.to_config())
+        assert restored == policy
+
+    def test_with_config_is_partial(self) -> None:
+        updated = PostingPolicy(mode="auto").with_config({"posts_per_hour": 3})
+        assert updated.posts_per_hour == 3
+        assert updated.mode == "auto"  # untouched keys survive
+
+    def test_unknown_keys_are_rejected_not_ignored(self) -> None:
+        """A typo'd knob silently doing nothing is worse than an error."""
+        with pytest.raises(PolicyConfigError, match="unknown settings"):
+            PostingPolicy().with_config({"post_per_hour": 3})
+
+    def test_clamps_rerun_on_every_path(self) -> None:
+        """with_config is the single entry point for the panel, !fc, and the
+        persisted config — none of them can skip a clamp."""
+        with pytest.raises(PolicyConfigError, match="posts_per_hour"):
+            PostingPolicy().with_config({"posts_per_hour": 50})
+        with pytest.raises(PolicyConfigError, match="UNVERIFIED"):
+            PostingPolicy().with_config({"labels": ["FALSE", "UNVERIFIED"]})
+
+    def test_tier_overrides_are_validated(self) -> None:
+        with pytest.raises(PolicyConfigError, match="A/B/C/D"):
+            PostingPolicy(source_tiers_extra={"example.com": "S"})  # type: ignore[dict-item]
+        with pytest.raises(PolicyConfigError, match="lowercase bare domain"):
+            PostingPolicy(source_tiers_extra={"Example.Com": "B"})
+        with pytest.raises(PolicyConfigError, match="lowercase bare domain"):
+            PostingPolicy(source_tiers_extra={"https://example.com/x": "B"})
+
+    def test_config_is_json_safe(self) -> None:
+        import json
+
+        assert json.loads(json.dumps(PostingPolicy().to_config()))

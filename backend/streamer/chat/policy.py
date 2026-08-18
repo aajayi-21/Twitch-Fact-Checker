@@ -37,7 +37,7 @@ can configure its way into the dangerous zone.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 from app.models import TOPICS, Verdict
 
@@ -129,6 +129,62 @@ class PostingPolicy:
         unknown_topics = self.topics - set(TOPICS)
         if unknown_topics:
             raise PolicyConfigError(f"unknown topics: {sorted(unknown_topics)}")
+        for domain, tier in self.source_tiers_extra.items():
+            if tier not in ("A", "B", "C", "D"):
+                raise PolicyConfigError(
+                    f"tier for {domain!r} must be A/B/C/D, got {tier!r}"
+                )
+            if not domain or " " in domain or "/" in domain or domain != domain.lower():
+                raise PolicyConfigError(
+                    f"{domain!r} is not a lowercase bare domain (like example.com)"
+                )
+
+    def to_config(self) -> dict[str, Any]:
+        """JSON-safe dump for ``chat_channels.config_json`` and the panel."""
+        return {
+            "mode": self.mode,
+            "labels": sorted(self.labels),
+            "topics": sorted(self.topics),
+            "min_check_worthiness": self.min_check_worthiness,
+            "min_sources": self.min_sources,
+            "posts_per_hour": self.posts_per_hour,
+            "min_gap_s": self.min_gap_s,
+            "claim_cooldown_s": self.claim_cooldown_s,
+            "topic_cooldown_s": self.topic_cooldown_s,
+            "max_claim_age_s": self.max_claim_age_s,
+            "template": self.template,
+            "sources_style": self.sources_style,
+            "source_tiers_extra": dict(self.source_tiers_extra),
+        }
+
+    def with_config(self, config: dict[str, Any]) -> PostingPolicy:
+        """A NEW policy with ``config``'s keys applied over this one.
+
+        Unknown keys are rejected (a typo'd knob silently doing nothing is
+        worse than an error) and every clamp re-runs — this is the single
+        entry point through which the panel, ``!fc``, and the persisted
+        ``config_json`` all build policies, so no path can skip validation.
+        """
+        current = self.to_config()
+        unknown = set(config) - set(current)
+        if unknown:
+            raise PolicyConfigError(f"unknown settings: {sorted(unknown)}")
+        current.update(config)
+        return PostingPolicy(
+            mode=current["mode"],
+            labels=frozenset(current["labels"]),
+            topics=frozenset(current["topics"]),
+            min_check_worthiness=float(current["min_check_worthiness"]),
+            min_sources=int(current["min_sources"]),
+            posts_per_hour=int(current["posts_per_hour"]),
+            min_gap_s=float(current["min_gap_s"]),
+            claim_cooldown_s=float(current["claim_cooldown_s"]),
+            topic_cooldown_s=float(current["topic_cooldown_s"]),
+            max_claim_age_s=float(current["max_claim_age_s"]),
+            template=current["template"],
+            sources_style=current["sources_style"],
+            source_tiers_extra=dict(current["source_tiers_extra"]),
+        )
 
 
 @dataclass(frozen=True, slots=True)

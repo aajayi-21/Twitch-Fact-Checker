@@ -476,3 +476,103 @@ class TestEngagement:
         rows = await db._run(_read)
         assert len(rows) == 1
         assert rows[0]["messages_before"] >= 0
+
+
+class TestSettingsPersistence:
+    async def test_apply_settings_survives_a_restart(self, bot, db, clock) -> None:
+        """The bug this fixed: config_json was written but never read back,
+        so every tuned knob silently reset on restart."""
+        await bot.apply_settings(
+            {
+                "posts_per_hour": 3,
+                "labels": ["FALSE"],
+                "topics": ["sports", "other"],
+                "source_tiers_extra": {"localpaper.example": "B"},
+            }
+        )
+
+        from app.events import EventHub
+        from app.sessions import SessionRegistry
+
+        reborn = ChannelBot(
+            platform="twitch",
+            channel=CHANNEL,
+            transport=FakeChatTransport(),  # type: ignore[arg-type]
+            db=db,
+            hub=EventHub(),
+            registry=SessionRegistry(scope="none"),
+            allowlist=frozenset({CHANNEL}),
+            now=clock,
+        )
+        await reborn.load_channel_state()
+
+        assert reborn.policy.posts_per_hour == 3
+        assert reborn.policy.labels == frozenset({"FALSE"})
+        assert reborn.policy.topics == frozenset({"sports", "other"})
+        assert reborn.policy.source_tiers_extra == {"localpaper.example": "B"}
+
+    async def test_mode_column_beats_persisted_config(self, bot, db, clock) -> None:
+        """!fc off writes the mode COLUMN (the kill-switch record); a later
+        settings write must not resurrect auto mode on restart."""
+        await bot.apply_settings({"posts_per_hour": 3})  # config says auto
+        await bot._persist_mode("off")  # the kill switch
+
+        from app.events import EventHub
+        from app.sessions import SessionRegistry
+
+        reborn = ChannelBot(
+            platform="twitch",
+            channel=CHANNEL,
+            transport=FakeChatTransport(),  # type: ignore[arg-type]
+            db=db,
+            hub=EventHub(),
+            registry=SessionRegistry(scope="none"),
+            allowlist=frozenset({CHANNEL}),
+            now=clock,
+        )
+        await reborn.load_channel_state()
+
+        assert reborn.policy.mode == "off"  # column wins
+        assert reborn.policy.posts_per_hour == 3  # tuning still restored
+
+    async def test_apply_settings_rejects_clamp_violations(self, bot) -> None:
+        from streamer.chat.policy import PolicyConfigError
+
+        with pytest.raises(PolicyConfigError):
+            await bot.apply_settings({"posts_per_hour": 50})
+        assert bot.policy.posts_per_hour == 6  # unchanged after the refusal
+
+    async def test_corrupt_persisted_config_falls_back_to_defaults(
+        self, bot, db, clock
+    ) -> None:
+        await db.upsert_chat_channel(
+            platform="twitch", channel=CHANNEL, config_json="{not json"
+        )
+        from app.events import EventHub
+        from app.sessions import SessionRegistry
+
+        reborn = ChannelBot(
+            platform="twitch",
+            channel=CHANNEL,
+            transport=FakeChatTransport(),  # type: ignore[arg-type]
+            db=db,
+            hub=EventHub(),
+            registry=SessionRegistry(scope="none"),
+            allowlist=frozenset({CHANNEL}),
+            now=clock,
+        )
+        await reborn.load_channel_state()  # must not raise
+        assert reborn.policy.posts_per_hour == 6  # defaults
+
+
+class TestPanelRetraction:
+    async def test_retract_by_handle_matches_the_chat_path(self, bot, db) -> None:
+        verdict = make_verdict()
+        await bot.handle_verdict_event(make_event(verdict))
+        handle = verdict_handle(verdict)
+
+        assert await bot.retract(handle, by="control-panel") is True
+        assert any(m.startswith("↩️ RETRACTED") for m in bot.transport.sent)
+        row = await db.fetch_chat_post_by_handle("twitch", CHANNEL, handle)
+        assert row["retracted_by_user_id"] == "control-panel"
+        assert await bot.retract(handle, by="x") is False  # already retracted
