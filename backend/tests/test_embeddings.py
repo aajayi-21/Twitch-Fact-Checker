@@ -37,9 +37,7 @@ class TestEmbed:
 
         def handler(request: httpx.Request) -> httpx.Response:
             seen_requests.append(request)
-            return httpx.Response(
-                200, json={"embeddings": [[3.0, 4.0], [0.0, 2.0]]}
-            )
+            return httpx.Response(200, json={"embeddings": [[3.0, 4.0], [0.0, 2.0]]})
 
         vectors = await make_embedder(handler).embed(["first", "second"])
         request = seen_requests[0]

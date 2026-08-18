@@ -279,9 +279,7 @@ class TestContradictionEndToEnd:
         fake_genai_client.interaction_results.append(
             make_verdict_interaction("UNVERIFIED", "Personal claim.")
         )
-        with open_test_client(
-            settings, fake_genai_client, fake_transcriber
-        ) as client:
+        with open_test_client(settings, fake_genai_client, fake_transcriber) as client:
             with client.websocket_connect("/ws/audio") as session:
                 session.send_json(make_hello())
                 assert session.receive_json()["type"] == "ready"

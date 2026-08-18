@@ -112,9 +112,7 @@ class TestRecordVerdict:
         await database.record_session_start(
             session_id="s1", platform=None, channel=None, title=None
         )
-        await database.record_claim(
-            claim=claim, session_id="s1", outcome="verified"
-        )
+        await database.record_claim(claim=claim, session_id="s1", outcome="verified")
         await database.record_verdict(
             verdict=verdict,
             claim_id=claim.id,
@@ -135,7 +133,12 @@ class TestRecordVerdict:
             "SELECT rank, url, domain, title FROM sources ORDER BY rank",
         )
         assert source_rows == [
-            (0, "https://www.toureiffel.paris/facts", "www.toureiffel.paris", "Key figures"),
+            (
+                0,
+                "https://www.toureiffel.paris/facts",
+                "www.toureiffel.paris",
+                "Key figures",
+            ),
             (1, "https://en.wikipedia.org/wiki/Eiffel_Tower", "en.wikipedia.org", None),
         ]
 
@@ -161,8 +164,7 @@ class TestRecordFeedback:
         )
         assert await database.record_feedback(verdict.id, "up", None, None) is True
         assert (
-            await database.record_feedback(verdict.id, "down", "FALSE", "wrong")
-            is True
+            await database.record_feedback(verdict.id, "down", "FALSE", "wrong") is True
         )
         rows = read_rows(
             database._path.as_posix(),
@@ -200,6 +202,7 @@ class TestCountsAndCounter:
             await database.record_claim(
                 claim=make_claim(text), session_id="s1", outcome=outcome
             )
+
         # Backdate one terminal claim to yesterday-ish.
         def _backdate() -> None:
             conn = database._require_conn()

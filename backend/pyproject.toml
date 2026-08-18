@@ -24,6 +24,10 @@ dependencies = [
     "numpy>=1.26",
     "rapidfuzz>=3.9",
     "httpx>=0.27",
+    # streamer/chat/transport.py (Twitch IRC) and streamer/ingest (the WS
+    # client) are product surfaces, so this cannot live in the dev group —
+    # it would only be installed transitively there, which is a latent break.
+    "websockets>=12.0",
 ]
 
 # GPU speech-to-text backend (STT_BACKEND=torch), needed for Intel XPU and
@@ -45,14 +49,26 @@ gpu = [
     "transformers>=4.44",
     "accelerate>=1.0",
 ]
+# The ingest CLI's OPTIONAL niceties. streamlink/ffmpeg are shelled out to as
+# system binaries (the CLI probes PATH and prints install hints), but
+# streamlink is also pip-installable — `uv sync --extra ingest` drops a shim
+# into .venv/bin, which shutil.which finds under `uv run`. Never imported.
+ingest = [
+    "streamlink>=6.0",
+]
+# --source device: local/loopback capture via PortAudio.
+device = [
+    "sounddevice>=0.4",
+]
+
+[project.scripts]
+fact-checker-ingest = "streamer.ingest.cli:main"
 
 [dependency-groups]
 dev = [
     "pytest>=8.2",
     "pytest-asyncio>=0.23",
     "black>=24.4",
-    # scripts/stream_wav.py drives the WS protocol without a browser.
-    "websockets>=12.0",
 ]
 
 [tool.pytest.ini_options]
@@ -76,4 +92,4 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["app"]
+packages = ["app", "streamer"]

@@ -37,11 +37,11 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from app import ws
 from app.config import Settings, resolve_env_file
 from app.llm_openrouter import reset_openrouter_capability_latches
 from app.llm_provider import LLMRuntime, build_llm_runtime, close_llm_runtime
 from app.rate_limit import QuotaCooldown
+from app.sessions import SessionRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -567,14 +567,14 @@ async def _swap_runtime(request: Request, new_settings: Settings) -> None:
         new_settings.resolved_verify_provider,
         new_settings.active_verify_model,
     )
-    # Preempt any live session BEFORE closing the old clients: its session
-    # gate/checker hold those clients for the session's lifetime, so leaving
-    # the session running would silently break every subsequent gate/verify
-    # call. preempt() does not await task-group teardown, so an in-flight
-    # check may still touch an old client while it closes — benign, the
-    # dying session's per-item error handling absorbs it.
-    live_pipeline = ws.current_pipeline
-    if live_pipeline is not None:
+    # Preempt EVERY live session BEFORE closing the old clients: each session's
+    # gate/checker holds those clients for its lifetime, so leaving one running
+    # would silently break every subsequent gate/verify call. preempt() does
+    # not await task-group teardown, so an in-flight check may still touch an
+    # old client while it closes — benign, the dying session's per-item error
+    # handling absorbs it.
+    registry: SessionRegistry = request.app.state.sessions
+    for live_pipeline in registry.all():
         await live_pipeline.preempt(
             code="credentials_updated",
             message=(

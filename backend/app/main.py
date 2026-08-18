@@ -18,10 +18,12 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from app.config import SERVER_VERSION, Settings
 from app.db import Database, DayCounter
 from app.debug import router as debug_router
+from app.events import EventHub
 from app.feedback import router as feedback_router
 from app.llm_provider import LLMRuntime, build_llm_runtime, close_llm_runtime
 from app.logging_setup import banner, configure_logging
 from app.rate_limit import QuotaCooldown, TokenBucket
+from app.sessions import SessionRegistry
 from app.setup import router as setup_router
 from app.stats import router as stats_router
 from app.transcriber import create_transcriber
@@ -67,6 +69,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.quota_cooldown = cooldown
     app.state.verify_bucket = TokenBucket(rate_per_min=settings.verify_rpm, burst=2)
     app.state.llm_runtime = build_llm_runtime(settings, cooldown)
+    # Live /ws/audio sessions + the preemption rule. On app.state rather than a
+    # module global so every consumer reaches it through its own app handle
+    # (and so registry state is per-app, hence per-test).
+    app.state.sessions = SessionRegistry(
+        scope=settings.session_preempt_scope, max_sessions=settings.max_sessions
+    )
+    # Fan-out seam for non-socket consumers. The viewer backend never
+    # subscribes anything, so this costs one truth test per emitted frame; the
+    # streamer backend (backend/streamer) attaches the chat bot and the
+    # overlay/control pages to it.
+    app.state.events = EventHub(settings.event_queue_maxsize)
 
     # Analytics persistence + the in-memory "checks today" counter (seeded
     # from the db so a restart doesn't zero the popup readout).

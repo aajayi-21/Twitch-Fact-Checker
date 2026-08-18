@@ -136,9 +136,7 @@ class TestSessionPersistence:
         assert session_row[5] == 0.005
         assert session_row[6] > 0  # speech seconds accumulated
 
-        outcomes = dict(
-            rows(db_path, "SELECT text, outcome FROM claims")
-        )
+        outcomes = dict(rows(db_path, "SELECT text, outcome FROM claims"))
         assert outcomes == {
             "Politicians always lie about their tax plans.": "below_threshold",
             "Brazil has won five FIFA World Cups.": "topic_skipped",
@@ -184,9 +182,7 @@ class TestSessionPersistence:
             session.send_json({"type": "stop"})
             frames, close_code = collect_frames_until_close(session)
         assert close_code == 1000  # per-item failure never kills the session
-        assert any(
-            f["type"] == "error" and f["code"] == "llm_failure" for f in frames
-        )
+        assert any(f["type"] == "error" and f["code"] == "llm_failure" for f in frames)
         db_path = app_settings.db_path
         wait_until(
             lambda: rows(
@@ -213,9 +209,7 @@ class TestQueueDroppedOutcome:
                 settings=settings,
                 transcriber=FakeTranscriber(),  # type: ignore[arg-type]
                 stt_executor=executor,
-                claim_gate=GeminiClaimGate(
-                    client=fake_client, model="fake-gate-model"
-                ),
+                claim_gate=GeminiClaimGate(client=fake_client, model="fake-gate-model"),
                 fact_checker=GeminiFactChecker(
                     client=fake_client,
                     verify_model="fake-verify-model",

@@ -22,6 +22,7 @@ from app.llm_gemini import GeminiClaimGate, GeminiFactChecker
 from app.models import ClientHello, StatusFrame, TranscriptSegment
 from app.pipeline import SessionPipeline
 from app.rate_limit import QuotaCooldown, TokenBucket
+from app.sessions import SessionRegistry
 from tests.conftest import (
     FakeGenAIClient,
     FakeInteractionsError,
@@ -462,6 +463,11 @@ def make_fake_ws_app(executor: ThreadPoolExecutor) -> Any:
         # Analytics slots: None disables persistence in SessionPipeline.
         db=None,
         verify_counter=None,
+        # Live-session registry (same contract as the real lifespan).
+        sessions=SessionRegistry(
+            scope=settings.session_preempt_scope,
+            max_sessions=settings.max_sessions,
+        ),
     )
     return SimpleNamespace(state=state)
 
@@ -503,11 +509,11 @@ class TestPreemptionRegistrationRace:
             # B connects, completes its hello immediately, registers, runs.
             socket_b.hello_release.set()
             tasks.append(asyncio.create_task(ws_module.audio_ws(socket_b)))
+            registry: SessionRegistry = fake_app.state.sessions
             await wait_until_async(
-                lambda: ws_module.current_pipeline is not None
-                and "ready" in socket_b.frame_types()
+                lambda: len(registry) > 0 and "ready" in socket_b.frame_types()
             )
-            pipeline_b = ws_module.current_pipeline
+            pipeline_b = registry.all()[0]
             assert pipeline_b is not None
 
             # C's hello arrives; its re-check preempts B — and SUSPENDS
@@ -529,8 +535,10 @@ class TestPreemptionRegistrationRace:
             await wait_until_async(
                 lambda: "ready" in socket_c.frame_types()
                 and "ready" in socket_d.frame_types()
-                and ws_module.current_pipeline is not None
-                and ws_module.current_pipeline._websocket in (socket_c, socket_d)
+                and any(
+                    session._websocket in (socket_c, socket_d)
+                    for session in registry.all()
+                )
             )
 
             live_pipelines = [p for p in built_pipelines if not p._preempted]
@@ -538,7 +546,7 @@ class TestPreemptionRegistrationRace:
                 "single-user invariant violated: "
                 f"{len(live_pipelines)} live pipelines after concurrent connects"
             )
-            assert ws_module.current_pipeline is live_pipelines[0]
+            assert registry.all() == live_pipelines
             winner_socket = live_pipelines[0]._websocket
             loser_socket = socket_c if winner_socket is socket_d else socket_d
             assert any(frame.get("code") == "superseded" for frame in loser_socket.sent)
@@ -928,9 +936,9 @@ class TestGracefulStopDeliversInFlightWork:
             session.send_json({"type": "stop"})
             # ...and until the server has processed the stop frame, so the
             # verdict completes strictly during the wind-down.
+            registry: SessionRegistry = client.app.state.sessions
             wait_until_sync(
-                lambda: ws_module.current_pipeline is not None
-                and ws_module.current_pipeline._stop_requested.is_set()
+                lambda: any(live._stop_requested.is_set() for live in registry.all())
             )
             release_verdict.set()
             frames, close_code = collect_frames_until_close(session)
@@ -1016,7 +1024,7 @@ class TestDebugPushToLiveSession:
     def test_debug_text_without_session_still_succeeds(
         self, client, fake_genai_client: FakeGenAIClient
     ) -> None:
-        assert ws_module.current_pipeline is None
+        assert len(client.app.state.sessions) == 0
         fake_genai_client.generate_results.append(make_gate_response([(CLAIM, 0.9)]))
         fake_genai_client.interaction_results.append(
             make_verdict_interaction("FALSE", "About 330 meters.")

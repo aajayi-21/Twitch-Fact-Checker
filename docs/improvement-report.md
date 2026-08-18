@@ -558,6 +558,15 @@ analysis's §7 multi-channel bot MVP structurally impossible. Making it a dict k
 session id is contained (`ws.py` plus the duck-typed `debug.py` contract) and would clean
 up the `getattr(ws, "current_pipeline")` coupling in `debug.py:34-49` at the same time.
 
+> **RESOLVED (2026-08-18, `feat/streamer-chat-bot`).** `app/sessions.py` adds a
+> `SessionRegistry` on `app.state.sessions`; the module global, the `getattr`
+> coupling, and the autouse test-reset fixture are gone. One nuance the fix
+> surfaced: only a *global* preemption scope can honor the §3.2
+> preempt-on-connect promptness rule (a channel-scoped preempt cannot know the
+> channel until the hello parses), so `SESSION_PREEMPT_SCOPE` defaults to
+> `global` and multi-channel remains one-backend-process-per-channel — which
+> the single STT worker forces anyway.
+
 **6.3 — Cross-session verdict caching.** Once SQLite exists, cache verdicts keyed by
 normalized claim with a topic-aware TTL (short for `politics`/`money`, long for
 `history`/`science_tech`). `is_duplicate` (`fact_checker.py:113-127`) already does exactly

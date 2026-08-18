@@ -1,0 +1,351 @@
+<!doctype html>
+<!--
+  OBS browser-source overlay: verdict toasts rendered over the broadcast.
+
+  Sibling of extension/content/overlay.js — same class/data-attribute
+  vocabulary (.fc-toast[data-label], .fc-label-pill, .fc-sources), a
+  deliberately different rendering target: transparent ground, zero
+  interactivity (an <a> could navigate the source away mid-broadcast, so
+  sources render as spans), transform/opacity animation only (no
+  backdrop-filter — there is nothing behind a transparent page to blur, and
+  it costs the encoder headroom in CEF), larger type for 1080p downscaling.
+
+  Single file, zero external assets, no build step (dashboard.html doctrine).
+
+  Query params — ALL NARROWING ONLY (a URL param can hide labels the server
+  policy shows; it can never surface one the policy hides):
+    position   top-left|top-center|top-right|bottom-left|bottom-center|
+               bottom-right                                (default bottom-left)
+    labels     subset of TRUE,FALSE,MISLEADING,UNVERIFIED  (default FALSE,MISLEADING)
+    topics     comma-separated slugs                       (default all)
+    duration   seconds a toast dwells, 4..60               (default 14)
+    scale      0.5..3                                      (default 1)
+    max        stacked toasts, 1..3                        (default 1)
+    margin     safe-area inset px                          (default 56)
+    offsetx/offsety  extra nudge px                        (default 0)
+    channel    filter the event stream to one channel
+    token      EVENTS_TOKEN when the backend requires one
+    preview=1  checkerboard backdrop + status badge, for positioning in a
+               normal browser tab (transparent renders white otherwise)
+
+  OBS source settings that matter: "Shutdown source when not visible" OFF and
+  "Refresh browser when scene becomes active" OFF — otherwise every scene
+  switch drops the socket and misses verdicts. The socket reconnects forever
+  (0.5 s -> 15 s backoff): an 8-hour broadcast must never lose its overlay to
+  a 5-minute give-up, and connection state is only ever shown in preview mode
+  — a red "disconnected" badge on a live broadcast is worse than nothing.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fact-check overlay</title>
+<style>
+  :root {
+    --fc-true: #22c55e;
+    --fc-false: #ef4444;
+    --fc-misleading: #f59e0b;
+    --fc-unverified: #9ca3af;
+    --fc-accent: #9147ff;
+    --fc-card: rgba(13, 13, 20, 0.92);
+    --fc-text: #f5f5f7;
+    --fc-muted: #b9b9c6;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    background: transparent;
+    overflow: hidden;
+    width: 100%;
+    height: 100%;
+  }
+  body {
+    font-family: "Inter", "Segoe UI", system-ui, sans-serif;
+    pointer-events: none;
+    user-select: none;
+  }
+  body.preview {
+    /* Transparent renders white in a normal tab; the checkerboard makes the
+       real compositing visible while positioning. */
+    background:
+      repeating-conic-gradient(#2a2a33 0% 25%, #1d1d24 0% 50%) 0 0 / 40px 40px;
+  }
+  #anchor {
+    position: fixed;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    max-width: 36rem;
+    width: calc(100vw - 2 * var(--margin, 56px));
+  }
+  .fc-toast {
+    background: var(--fc-card);
+    border-left: 0.375rem solid var(--fc-unverified);
+    border-radius: 0.75rem;
+    padding: 1rem 1.25rem 1.15rem;
+    color: var(--fc-text);
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+    transform: translateY(1rem);
+    opacity: 0;
+    transition: transform 0.26s cubic-bezier(0.2, 0.8, 0.3, 1),
+                opacity 0.26s cubic-bezier(0.2, 0.8, 0.3, 1);
+    position: relative;
+    overflow: hidden;
+  }
+  .fc-toast.fc-in { transform: translateY(0); opacity: 1; }
+  .fc-toast.fc-out { transform: translateY(-0.5rem); opacity: 0;
+                     transition-duration: 0.2s; }
+  .fc-toast[data-label="TRUE"]        { border-left-color: var(--fc-true); }
+  .fc-toast[data-label="FALSE"]       { border-left-color: var(--fc-false); }
+  .fc-toast[data-label="MISLEADING"]  { border-left-color: var(--fc-misleading); }
+  .fc-toast[data-label="UNVERIFIED"]  { border-left-color: var(--fc-unverified); }
+  .fc-toast-head {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    margin-bottom: 0.5rem;
+  }
+  .fc-label-pill {
+    font-size: 0.95rem;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    padding: 0.15rem 0.6rem;
+    border-radius: 999px;
+    border: 1px solid;
+  }
+  .fc-label-pill[data-label="TRUE"] {
+    color: var(--fc-true); border-color: var(--fc-true);
+    background: rgba(34, 197, 94, 0.14);
+  }
+  .fc-label-pill[data-label="FALSE"] {
+    color: var(--fc-false); border-color: var(--fc-false);
+    background: rgba(239, 68, 68, 0.14);
+  }
+  .fc-label-pill[data-label="MISLEADING"] {
+    color: var(--fc-misleading); border-color: var(--fc-misleading);
+    background: rgba(245, 158, 11, 0.14);
+  }
+  .fc-label-pill[data-label="UNVERIFIED"] {
+    color: var(--fc-unverified); border-color: var(--fc-unverified);
+    background: rgba(156, 163, 175, 0.14);
+  }
+  .fc-topic-dot {
+    width: 0.6rem; height: 0.6rem; border-radius: 50%;
+    background: #95a5a6; flex: none;
+  }
+  .fc-bot-tag {
+    margin-left: auto;
+    font-size: 0.8rem;
+    color: var(--fc-muted);
+  }
+  .fc-claim {
+    font-size: 1.35rem;
+    font-weight: 700;
+    line-height: 1.3;
+    margin-bottom: 0.4rem;
+  }
+  .fc-explanation {
+    font-size: 1.05rem;
+    color: var(--fc-muted);
+    line-height: 1.45;
+    margin-bottom: 0.55rem;
+  }
+  .fc-sources { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+  .fc-source-link {
+    /* SPANS, not anchors: nothing in a browser source may navigate. */
+    font-size: 0.85rem;
+    color: #cbb6ff;
+    background: rgba(145, 71, 255, 0.16);
+    border: 1px solid rgba(145, 71, 255, 0.4);
+    padding: 0.1rem 0.55rem;
+    border-radius: 999px;
+  }
+  .fc-dwell {
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    height: 0.25rem;
+    background: var(--fc-accent);
+    transform-origin: left center;
+    /* Animated with scaleX (compositor) rather than width (layout). */
+  }
+  #badge {
+    position: fixed;
+    top: 8px; left: 8px;
+    font: 600 12px/1.6 system-ui, sans-serif;
+    color: #fff;
+    background: rgba(0, 0, 0, 0.6);
+    padding: 2px 10px;
+    border-radius: 999px;
+    display: none;
+  }
+  body.preview #badge { display: block; }
+  #badge[data-state="open"]  { border-left: 4px solid var(--fc-true); }
+  #badge[data-state="closed"] { border-left: 4px solid var(--fc-false); }
+  @media (prefers-reduced-motion: reduce) {
+    .fc-toast { transition: opacity 0.2s linear; transform: none; }
+    .fc-toast.fc-in, .fc-toast.fc-out { transform: none; }
+  }
+</style>
+</head>
+<body>
+<div id="badge" data-state="closed">connecting…</div>
+<div id="anchor"></div>
+<script>
+"use strict";
+(() => {
+  const params = new URLSearchParams(location.search);
+
+  // ---- config (every value whitelisted or clamped) ---------------------- //
+  const VALID_LABELS = ["TRUE", "FALSE", "MISLEADING", "UNVERIFIED"];
+  const clamp = (value, low, high, fallback) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? Math.min(high, Math.max(low, parsed)) : fallback;
+  };
+  // Narrowing only: the param INTERSECTS the default set; junk entries drop.
+  const labelParam = (params.get("labels") || "FALSE,MISLEADING")
+    .toUpperCase().split(",").map((label) => label.trim());
+  const labels = new Set(labelParam.filter((label) => VALID_LABELS.includes(label)));
+  if (labels.size === 0) { labels.add("FALSE"); labels.add("MISLEADING"); }
+  const topicsParam = (params.get("topics") || "").trim();
+  const topics = topicsParam
+    ? new Set(topicsParam.toLowerCase().split(",").map((slug) => slug.trim()))
+    : null; // null = all
+  const durationMs = clamp(params.get("duration"), 4, 60, 14) * 1000;
+  const maxStacked = clamp(params.get("max"), 1, 3, 1);
+  const scale = clamp(params.get("scale"), 0.5, 3, 1);
+  const margin = clamp(params.get("margin"), 0, 400, 56);
+  const offsetX = clamp(params.get("offsetx"), -1000, 1000, 0);
+  const offsetY = clamp(params.get("offsety"), -1000, 1000, 0);
+  const positionNames = new Set([
+    "top-left", "top-center", "top-right",
+    "bottom-left", "bottom-center", "bottom-right",
+  ]);
+  const position = positionNames.has(params.get("position"))
+    ? params.get("position") : "bottom-left";
+  const preview = params.get("preview") === "1";
+
+  document.documentElement.style.fontSize = `${16 * scale}px`;
+  document.documentElement.style.setProperty("--margin", `${margin}px`);
+  if (preview) document.body.classList.add("preview");
+
+  const anchor = document.getElementById("anchor");
+  const [vertical, horizontal] = position.split("-");
+  anchor.style[vertical === "top" ? "top" : "bottom"] = `${margin + offsetY}px`;
+  if (horizontal === "center") {
+    anchor.style.left = "50%";
+    anchor.style.transform = `translateX(calc(-50% + ${offsetX}px))`;
+  } else {
+    anchor.style[horizontal] = `${margin + offsetX}px`;
+  }
+  // New toasts appear nearest the screen edge they anchor to.
+  anchor.style.flexDirection = vertical === "bottom" ? "column-reverse" : "column";
+
+  // ---- topic colors: fetched, never hard-coded (a 3rd copy is enough) --- //
+  const topicColors = {};
+  fetch("/meta/topics").then((r) => r.json()).then((payload) => {
+    for (const topic of payload.topics) topicColors[topic.slug] = topic.color;
+  }).catch(() => {});
+
+  // ---- rendering --------------------------------------------------------- //
+  const el = (tag, className, text) => {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text) node.textContent = text;
+    return node;
+  };
+
+  const domainOf = (url) => {
+    // Ported guard from the extension overlay: http(s) only, so a junk or
+    // javascript: URL never renders as a chip.
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+      return parsed.hostname.replace(/^www\./, "");
+    } catch { return null; }
+  };
+
+  const showToast = (verdict) => {
+    const label = VALID_LABELS.includes(verdict.label) ? verdict.label : "UNVERIFIED";
+    if (!labels.has(label)) return;
+    if (topics && !topics.has(verdict.topic || "other")) return;
+
+    while (anchor.children.length >= maxStacked) {
+      anchor.removeChild(anchor.firstChild);
+    }
+    const toast = el("article", "fc-toast");
+    toast.dataset.label = label;
+    toast.setAttribute("role", "status");
+
+    const head = el("div", "fc-toast-head");
+    const pill = el("span", "fc-label-pill", label);
+    pill.dataset.label = label;
+    head.appendChild(pill);
+    const dot = el("span", "fc-topic-dot");
+    if (topicColors[verdict.topic]) dot.style.background = topicColors[verdict.topic];
+    head.appendChild(dot);
+    head.appendChild(el("span", "fc-bot-tag", "🤖 fact-check"));
+    toast.appendChild(head);
+
+    toast.appendChild(el("p", "fc-claim", `“${verdict.claim}”`));
+    if (verdict.explanation) {
+      toast.appendChild(el("p", "fc-explanation", verdict.explanation));
+    }
+    const seen = new Set();
+    const sources = el("div", "fc-sources");
+    for (const source of verdict.sources || []) {
+      const domain = domainOf(source.url);
+      if (domain && !seen.has(domain) && seen.size < 2) {
+        seen.add(domain);
+        sources.appendChild(el("span", "fc-source-link", domain));
+      }
+    }
+    if (seen.size) toast.appendChild(sources);
+
+    const dwell = el("div", "fc-dwell");
+    dwell.style.transition = `transform ${durationMs}ms linear`;
+    toast.appendChild(dwell);
+
+    anchor.appendChild(toast);
+    requestAnimationFrame(() => {
+      toast.classList.add("fc-in");
+      requestAnimationFrame(() => { dwell.style.transform = "scaleX(0)"; });
+    });
+    setTimeout(() => {
+      toast.classList.add("fc-out");
+      setTimeout(() => toast.remove(), 220);
+    }, durationMs);
+  };
+
+  // ---- the events socket: reconnects FOREVER ----------------------------- //
+  const badge = document.getElementById("badge");
+  let backoffMs = 500;
+  const connect = () => {
+    const socketParams = new URLSearchParams({ types: "verdict" });
+    if (params.get("channel")) socketParams.set("channel", params.get("channel"));
+    if (params.get("token")) socketParams.set("token", params.get("token"));
+    const socket = new WebSocket(
+      `ws://${location.host}/ws/events?${socketParams}`
+    );
+    socket.onopen = () => {
+      backoffMs = 500;
+      badge.dataset.state = "open";
+      badge.textContent = "overlay connected";
+    };
+    socket.onmessage = (message) => {
+      let payload;
+      try { payload = JSON.parse(message.data); } catch { return; }
+      if (payload.type === "event" && payload.frame?.type === "verdict") {
+        showToast(payload.frame);
+      }
+    };
+    socket.onclose = () => {
+      badge.dataset.state = "closed";
+      badge.textContent = "overlay reconnecting…";
+      setTimeout(connect, backoffMs);
+      backoffMs = Math.min(backoffMs * 2, 15000);
+    };
+    socket.onerror = () => socket.close();
+  };
+  connect();
+})();
+</script>
+</body>
+</html>

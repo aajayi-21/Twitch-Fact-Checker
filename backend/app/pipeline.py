@@ -48,6 +48,7 @@ from app.claim_gate import ClaimGate, GateError
 from app.config import SENSITIVITY_THRESHOLDS, Settings
 from app.contradiction import ContradictionDetector
 from app.db import Database, DayCounter
+from app.events import EventHub
 from app.fact_checker import FactChecker, QuotaExceededError, VerificationError
 from app.logging_setup import session_id_var
 from app.models import (
@@ -65,6 +66,7 @@ from app.models import (
     resolve_enabled_topics,
 )
 from app.rate_limit import QuotaCooldown, TokenBucket
+from app.sessions import ChannelKey, channel_key
 from app.transcriber import AudioRingBuffer, SessionTextState, Transcriber
 
 logger = logging.getLogger(__name__)
@@ -144,6 +146,28 @@ class StoredFrame(NamedTuple):
     captured_at_ms: int
     received_at: float  # time.monotonic()
 
+
+class QueuedClaim(NamedTuple):
+    """A gated claim plus the clock the claim model deliberately lacks.
+
+    Why a wrapper instead of two more fields on :class:`~app.models.GateClaim`:
+    ``GateClaim`` is handed to Gemini as ``response_schema=GateResult``
+    (``llm_gemini.py``), so every field added to it changes what the extraction
+    model is asked to produce. The queue's bookkeeping has no business in a
+    prompt schema.
+
+    ``gated_at`` is the only honest measure of a claim's age.
+    ``Verdict.checked_at`` is stamped at verdict construction and therefore
+    captures just the tail of the latency — not the STT window, the gate
+    interval, or the time spent waiting in this queue, which together dominate.
+    ``stream_time_s`` locates the claim in the VOD.
+    """
+
+    claim: GateClaim
+    gated_at: float  # time.monotonic() when the gate pass produced it
+    stream_time_s: float
+
+
 # How a frame leaves the pipeline: queued (live phase) or sent directly
 # (flush phase, after the send loop has exited).
 FrameEmitter = Callable[[BaseModel], Awaitable[None]]
@@ -171,6 +195,7 @@ class SessionPipeline:
         db: Database | None = None,
         verify_counter: DayCounter | None = None,
         contradiction_detector: ContradictionDetector | None = None,
+        event_hub: EventHub | None = None,
     ) -> None:
         self._websocket = websocket
         self._settings = settings
@@ -185,6 +210,10 @@ class SessionPipeline:
         # the session.
         self._db = db
         self._verify_counter = verify_counter
+        # Fan-out to non-socket consumers (chat bot, OBS overlay, control
+        # panel). None in unit-test construction and in any deployment with no
+        # subscribers, where publishing is a no-op that never serializes.
+        self._hub = event_hub
         self._session_id = uuid4().hex
         self._platform = hello.platform
         self._channel = hello.channel
@@ -208,7 +237,7 @@ class SessionPipeline:
             high_wm_s=settings.audio_high_watermark_s,
             low_wm_s=settings.audio_low_watermark_s,
         )
-        self._verify_queue: asyncio.Queue[GateClaim] = asyncio.Queue(
+        self._verify_queue: asyncio.Queue[QueuedClaim] = asyncio.Queue(
             maxsize=VERIFY_QUEUE_MAXSIZE
         )
         # Same-session contradiction detection (None = feature disabled,
@@ -237,6 +266,29 @@ class SessionPipeline:
     # ------------------------------------------------------------------ #
     # Public interface
     # ------------------------------------------------------------------ #
+
+    @property
+    def session_id(self) -> str:
+        """Analytics/registry id for this session (also the log stamp)."""
+        return self._session_id
+
+    @property
+    def platform(self) -> str | None:
+        return self._platform
+
+    @property
+    def channel(self) -> str | None:
+        return self._channel
+
+    @property
+    def channel_key(self) -> ChannelKey:
+        """Normalized ``(platform, channel)`` — the preemption key."""
+        return channel_key(self._platform, self._channel)
+
+    @property
+    def preempted(self) -> bool:
+        """True once :meth:`preempt` has run (the slot is on its way out)."""
+        return self._preempted
 
     async def run(self) -> None:
         """Run the live phase; on graceful stop, run the flush phase."""
@@ -465,12 +517,12 @@ class SessionPipeline:
         """Serially verify queued claims; per-item failures never kill us."""
         while not self._stop_requested.is_set():
             try:
-                claim = await asyncio.wait_for(
+                queued = await asyncio.wait_for(
                     self._verify_queue.get(), timeout=QUEUE_POLL_S
                 )
             except TimeoutError:
                 continue
-            await self._verify_claim(claim, self._emit_queued)
+            await self._verify_claim(queued, self._emit_queued)
 
     async def _send_loop(self) -> None:
         """Drain the outbound queue onto the socket — the single writer."""
@@ -729,19 +781,27 @@ class SessionPipeline:
         race-free on a single event loop (the analytics awaits come after
         the queue is consistent again).
         """
-        dropped: GateClaim | None = None
+        queued = QueuedClaim(
+            claim=claim,
+            gated_at=time.monotonic(),
+            stream_time_s=self._last_emitted_end,
+        )
+        dropped: QueuedClaim | None = None
         if self._verify_queue.full():
             dropped = self._verify_queue.get_nowait()
             logger.warning(
-                "verify queue full; dropped oldest claim: %r", dropped.claim_text
+                "verify queue full; dropped oldest claim: %r", dropped.claim.claim_text
             )
-        self._verify_queue.put_nowait(claim)
+        self._verify_queue.put_nowait(queued)
         if dropped is not None:
-            await self._record_claim(dropped, "queue_dropped")
-        await self._record_claim(claim, "pending")
+            await self._record_claim(
+                dropped.claim, "queue_dropped", stream_time_s=dropped.stream_time_s
+            )
+        await self._record_claim(claim, "pending", stream_time_s=queued.stream_time_s)
 
-    async def _verify_claim(self, claim: GateClaim, emit: FrameEmitter) -> None:
+    async def _verify_claim(self, queued: QueuedClaim, emit: FrameEmitter) -> None:
         """Cooldown check -> token bucket -> grounded check -> verdict frame."""
+        claim = queued.claim
         verify_started_at = time.monotonic()
         if self._cooldown.active:
             remaining_s = self._cooldown.remaining_s
@@ -810,7 +870,23 @@ class SessionPipeline:
             )
             return
         # Emit FIRST so persistence never adds wire latency.
-        await emit(VerdictFrame.from_verdict(verdict))
+        frame = VerdictFrame.from_verdict(verdict)
+        await emit(frame)
+        # Then fan out to the non-socket consumers (chat bot, OBS overlay,
+        # control panel). Placed HERE rather than inside the emitters because
+        # _verify_claim is the one code path that runs in BOTH phases — the
+        # live loop passes _emit_queued, _flush_and_finish passes _send_direct
+        # — so a single call covers end-of-stream verdicts too. It is also the
+        # only place with the claim in scope, and the posting policy filters on
+        # check_worthiness and claim age.
+        self._publish(
+            frame,
+            claim_id=claim.id,
+            check_worthiness=claim.check_worthiness,
+            topic=claim.topic,
+            claim_age_s=time.monotonic() - queued.gated_at,
+            stream_time_s=queued.stream_time_s,
+        )
         logger.info(
             "verdict %s in %.1fs%s: %r -> %s [%s]",
             verdict.label,
@@ -833,10 +909,17 @@ class SessionPipeline:
             await self._drain_outbound_direct()
             await self._flush_stt()
             pending_claims = self._drain_verify_queue()
-            pending_claims.extend(await self._final_gate_pass())
-            for claim in pending_claims:
-                await self._send_direct(StatusFrame(claim=claim.claim_text))
-                await self._verify_claim(claim, self._send_direct)
+            pending_claims.extend(
+                QueuedClaim(
+                    claim=claim,
+                    gated_at=time.monotonic(),
+                    stream_time_s=self._last_emitted_end,
+                )
+                for claim in await self._final_gate_pass()
+            )
+            for queued in pending_claims:
+                await self._send_direct(StatusFrame(claim=queued.claim.claim_text))
+                await self._verify_claim(queued, self._send_direct)
         except WebSocketDisconnect:
             logger.info("client disconnected during final flush")
             return
@@ -861,8 +944,8 @@ class SessionPipeline:
                 loop, audio, window_start_s, self._send_direct
             )
 
-    def _drain_verify_queue(self) -> list[GateClaim]:
-        claims: list[GateClaim] = []
+    def _drain_verify_queue(self) -> list[QueuedClaim]:
+        claims: list[QueuedClaim] = []
         while True:
             try:
                 claims.append(self._verify_queue.get_nowait())
@@ -883,7 +966,9 @@ class SessionPipeline:
     # Analytics recording (no-ops when the pipeline has no Database)
     # ------------------------------------------------------------------ #
 
-    async def _record_claim(self, claim: GateClaim, outcome: str) -> None:
+    async def _record_claim(
+        self, claim: GateClaim, outcome: str, *, stream_time_s: float | None = None
+    ) -> None:
         """Fire-and-forget funnel row (app.db swallows all write failures).
 
         The in-memory tally is kept even without a database so the
@@ -901,6 +986,15 @@ class SessionPipeline:
             # Persisted for the report's §5.1 measurement: how often claims
             # reference on-screen content (the frame itself is NEVER stored).
             has_visual_cue=has_visual_cue(claim.claim_text),
+            # Position in the stream. The column has existed since the schema
+            # was written but nothing ever populated it, so it was always NULL
+            # — which made a disputed verdict impossible to locate in the VOD.
+            # Falls back to the current transcript head for the pre-queue
+            # outcomes (below_threshold, topic_skipped, duplicate), which are
+            # recorded before a claim is wrapped in a QueuedClaim.
+            stream_time_s=(
+                self._last_emitted_end if stream_time_s is None else stream_time_s
+            ),
         )
 
     async def _record_verdict(
@@ -937,6 +1031,24 @@ class SessionPipeline:
             logger.warning(
                 "outbound queue full; dropping %s frame", frame.__class__.__name__
             )
+
+    def _publish(self, frame: BaseModel, **identity: Any) -> None:
+        """Fan a frame out to the event hub, if one is attached.
+
+        Never raises and never blocks — :meth:`app.events.EventHub.publish` is
+        synchronous and total by construction, so a wedged overlay page or a
+        dead chat bot cannot add latency to, or take down, the session that
+        produced the frame.
+        """
+        if self._hub is None:
+            return
+        self._hub.publish(
+            frame,
+            session_id=self._session_id,
+            platform=self._platform,
+            channel=channel_key(self._platform, self._channel)[1],
+            **identity,
+        )
 
     async def _emit_queued(self, frame: BaseModel) -> None:
         """Live-phase emitter: hand the frame to the send loop's queue."""

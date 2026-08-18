@@ -150,9 +150,7 @@ class TestChannels:
 
 
 class TestSessions:
-    def test_list_is_newest_first_and_limited(
-        self, seeded_client: TestClient
-    ) -> None:
+    def test_list_is_newest_first_and_limited(self, seeded_client: TestClient) -> None:
         sessions = seeded_client.get("/stats/sessions?limit=2").json()
         assert len(sessions) == 2
         assert sessions[0]["id"] == "s-a"

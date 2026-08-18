@@ -17,9 +17,7 @@ def seed_verdict(db_path: str, verdict_id: str = "v-1") -> None:
     """
     now = utc_now_iso()
     with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            "INSERT INTO sessions (id, started_at) VALUES ('s-1', ?)", (now,)
-        )
+        conn.execute("INSERT INTO sessions (id, started_at) VALUES ('s-1', ?)", (now,))
         conn.execute(
             "INSERT INTO claims (id, session_id, text, normalized, topic,"
             " check_worthiness, gated_at, outcome) VALUES"
@@ -46,9 +44,7 @@ class TestFeedbackEndpoint:
         self, client: TestClient, app_settings: Settings
     ) -> None:
         seed_verdict(app_settings.db_path)
-        response = client.post(
-            "/feedback", json={"verdict_id": "v-1", "rating": "up"}
-        )
+        response = client.post("/feedback", json={"verdict_id": "v-1", "rating": "up"})
         assert response.status_code == 204
         assert read_feedback(app_settings.db_path) == [("v-1", "up", None, None)]
 
@@ -63,9 +59,7 @@ class TestFeedbackEndpoint:
         self, client: TestClient, app_settings: Settings
     ) -> None:
         seed_verdict(app_settings.db_path)
-        response = client.post(
-            "/feedback", json={"verdict_id": "v-1", "rating": "meh"}
-        )
+        response = client.post("/feedback", json={"verdict_id": "v-1", "rating": "meh"})
         assert response.status_code == 422
 
     def test_repeat_feedback_replaces(

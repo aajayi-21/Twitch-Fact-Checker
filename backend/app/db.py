@@ -293,6 +293,7 @@ class Database:
         session_id: str,
         outcome: str,
         has_visual_cue: bool = False,
+        stream_time_s: float | None = None,
     ) -> None:
         """Upsert one funnel row.
 
@@ -309,10 +310,15 @@ class Database:
             conn = self._require_conn()
             conn.execute(
                 "INSERT INTO claims (id, session_id, text, normalized, topic,"
-                " check_worthiness, gated_at, outcome, completed_at,"
-                " has_visual_cue) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                " check_worthiness, stream_time_s, gated_at, outcome,"
+                " completed_at, has_visual_cue)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                 " ON CONFLICT(id) DO UPDATE SET outcome = excluded.outcome,"
-                " completed_at = COALESCE(excluded.completed_at, completed_at)",
+                " completed_at = COALESCE(excluded.completed_at, completed_at),"
+                # Keep the FIRST non-null position: a later terminal write
+                # happens after more audio has been transcribed, so its head
+                # would point past where the claim was actually spoken.
+                " stream_time_s = COALESCE(stream_time_s, excluded.stream_time_s)",
                 (
                     claim.id,
                     session_id,
@@ -320,6 +326,7 @@ class Database:
                     normalize_claim(claim.claim_text),
                     claim.topic,
                     claim.check_worthiness,
+                    stream_time_s,
                     now,
                     outcome,
                     completed_at,

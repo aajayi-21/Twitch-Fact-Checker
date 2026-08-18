@@ -335,9 +335,7 @@ class TestFeedbackRequest:
     def test_minimal_body_parses(self) -> None:
         from app.models import FeedbackRequest
 
-        body = FeedbackRequest.model_validate(
-            {"verdict_id": "v1", "rating": "up"}
-        )
+        body = FeedbackRequest.model_validate({"verdict_id": "v1", "rating": "up"})
         assert body.corrected_label is None and body.note is None
 
     def test_bad_rating_rejected(self) -> None:

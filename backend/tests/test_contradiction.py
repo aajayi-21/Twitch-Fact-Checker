@@ -129,9 +129,7 @@ class TestRetrievalAndJudging:
         await detector.add(claim("The Eiffel Tower is 330 meters tall."))
         embedder.results.append(VEC_B)
         # No judgement scripted: reaching the judge would fail loudly.
-        frame = await detector.add(
-            claim("The Eiffel Tower is 330 meters tall today.")
-        )
+        frame = await detector.add(claim("The Eiffel Tower is 330 meters tall today."))
         assert frame is None
 
     async def test_judge_error_returns_none_but_still_stores(

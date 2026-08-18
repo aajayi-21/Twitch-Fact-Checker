@@ -219,6 +219,57 @@ honest signal), and a recent-sessions table with per-session detail. The popup
 shows a live "Checks today: N · ~$X.XX" readout. Raw JSON: `GET /stats/summary`,
 `/stats/channels`, `/stats/sessions`. Delete the `.db` file to reset everything.
 
+## Streamer mode (separate product: bot + OBS overlay)
+
+Everything above is the **viewer** tool: verdicts appear in a private overlay
+only you see. **Streamer mode** is a separate product for broadcasters — same
+pipeline, pointed at your *own* stream, with verdicts going to your whole
+audience: sourced fact-checks posted in your Twitch chat by a bot you control,
+and an on-stream overlay rendered through OBS. It runs side by side with the
+viewer backend: its own entry point, port (**8711**), and database
+(`streamer.db`).
+
+```bash
+./backend/run-streamer.sh          # then open http://127.0.0.1:8711/control
+```
+
+**Setup (once, ~5 minutes)** — the control panel walks this checklist:
+
+1. AI provider key (same flow as the extension).
+2. Connect the **bot account** to Twitch — "Connect with Twitch" (device code;
+   needs a free `TWITCH_CLIENT_ID` you register once, and gives automatic
+   token refresh) or paste a `chat:read chat:edit` token.
+3. `/mod <yourbot>` in your chat — this is the consent proof (only you can
+   grant it), and it lifts link filtering and raises the rate tier.
+4. You (the broadcaster, not a mod) type `!fc enable` — recorded as the
+   auditable consent row.
+5. OBS: add `http://127.0.0.1:8711/overlay` as a Browser Source and
+   `/control` as a Custom Browser Dock. Turn OFF *"Shutdown source when not
+   visible"* and *"Refresh browser when scene becomes active"*. Press **Send
+   test verdict** to position the overlay before going live.
+
+**Every stream (<1 minute):** `uv run fact-checker-ingest twitch.tv/<you>`
+(pulls your published stream via streamlink+ffmpeg), or
+`--source device --device <loopback>` for zero-delay local capture.
+
+**What actually posts** — deliberately much less than what gets checked:
+FALSE/MISLEADING only, ≥2 citations across ≥2 distinct reputable domains
+(politics/health require a primary source), max 6 posts/hour with a
+3-per-10-minutes guard, nothing older than 90 s, nothing UNVERIFIED — ever.
+New channels start in **review mode** (you approve each post, one keystroke in
+the dock) and graduate to auto after 10 approvals; `!fc trust` skips the
+probation. **Dry run is on by default**: the bot evaluates and records the
+exact message it *would* have sent — read a full stream's worth in the panel,
+then flip "Go live". Every policy knob is editable in the panel's **Bot
+settings** (labels, topics, pace, confidence bar, message shape, source-tier
+overrides, probation) — hard safety clamps are refused with the reason, never
+silently rewritten. Mid-stream control is chat-first: `!fc mute [30m]`,
+`!fc off`, `!fc wrong <id>` (public retraction + a feedback row), `!fc help`
+for the rest — mods can use all of them, from a phone.
+
+Before pointing it at a real audience, work through
+`docs/streamer-launch-checklist.md`.
+
 ## Self-contradiction alerts
 
 Separately from web-grounded fact-checks, the backend remembers what was claimed

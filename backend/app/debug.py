@@ -26,34 +26,33 @@ from app.models import (
     resolve_enabled_topics,
 )
 from app.rate_limit import QuotaCooldown, TokenBucket
+from app.sessions import SessionRegistry
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 
-def _push_verdicts_to_live_session(verdicts: list[Verdict]) -> None:
-    """Push verdict frames onto the live pipeline's outbound queue, if any.
+def _push_verdicts_to_live_sessions(
+    registry: SessionRegistry, verdicts: list[Verdict]
+) -> None:
+    """Push verdict frames onto every live pipeline's outbound queue.
 
-    Contract with the (later-built) ``app.ws`` module: it exposes a module
-    attribute ``current_pipeline`` whose value, when a session is active, has
-    an ``enqueue_frame(frame: dict) -> None`` method. Any failure here is
-    logged and never fails the debug request.
+    Reads ``app.state.sessions`` directly — the old contract duck-typed
+    ``ws.current_pipeline`` through ``getattr`` because the registry did not
+    exist yet. Any failure here is logged and never fails the debug request.
     """
-    try:
-        from app import ws  # noqa: PLC0415 — created by a later milestone
-    except ImportError:
-        logger.debug("app.ws not present yet; skipping live-session push")
-        return
-    pipeline = getattr(ws, "current_pipeline", None)
-    if pipeline is None:
-        return
-    for verdict in verdicts:
-        frame = VerdictFrame.from_verdict(verdict).model_dump()
-        try:
-            pipeline.enqueue_frame(frame)
-        except Exception as exc:
-            logger.warning("failed to push verdict frame to live session: %s", exc)
+    for pipeline in registry.all():
+        for verdict in verdicts:
+            frame = VerdictFrame.from_verdict(verdict).model_dump()
+            try:
+                pipeline.enqueue_frame(frame)
+            except Exception as exc:
+                logger.warning(
+                    "failed to push verdict frame to session %s: %s",
+                    pipeline.session_id,
+                    exc,
+                )
 
 
 @router.post("/debug/text", response_model=DebugTextResponse)
@@ -147,5 +146,5 @@ async def inject_text(body: DebugTextRequest, request: Request) -> DebugTextResp
         logger.exception("unexpected error in /debug/text")
         raise HTTPException(status_code=502, detail=f"unexpected error: {exc}") from exc
 
-    _push_verdicts_to_live_session(verdicts)
+    _push_verdicts_to_live_sessions(request.app.state.sessions, verdicts)
     return DebugTextResponse(claims=claims, verdicts=verdicts)
