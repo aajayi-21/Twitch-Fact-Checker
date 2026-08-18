@@ -6,6 +6,7 @@ backend/.env
 
 # Local analytics database (app/db.py; WAL sidecars included)
 backend/fact_checker.db*
+backend/streamer.db*
 
 # Python
 backend/.venv/
