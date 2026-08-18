@@ -71,7 +71,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--transcripts", action="store_true", help="print live transcript lines"
     )
-    parser.add_argument("--quality", default="audio_only,worst")
+    parser.add_argument(
+        "--video",
+        action="store_true",
+        help="also capture a <=480p frame every 5s for on-screen claims "
+        "('as you can see, this chart…') — streamlink source only. Frames go "
+        "only to your local backend, live in a 3-frame in-memory ring, and "
+        "are never stored. Uses more bandwidth (a video quality is pulled "
+        "instead of audio_only).",
+    )
+    parser.add_argument(
+        "--quality",
+        default=None,
+        help="streamlink quality chain (default: audio_only,worst — or "
+        "480p,360p,worst with --video)",
+    )
     parser.add_argument(
         "--streamlink-arg",
         action="append",
@@ -111,10 +125,18 @@ def resolve_source(args: argparse.Namespace) -> tuple[AudioSource, Identity]:
         source = DeviceSource(args.device)
         identity = Identity(None, None)
     else:
+        quality = args.quality or (
+            "480p,360p,worst" if args.video else "audio_only,worst"
+        )
         source = StreamlinkSource(
-            args.target, quality=args.quality, extra_args=args.streamlink_arg
+            args.target,
+            quality=quality,
+            extra_args=args.streamlink_arg,
+            video=args.video,
         )
         identity = derive_identity(args.target)
+    if args.video and choice != "streamlink":
+        raise SystemExit("error: --video works with the streamlink source only")
     if args.platform:
         identity = Identity(args.platform, identity.channel)
     if args.channel:
@@ -229,9 +251,32 @@ async def run(args: argparse.Namespace) -> int:
             await socket.send_pcm(frame)
         stop_event.set()  # finite source (wav) ended
 
+    async def pump_video() -> None:
+        import base64
+        import time as time_module
+
+        from streamer.ingest.sources import StreamlinkSource
+
+        assert isinstance(source, StreamlinkSource)
+        async for jpeg in source.video_frames():
+            if stop_event.is_set():
+                return
+            await socket.send_json(
+                {
+                    "type": "frame",
+                    "image_b64": base64.b64encode(jpeg).decode("ascii"),
+                    "captured_at_ms": int(time_module.time() * 1000),
+                }
+            )
+
     pumper = asyncio.ensure_future(pump())
+    video_pumper = (
+        asyncio.ensure_future(pump_video()) if getattr(args, "video", False) else None
+    )
     await stop_event.wait()
     pumper.cancel()
+    if video_pumper is not None:
+        video_pumper.cancel()
     await source.aclose()
     if exit_code == 0:
         # Graceful path: stop frame, then let the server flush its last

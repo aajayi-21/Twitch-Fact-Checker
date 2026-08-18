@@ -273,6 +273,44 @@ class SessionPipeline:
         return self._session_id
 
     @property
+    def sensitivity(self) -> Sensitivity:
+        return self._sensitivity
+
+    @property
+    def sends_transcripts(self) -> bool:
+        return self._send_transcripts
+
+    def apply_live_config(
+        self,
+        *,
+        sensitivity: Sensitivity | None = None,
+        enabled_topics: list[str] | None = None,
+        send_transcripts: bool | None = None,
+    ) -> None:
+        """Mid-session settings update; every field optional and independent.
+
+        Two callers: the client's ``{"type":"config"}`` wire frame (the
+        extension's live-apply path) and the streamer control panel via the
+        session registry — same semantics either way, an absent field never
+        resets another setting. ``send_transcripts`` can only ever NARROW the
+        server-side master switch (``settings.send_transcripts``), matching
+        the two-level opt-in the hello enforces.
+        """
+        if sensitivity is not None:
+            self._sensitivity = sensitivity
+            logger.info("sensitivity updated to %s", sensitivity)
+        if enabled_topics is not None:
+            self._enabled_topics = resolve_enabled_topics(enabled_topics)
+            logger.info("enabled topics updated to %s", sorted(self._enabled_topics))
+        if send_transcripts is not None:
+            self._send_transcripts = (
+                self._settings.send_transcripts and send_transcripts
+            )
+            logger.info(
+                "live transcripts %s", "on" if self._send_transcripts else "off"
+            )
+
+    @property
     def platform(self) -> str | None:
         return self._platform
 
@@ -633,16 +671,10 @@ class SessionPipeline:
             except ValidationError as exc:
                 logger.warning("ignoring invalid config frame: %s", exc)
                 return
-            # Each field is optional and applied independently: an absent
-            # field must never reset the other setting.
-            if config.sensitivity is not None:
-                self._sensitivity = config.sensitivity
-                logger.info("sensitivity updated to %s", config.sensitivity)
-            if config.enabled_topics is not None:
-                self._enabled_topics = resolve_enabled_topics(config.enabled_topics)
-                logger.info(
-                    "enabled topics updated to %s", sorted(self._enabled_topics)
-                )
+            self.apply_live_config(
+                sensitivity=config.sensitivity,
+                enabled_topics=config.enabled_topics,
+            )
         elif frame_type == "frame":
             self._handle_video_frame(data)
         elif frame_type == "stop":

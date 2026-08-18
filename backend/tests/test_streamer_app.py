@@ -355,3 +355,77 @@ class TestSettingsRoutes:
             call = getattr(streamer_client, method)
             response = call(path, json=body) if body is not None else call(path)
             assert response.status_code == 409, path
+
+
+class TestSessionConfigRoutes:
+    @staticmethod
+    def _install_session(client: TestClient):
+        from tests.test_sessions import FakePipeline
+
+        class LivePipeline(FakePipeline):
+            sensitivity = "medium"
+            sends_transcripts = False
+
+            def __init__(self) -> None:
+                super().__init__("s1", "twitch", "teststreamer")
+                self.applied: list[dict] = []
+
+            def apply_live_config(self, **kwargs) -> None:
+                self.applied.append(kwargs)
+                if kwargs.get("sensitivity"):
+                    self.sensitivity = kwargs["sensitivity"]
+                if kwargs.get("send_transcripts") is not None:
+                    self.sends_transcripts = kwargs["send_transcripts"]
+
+        pipeline = LivePipeline()
+        registry = client.app.state.sessions
+        registry._sessions[pipeline.session_id] = pipeline
+        return pipeline
+
+    def test_get_reports_live_sessions_and_the_vision_gate(
+        self, streamer_client: TestClient
+    ) -> None:
+        self._install_session(streamer_client)
+        state = streamer_client.get("/session/config").json()
+        assert state["vision_enabled"] is True  # server default
+        assert state["sessions"][0]["sensitivity"] == "medium"
+
+    def test_sensitivity_applies_to_the_live_session(
+        self, streamer_client: TestClient
+    ) -> None:
+        """The extension's live-apply, panel-shaped: takes effect on the next
+        gate pass, not the next stream."""
+        pipeline = self._install_session(streamer_client)
+        state = streamer_client.post(
+            "/session/config", json={"sensitivity": "high"}
+        ).json()
+        assert pipeline.applied[0]["sensitivity"] == "high"
+        assert state["sessions"][0]["sensitivity"] == "high"
+
+    def test_vision_toggle_mutates_both_settings_handles(
+        self, streamer_client: TestClient
+    ) -> None:
+        """A credentials hot-swap gives the LLM runtime a fresh Settings
+        object; updating only one handle would make the toggle silently stop
+        working after a key change."""
+        streamer_client.post("/session/config", json={"vision_enabled": False})
+        assert streamer_client.app.state.settings.vision_enabled is False
+        assert streamer_client.app.state.llm_runtime.settings.vision_enabled is False
+
+    def test_absent_fields_touch_nothing(self, streamer_client: TestClient) -> None:
+        pipeline = self._install_session(streamer_client)
+        streamer_client.post("/session/config", json={"vision_enabled": True})
+        assert pipeline.applied == []  # no session field given: no session call
+
+    def test_transcript_toggle_reaches_the_session(
+        self, streamer_client: TestClient
+    ) -> None:
+        pipeline = self._install_session(streamer_client)
+        streamer_client.post("/session/config", json={"send_transcripts": True})
+        assert pipeline.applied[0]["send_transcripts"] is True
+
+    def test_no_live_session_is_fine(self, streamer_client: TestClient) -> None:
+        state = streamer_client.post(
+            "/session/config", json={"sensitivity": "low"}
+        ).json()
+        assert state["sessions"] == []

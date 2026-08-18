@@ -425,6 +425,84 @@ async def retract_post(body: RetractRequest, request: Request) -> dict[str, Any]
     return _bot_status(request)
 
 
+# --------------------------------------------------------------------------- #
+# Live pipeline controls (the extension's options, panel-shaped)
+# --------------------------------------------------------------------------- #
+
+
+class SessionConfigRequest(BaseModel):
+    """Everything optional, everything applied independently — the same
+    semantics as the wire config frame the extension sends."""
+
+    sensitivity: Literal["low", "medium", "high"] | None = None
+    enabled_topics: list[str] | None = None
+    send_transcripts: bool | None = None
+    vision_enabled: bool | None = None
+
+
+def _session_config(request: Request) -> dict[str, Any]:
+    registry: SessionRegistry = request.app.state.sessions
+    settings: StreamerSettings = request.app.state.settings
+    return {
+        "vision_enabled": settings.vision_enabled,
+        "transcripts_master": settings.send_transcripts,
+        "sessions": [
+            {
+                "session_id": live.session_id,
+                "platform": live.platform,
+                "channel": live.channel,
+                "sensitivity": live.sensitivity,
+                "send_transcripts": live.sends_transcripts,
+            }
+            for live in registry.all()
+        ],
+    }
+
+
+@router.get("/session/config")
+async def get_session_config(request: Request) -> dict[str, Any]:
+    return _session_config(request)
+
+
+@router.post("/session/config")
+async def set_session_config(
+    body: SessionConfigRequest, request: Request
+) -> dict[str, Any]:
+    """Apply pipeline settings to every LIVE session (and the vision gate).
+
+    Sensitivity/topics/transcripts land on the running pipelines — same
+    live-apply the extension gets via config frames, so a panel change takes
+    effect on the next gate pass, not the next stream. They last until the
+    session ends; the ingest CLI's flags set the startup defaults.
+
+    ``vision_enabled`` is the SERVER gate on attaching captured frames to
+    verification. It is mutated on both settings handles because a
+    credentials hot-swap gives the LLM runtime a fresh Settings object —
+    updating only one would make the toggle silently stop working after a
+    key change.
+    """
+    registry: SessionRegistry = request.app.state.sessions
+    if body.vision_enabled is not None:
+        request.app.state.settings.vision_enabled = body.vision_enabled
+        request.app.state.llm_runtime.settings.vision_enabled = body.vision_enabled
+        logger.info(
+            "vision gate %s via control panel",
+            "enabled" if body.vision_enabled else "disabled",
+        )
+    if (
+        body.sensitivity is not None
+        or body.enabled_topics is not None
+        or body.send_transcripts is not None
+    ):
+        for live in registry.all():
+            live.apply_live_config(
+                sensitivity=body.sensitivity,
+                enabled_topics=body.enabled_topics,
+                send_transcripts=body.send_transcripts,
+            )
+    return _session_config(request)
+
+
 @router.get("/stats/chat")
 async def chat_stats(request: Request) -> dict[str, Any]:
     return await request.app.state.db.fetch_chat_summary()
