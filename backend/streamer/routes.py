@@ -357,6 +357,21 @@ async def chat_stats(request: Request) -> dict[str, Any]:
     return await request.app.state.db.fetch_chat_summary()
 
 
+@router.get("/bot/posts")
+async def recent_decisions(
+    request: Request, status: str | None = None, limit: int = 50
+) -> list[dict[str, Any]]:
+    """The panel's transparency feed: every decision row, reason included —
+    "why didn't it post that?" answered from data, not logs."""
+    settings: StreamerSettings = request.app.state.settings
+    channel = settings.twitch_channel.strip().lstrip("#").lower()
+    if not channel:
+        return []
+    return await request.app.state.db.fetch_chat_posts(
+        "twitch", channel, status=status, limit=max(1, min(limit, 200))
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Twitch credential setup
 # --------------------------------------------------------------------------- #

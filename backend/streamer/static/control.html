@@ -1,0 +1,513 @@
+<!doctype html>
+<!--
+  The streamer control panel: setup checklist, kill switches, review queue,
+  and the transparency feed ("why didn't it post that?").
+
+  Single file, zero external assets, no build step (dashboard.html doctrine).
+
+  Interaction model: /ws/events pushes trigger an immediate refresh, and a
+  5 s poll of /bot/status is the reconciler — a WS-only client drifts (one
+  frame lost in a reconnect loses a queue item invisibly); the poll makes
+  the page correct-by-refresh. The WS never mutates; every mutation is a
+  POST whose response is the new authoritative status.
+
+  Designed to live as an OBS Custom Browser Dock (Docks -> Custom Browser
+  Docks -> this URL): the layout collapses to one narrow column with
+  big-target buttons, and the review queue answers to J/K/Enter/X so a
+  streamer mid-broadcast never has to aim carefully. The tab title carries
+  the queue count for the second-monitor case. No sounds, ever — desktop
+  audio is often captured into the broadcast.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fact-Checker</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #101016;
+    --card: #1a1a23;
+    --card-2: #22222d;
+    --text: #f2f2f6;
+    --muted: #9a9aad;
+    --accent: #9147ff;
+    --true: #22c55e;
+    --false: #ef4444;
+    --misleading: #f59e0b;
+    --unverified: #9ca3af;
+    --border: #2e2e3c;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Inter", "Segoe UI", system-ui, sans-serif;
+    font-size: 15px;
+    padding: 16px;
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+  h1 { font-size: 18px; margin-bottom: 12px; }
+  h2 { font-size: 14px; color: var(--muted); text-transform: uppercase;
+       letter-spacing: 0.08em; margin: 22px 0 10px; }
+  .card { background: var(--card); border: 1px solid var(--border);
+          border-radius: 12px; padding: 14px 16px; }
+  button {
+    font: inherit; color: var(--text); background: var(--card-2);
+    border: 1px solid var(--border); border-radius: 9px;
+    padding: 8px 14px; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); }
+  button.danger { background: #7f1d1d; border-color: #b91c1c; }
+  button:disabled { opacity: 0.45; cursor: default; }
+  input[type="text"], input[type="password"] {
+    font: inherit; color: var(--text); background: #14141b;
+    border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
+    width: 100%;
+  }
+  /* ---- command bar ---- */
+  #bar {
+    position: sticky; top: 0; z-index: 5;
+    display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 12px; padding: 12px 14px; margin-bottom: 6px;
+  }
+  #mute-btn { font-size: 16px; font-weight: 800; padding: 12px 22px; }
+  #mute-btn[data-muted="true"] { background: #7c2d12; border-color: #ea580c; }
+  .segmented { display: inline-flex; border: 1px solid var(--border);
+               border-radius: 9px; overflow: hidden; }
+  .segmented button { border: 0; border-radius: 0; }
+  .segmented button[aria-pressed="true"] { background: var(--accent); }
+  #dots { display: flex; gap: 12px; margin-left: auto; font-size: 13px;
+          color: var(--muted); }
+  .dot::before { content: "●"; margin-right: 5px; color: var(--false); }
+  .dot.on::before { color: var(--true); }
+  #budget { font-variant-numeric: tabular-nums; color: var(--muted); }
+  #dry-banner {
+    display: none; width: 100%; border-radius: 9px; padding: 8px 12px;
+    background: rgba(245, 158, 11, 0.12); border: 1px solid var(--misleading);
+    color: var(--misleading); font-weight: 600;
+  }
+  body[data-dry="true"] #dry-banner { display: flex; gap: 10px;
+                                      align-items: center; }
+  /* ---- checklist ---- */
+  .step { display: flex; gap: 10px; align-items: baseline; padding: 8px 0;
+          border-bottom: 1px solid var(--border); }
+  .step:last-child { border-bottom: 0; }
+  .step .tick { flex: none; width: 1.4em; color: var(--muted); }
+  .step.done .tick { color: var(--true); }
+  .step .body { flex: 1; }
+  .step small { color: var(--muted); display: block; margin-top: 2px; }
+  .row { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+  code.copy { background: #14141b; border: 1px solid var(--border);
+              border-radius: 6px; padding: 3px 8px; user-select: all; }
+  #device-code { font-size: 26px; font-weight: 800; letter-spacing: 0.15em;
+                 color: var(--accent); }
+  /* ---- queue + feed ---- */
+  .queue-item { border: 1px solid var(--border); border-radius: 10px;
+                padding: 10px 12px; margin-bottom: 8px; background: var(--card-2); }
+  .queue-item.selected { border-color: var(--accent);
+                         box-shadow: 0 0 0 1px var(--accent); }
+  .queue-item .msg { font-family: ui-monospace, monospace; font-size: 13px;
+                     background: #14141b; border-radius: 8px; padding: 8px;
+                     margin: 8px 0; word-break: break-word; }
+  .pill { display: inline-block; font-size: 12px; font-weight: 700;
+          border-radius: 999px; padding: 1px 9px; border: 1px solid; }
+  .pill[data-label="TRUE"] { color: var(--true); border-color: var(--true); }
+  .pill[data-label="FALSE"] { color: var(--false); border-color: var(--false); }
+  .pill[data-label="MISLEADING"] { color: var(--misleading);
+                                   border-color: var(--misleading); }
+  .pill[data-label="UNVERIFIED"] { color: var(--unverified);
+                                   border-color: var(--unverified); }
+  .chip { display: inline-block; font-size: 12px; color: var(--muted);
+          background: #14141b; border: 1px solid var(--border);
+          border-radius: 999px; padding: 1px 9px; }
+  .chip[data-status="posted"] { color: var(--true); border-color: var(--true); }
+  .chip[data-status="dry_run"] { color: var(--misleading);
+                                 border-color: var(--misleading); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  td, th { text-align: left; padding: 6px 8px;
+           border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; }
+  td.msg { font-family: ui-monospace, monospace; word-break: break-word; }
+  #error-banner { display: none; background: rgba(239, 68, 68, 0.12);
+                  border: 1px solid var(--false); color: var(--false);
+                  border-radius: 9px; padding: 8px 12px; margin-bottom: 10px; }
+  .hint { color: var(--muted); font-size: 13px; margin-top: 6px; }
+  /* ---- dock layout: narrow OBS docks collapse to essentials ---- */
+  @media (max-width: 520px) {
+    body { padding: 8px; font-size: 14px; }
+    #dots { width: 100%; margin-left: 0; }
+    #setup, #feed-card { display: none; }  /* dock shows bar + queue only */
+    #mute-btn { width: 100%; }
+  }
+</style>
+</head>
+<body data-dry="true">
+<div id="error-banner">backend unreachable — is run-streamer.sh running?</div>
+
+<div id="bar">
+  <button id="mute-btn" data-muted="false">MUTE</button>
+  <span class="segmented" id="mode-seg">
+    <button data-mode="auto">Auto</button>
+    <button data-mode="review">Review</button>
+    <button data-mode="off">Off</button>
+  </span>
+  <span id="budget">–/– posts this hour</span>
+  <span id="dots">
+    <span class="dot" id="dot-backend">backend</span>
+    <span class="dot" id="dot-session">ingest</span>
+    <span class="dot" id="dot-chat">chat</span>
+  </span>
+  <div id="dry-banner">
+    <span>DRY RUN — evaluating and recording, posting NOTHING.</span>
+    <button id="go-live">Go live</button>
+  </div>
+</div>
+
+<h1>Live Stream Fact-Checker — streamer control</h1>
+
+<h2 id="setup-h">Setup</h2>
+<div class="card" id="setup">
+  <div class="step" id="step-llm">
+    <span class="tick">○</span>
+    <div class="body">
+      <strong>AI provider</strong>
+      <small id="llm-detail">checking…</small>
+    </div>
+  </div>
+  <div class="step" id="step-twitch">
+    <span class="tick">○</span>
+    <div class="body">
+      <strong>Connect Twitch (the BOT account)</strong>
+      <small id="twitch-detail">not connected</small>
+      <div class="row" id="twitch-actions">
+        <button id="dcf-start">Connect with Twitch</button>
+        <button id="paste-toggle">Paste a token instead</button>
+      </div>
+      <div class="row" id="dcf-box" style="display:none">
+        <span>Go to <a href="https://www.twitch.tv/activate" target="_blank"
+          rel="noopener">twitch.tv/activate</a> and enter:</span>
+        <span id="device-code"></span>
+      </div>
+      <div class="row" id="paste-box" style="display:none">
+        <input type="password" id="token-input" placeholder="oauth: token with chat:read chat:edit"
+               autocomplete="off" spellcheck="false">
+        <input type="text" id="channel-input" placeholder="your channel name">
+        <button class="primary" id="paste-save">Save &amp; verify</button>
+      </div>
+      <div class="hint" id="twitch-error"></div>
+    </div>
+  </div>
+  <div class="step" id="step-mod">
+    <span class="tick">○</span>
+    <div class="body">
+      <strong>Mod the bot in your channel</strong>
+      <small>Type <code class="copy" id="mod-cmd">/mod yourbot</code> in your own chat.
+      This is the consent proof, lifts link filtering, and raises the rate tier.</small>
+    </div>
+  </div>
+  <div class="step" id="step-arm">
+    <span class="tick">○</span>
+    <div class="body">
+      <strong>Arm it — the broadcaster types
+        <code class="copy">!fc enable</code> in chat</strong>
+      <small>Recorded with your user id: the auditable consent row. New
+      channels start in review mode (probation) until 10 approvals.</small>
+    </div>
+  </div>
+  <div class="step" id="step-ingest">
+    <span class="tick">○</span>
+    <div class="body">
+      <strong>Start the audio ingest before each stream</strong>
+      <small><code class="copy" id="ingest-cmd">uv run fact-checker-ingest twitch.tv/you</code>
+      — or <code>--source device</code> for zero-delay local capture.</small>
+    </div>
+  </div>
+  <div class="step" id="step-obs">
+    <span class="tick">○</span>
+    <div class="body">
+      <strong>OBS</strong>
+      <small>Browser Source (1920×1080): <code class="copy" id="overlay-url"></code><br>
+      Custom Browser Dock: <code class="copy" id="dock-url"></code><br>
+      Turn OFF “Shutdown source when not visible” and “Refresh browser when
+      scene becomes active”.</small>
+      <div class="row">
+        <button id="test-verdict">Send test verdict</button>
+        <a href="/overlay?preview=1" target="_blank" rel="noopener">
+          <button>Preview overlay</button></a>
+        <a href="/dashboard" target="_blank" rel="noopener">
+          <button>Dashboard</button></a>
+      </div>
+    </div>
+  </div>
+</div>
+
+<h2>Review queue <span id="queue-count"></span></h2>
+<div class="card" id="queue-card">
+  <div id="queue-empty" class="hint">Nothing waiting. In review mode, verdicts
+  land here for one-keystroke approval: J/K select · Enter post · X skip.
+  Items expire after 3 minutes — a late fact-check is noise.</div>
+  <div id="queue"></div>
+</div>
+
+<h2>Recent decisions</h2>
+<div class="card" id="feed-card">
+  <div class="hint">Every verdict the pipeline produced and what happened to
+  it — “why didn’t it post that?” answered from data.</div>
+  <table id="feed">
+    <thead><tr><th>when</th><th>label</th><th>decision</th><th>message / claim</th></tr></thead>
+    <tbody></tbody>
+  </table>
+</div>
+
+<script>
+"use strict";
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const el = (tag, className, text) => {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  };
+  const post = async (path, body) => {
+    const response = await fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body ?? {}),
+    });
+    if (!response.ok) throw new Error((await response.json()).detail || response.status);
+    return response.json();
+  };
+  const getJson = (path) => fetch(path).then((r) => { if (!r.ok) throw 0; return r.json(); });
+
+  let status = null;
+  let selectedIndex = 0;
+
+  // ---- render ----------------------------------------------------------- //
+  const setDot = (id, on) => $(id).classList.toggle("on", Boolean(on));
+  const setStep = (id, done, detail) => {
+    $(id).classList.toggle("done", Boolean(done));
+    $(id).querySelector(".tick").textContent = done ? "✓" : "○";
+    if (detail !== undefined) {
+      const small = $(id).querySelector("small");
+      if (small && detail !== null) small.textContent = detail;
+    }
+  };
+
+  const render = () => {
+    if (!status) return;
+    const bot = status.bot;
+    document.body.dataset.dry = String(status.dry_run);
+    setDot("dot-backend", true);
+    setDot("dot-session", (status.live_sessions || []).length > 0);
+    setDot("dot-chat", bot && bot.connected);
+    // command bar
+    const muted = bot ? bot.muted : false;
+    $("mute-btn").dataset.muted = String(muted);
+    $("mute-btn").textContent = muted ? "MUTED — click to unmute" : "MUTE";
+    $("mute-btn").disabled = !bot;
+    for (const button of $("mode-seg").querySelectorAll("button")) {
+      button.setAttribute("aria-pressed",
+        String(Boolean(bot) && bot.mode === button.dataset.mode));
+      button.disabled = !bot;
+    }
+    $("budget").textContent = bot
+      ? `${bot.posts_this_hour}/${bot.posts_per_hour} posts this hour`
+      + (bot.latched ? " · LATCHED" : "") + (bot.disabled ? " · DISABLED" : "")
+      : "bot not configured";
+    // checklist
+    setStep("step-twitch", status.configured,
+      status.configured
+        ? `connected as ${status.bot_login} (${status.token_hint || "…"})`
+          + (status.token_expires_at ? ` · expires ${status.token_expires_at}` : "")
+        : null);
+    if (status.channel) {
+      $("mod-cmd").textContent = `/mod ${status.bot_login || "yourbot"}`;
+      $("ingest-cmd").textContent =
+        `uv run fact-checker-ingest twitch.tv/${status.channel}`;
+    }
+    setStep("step-mod", bot && bot.is_moderator);
+    setStep("step-arm", bot && bot.armed);
+    setStep("step-ingest", (status.live_sessions || []).length > 0);
+    setStep("step-obs", true, null);
+    // queue
+    const queue = bot ? bot.queue : [];
+    $("queue-count").textContent = queue.length ? `· ${queue.length} waiting` : "";
+    document.title = queue.length ? `(${queue.length}) Fact-Checker` : "Fact-Checker";
+    $("queue-empty").style.display = queue.length ? "none" : "block";
+    const container = $("queue");
+    container.replaceChildren();
+    selectedIndex = Math.min(selectedIndex, Math.max(0, queue.length - 1));
+    queue.forEach((item, index) => {
+      const box = el("div", "queue-item" + (index === selectedIndex ? " selected" : ""));
+      const head = el("div");
+      const pill = el("span", "pill", item.label);
+      pill.dataset.label = item.label;
+      head.appendChild(pill);
+      head.appendChild(el("span", "chip", `${Math.round(180 - item.age_s)}s left`));
+      box.appendChild(head);
+      box.appendChild(el("div", "msg", item.message));
+      const row = el("div", "row");
+      const approve = el("button", "primary", "Post (Enter)");
+      approve.onclick = () => act(`/bot/queue/${item.post_id}/post`);
+      const skip = el("button", null, "Skip (X)");
+      skip.onclick = () => act(`/bot/queue/${item.post_id}/skip`);
+      row.appendChild(approve); row.appendChild(skip);
+      box.appendChild(row);
+      container.appendChild(box);
+    });
+  };
+
+  const renderFeed = (rows) => {
+    const body = $("feed").querySelector("tbody");
+    body.replaceChildren();
+    for (const row of rows.slice(0, 40)) {
+      const tr = el("tr");
+      tr.appendChild(el("td", null,
+        (row.created_at || "").replace("T", " ").replace("Z", "")));
+      const labelCell = el("td");
+      if (row.label) {
+        const pill = el("span", "pill", row.label);
+        pill.dataset.label = row.label;
+        labelCell.appendChild(pill);
+      }
+      tr.appendChild(labelCell);
+      const chipCell = el("td");
+      const chip = el("span", "chip",
+        row.status + (row.reason && row.reason !== "ok" ? ` · ${row.reason}` : ""));
+      chip.dataset.status = row.status;
+      chipCell.appendChild(chip);
+      tr.appendChild(chipCell);
+      tr.appendChild(el("td", "msg", row.message_text || row.reason));
+      body.appendChild(tr);
+    }
+  };
+
+  // ---- actions (POST returns the authoritative status) ------------------- //
+  const act = async (path, body) => {
+    try {
+      status = await post(path, body);
+      render();
+    } catch (error) {
+      alert(error.message || error);
+    }
+  };
+
+  $("mute-btn").onclick = () =>
+    act("/bot/mute", { muted: $("mute-btn").dataset.muted !== "true" });
+  for (const button of $("mode-seg").querySelectorAll("button")) {
+    button.onclick = () => act("/bot/mode", { mode: button.dataset.mode });
+  }
+  $("go-live").onclick = () => {
+    if (confirm(
+      "Turn DRY RUN off? The bot will actually post to chat.\n\nOnly do this "
+      + "after reading a full stream's worth of would-have-posted messages "
+      + "in Recent decisions."
+    )) act("/bot/dry-run", { dry_run: false });
+  };
+  $("test-verdict").onclick = () =>
+    post("/events/test", { label: "FALSE" }).catch(() => {});
+
+  // Twitch setup
+  $("paste-toggle").onclick = () => {
+    const box = $("paste-box");
+    box.style.display = box.style.display === "none" ? "flex" : "none";
+  };
+  $("paste-save").onclick = async () => {
+    $("twitch-error").textContent = "";
+    try {
+      await post("/setup/twitch", {
+        token: $("token-input").value,
+        channel: $("channel-input").value || null,
+      });
+      $("token-input").value = ""; // hygiene: transient input only
+      $("paste-box").style.display = "none";
+      refresh();
+    } catch (error) {
+      $("twitch-error").textContent = String(error.message || error);
+    }
+  };
+  let dcfTimer = null;
+  $("dcf-start").onclick = async () => {
+    $("twitch-error").textContent = "";
+    try {
+      const grant = await post("/setup/twitch/device");
+      $("dcf-box").style.display = "flex";
+      $("device-code").textContent = grant.user_code;
+      clearInterval(dcfTimer);
+      dcfTimer = setInterval(async () => {
+        try {
+          const result = await post("/setup/twitch/device/poll", {
+            channel: $("channel-input").value || null,
+          });
+          if (!result.pending) {
+            clearInterval(dcfTimer);
+            $("dcf-box").style.display = "none";
+            refresh();
+          }
+        } catch (error) {
+          clearInterval(dcfTimer);
+          $("twitch-error").textContent = String(error.message || error);
+        }
+      }, (grant.interval_s || 5) * 1000);
+    } catch (error) {
+      $("twitch-error").textContent = String(error.message || error);
+    }
+  };
+
+  // Keyboard: J/K navigate, Enter posts, X skips, M mutes.
+  document.addEventListener("keydown", (event) => {
+    if (event.target.tagName === "INPUT") return;
+    const queue = status?.bot?.queue || [];
+    if (event.key === "j" || event.key === "J") {
+      selectedIndex = Math.min(selectedIndex + 1, queue.length - 1); render();
+    } else if (event.key === "k" || event.key === "K") {
+      selectedIndex = Math.max(selectedIndex - 1, 0); render();
+    } else if (event.key === "Enter" && queue[selectedIndex]) {
+      act(`/bot/queue/${queue[selectedIndex].post_id}/post`);
+    } else if ((event.key === "x" || event.key === "X") && queue[selectedIndex]) {
+      act(`/bot/queue/${queue[selectedIndex].post_id}/skip`);
+    } else if (event.key === "m" || event.key === "M") {
+      $("mute-btn").click();
+    }
+  });
+
+  // ---- refresh loop: WS push for immediacy, 5 s poll as the reconciler --- //
+  const refresh = async () => {
+    try {
+      status = await getJson("/bot/status");
+      $("error-banner").style.display = "none";
+      render();
+      renderFeed(await getJson("/bot/posts?limit=40"));
+    } catch {
+      $("error-banner").style.display = "block";
+      setDot("dot-backend", false);
+    }
+    try {
+      const setup = await getJson("/setup/status");
+      setStep("step-llm", setup.configured,
+        setup.configured ? `${setup.provider || "connected"} ✓`
+                         : "add an API key (extension options page, or POST /setup/credentials)");
+    } catch {}
+  };
+  $("overlay-url").textContent = `${location.origin}/overlay`;
+  $("dock-url").textContent = `${location.origin}/control`;
+
+  let socket = null;
+  const connectEvents = () => {
+    socket = new WebSocket(`ws://${location.host}/ws/events`);
+    socket.onmessage = () => refresh(); // any event: re-pull authoritative state
+    socket.onclose = () => setTimeout(connectEvents, 2000);
+    socket.onerror = () => socket.close();
+  };
+  connectEvents();
+  refresh();
+  setInterval(refresh, 5000);
+})();
+</script>
+</body>
+</html>
