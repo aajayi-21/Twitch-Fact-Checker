@@ -1,0 +1,12 @@
+/* Inter, vendored (variable weight axis) — replaces the Nocturne design
+   system's Google-Fonts import line: pages must work with zero network, and
+   the test suite bans external assets and all CSS imports outright. One
+   variable-font face covers every weight the DS uses (400/500/600/700). */
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/static/vendor/inter/inter-latin-wght-normal.woff2")
+    format("woff2-variations");
+}
