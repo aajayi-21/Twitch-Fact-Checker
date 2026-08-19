@@ -236,6 +236,22 @@ def create_app() -> FastAPI:
     application.include_router(ws_router)
     application.include_router(streamer_router)
 
+    # The console/overlay webapp is multi-file (vendored ESM modules, CSS,
+    # fonts), so — unlike the viewer app's single-FileResponse pages — a
+    # static mount is required. The MIME registrations are not decorative:
+    # module scripts hard-fail on a non-JavaScript content type, and Python's
+    # mimetypes table can be polluted by OS registries, so ".mjs" is pinned
+    # deterministically on every platform.
+    import mimetypes
+
+    from starlette.staticfiles import StaticFiles
+
+    from streamer.routes import _STATIC_DIR
+
+    mimetypes.add_type("text/javascript", ".mjs")
+    mimetypes.add_type("font/woff2", ".woff2")
+    application.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
+
     @application.get("/healthz")
     async def healthz(request: Request) -> dict[str, Any]:
         settings: StreamerSettings = request.app.state.settings

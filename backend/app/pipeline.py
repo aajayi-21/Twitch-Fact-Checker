@@ -280,6 +280,10 @@ class SessionPipeline:
     def sends_transcripts(self) -> bool:
         return self._send_transcripts
 
+    @property
+    def enabled_topics(self) -> frozenset[str]:
+        return self._enabled_topics
+
     def apply_live_config(
         self,
         *,

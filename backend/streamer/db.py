@@ -120,6 +120,16 @@ CREATE TABLE IF NOT EXISTS chat_engagement (
     unique_chatters_after  INTEGER NOT NULL,
     computed_at            TEXT NOT NULL
 );
+
+-- Small key/value store for UI preferences (e.g. the overlay style the
+-- console picked). A NEW table rather than a column because the schema
+-- loader is CREATE IF NOT EXISTS only — it can add tables to an existing
+-- database but can never ALTER one.
+CREATE TABLE IF NOT EXISTS ui_prefs (
+    key        TEXT PRIMARY KEY,
+    value_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 # chat_posts.status values. "dry_run" is a would-have-posted row: the exact
@@ -330,6 +340,7 @@ class StreamerDatabase(Database):
         *,
         status: str | None = None,
         limit: int = 50,
+        before: str | None = None,
     ) -> list[dict[str, Any]]:
         def _read() -> list[dict[str, Any]]:
             conn = self._require_conn()
@@ -338,6 +349,10 @@ class StreamerDatabase(Database):
             if status is not None:
                 query += " AND status = ?"
                 params.append(status)
+            if before is not None:
+                # ISO-8601 cursor: honest "Older" pagination for the console.
+                query += " AND created_at < ?"
+                params.append(before)
             query += " ORDER BY created_at DESC LIMIT ?"
             params.append(limit)
             return [dict(row) for row in conn.execute(query, params)]
@@ -445,3 +460,143 @@ class StreamerDatabase(Database):
             conn.commit()
 
         await self._swallow(_write)
+
+    # ------------------------------------------------------------------ #
+    # ui_prefs — STRICT (a settings write is a deliberate user act; a lost
+    # overlay-style choice should error loudly, not vanish)
+    # ------------------------------------------------------------------ #
+
+    async def get_ui_pref(self, key: str) -> dict[str, Any] | None:
+        def _read() -> dict[str, Any] | None:
+            import json
+
+            conn = self._require_conn()
+            row = conn.execute(
+                "SELECT value_json FROM ui_prefs WHERE key = ?", (key,)
+            ).fetchone()
+            if row is None:
+                return None
+            try:
+                value = json.loads(row["value_json"])
+            except ValueError:
+                logger.error("corrupt ui_pref %r; treating as unset", key)
+                return None
+            return value if isinstance(value, dict) else None
+
+        return await self._run(_read)
+
+    async def set_ui_pref(self, key: str, value: dict[str, Any]) -> None:
+        def _write() -> None:
+            import json
+
+            conn = self._require_conn()
+            conn.execute(
+                "INSERT INTO ui_prefs (key, value_json, updated_at)"
+                " VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET"
+                " value_json = excluded.value_json,"
+                " updated_at = excluded.updated_at",
+                (key, json.dumps(value), utc_now_iso()),
+            )
+            conn.commit()
+
+        await self._run(_write)
+
+    # ------------------------------------------------------------------ #
+    # Console stats — the design-1a/1c numbers in one round-trip
+    # ------------------------------------------------------------------ #
+
+    async def fetch_console_stats(self, live_session_ids: list[str]) -> dict[str, Any]:
+        """Approval rate (7d), median verify latency (today), the claim
+        funnel (today), and live-session start times.
+
+        Median is computed in Python — SQLite has no median aggregate.
+        """
+
+        def _read() -> dict[str, Any]:
+            from datetime import datetime, timedelta, timezone
+
+            conn = self._require_conn()
+            now = datetime.now(timezone.utc)
+            today = now.strftime("%Y-%m-%d")
+            week_ago = (now - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+            approval = conn.execute(
+                "SELECT SUM(CASE WHEN status = 'posted' AND"
+                " approved_by_user_id IS NOT NULL THEN 1 ELSE 0 END)"
+                " AS approved,"
+                " SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END)"
+                " AS skipped"
+                " FROM chat_posts WHERE mode = 'review' AND created_at >= ?",
+                (week_ago,),
+            ).fetchone()
+            approved = approval["approved"] or 0
+            skipped = approval["skipped"] or 0
+            decided = approved + skipped
+
+            latencies = [
+                row["latency_ms"]
+                for row in conn.execute(
+                    "SELECT latency_ms FROM verdicts"
+                    " WHERE substr(checked_at, 1, 10) = ?"
+                    " AND latency_ms IS NOT NULL ORDER BY latency_ms",
+                    (today,),
+                )
+            ]
+            median_ms = latencies[len(latencies) // 2] if latencies else None
+
+            claims_row = conn.execute(
+                "SELECT COUNT(*) AS heard,"
+                " SUM(CASE WHEN outcome NOT IN"
+                " ('below_threshold','topic_skipped','duplicate')"
+                " THEN 1 ELSE 0 END) AS gate_passed,"
+                " SUM(CASE WHEN outcome IN ('verified','verify_failed')"
+                " THEN 1 ELSE 0 END) AS checked"
+                " FROM claims WHERE substr(gated_at, 1, 10) = ?",
+                (today,),
+            ).fetchone()
+            posts_row = conn.execute(
+                "SELECT SUM(CASE WHEN status IN ('posted','queued','dry_run')"
+                " THEN 1 ELSE 0 END) AS passed_policy,"
+                " SUM(CASE WHEN status = 'posted' THEN 1 ELSE 0 END)"
+                " AS posted,"
+                " SUM(CASE WHEN retracted_at IS NOT NULL THEN 1 ELSE 0 END)"
+                " AS retracted"
+                " FROM chat_posts WHERE substr(created_at, 1, 10) = ?",
+                (today,),
+            ).fetchone()
+
+            live: list[dict[str, Any]] = []
+            if live_session_ids:
+                placeholders = ",".join("?" for _ in live_session_ids)
+                live = [
+                    dict(row)
+                    for row in conn.execute(
+                        "SELECT id AS session_id, platform, channel,"
+                        f" started_at FROM sessions WHERE id IN ({placeholders})"
+                        " AND ended_at IS NULL",
+                        live_session_ids,
+                    )
+                ]
+
+            return {
+                "approval_7d": {
+                    "approved": approved,
+                    "skipped": skipped,
+                    "rate": (approved / decided) if decided else None,
+                },
+                "latency_today": {
+                    "median_ms": median_ms,
+                    "n": len(latencies),
+                },
+                "funnel_today": {
+                    "heard": claims_row["heard"] or 0,
+                    "gate_passed": claims_row["gate_passed"] or 0,
+                    "checked": claims_row["checked"] or 0,
+                    "passed_policy": posts_row["passed_policy"] or 0,
+                    "posted": posts_row["posted"] or 0,
+                    "retracted": posts_row["retracted"] or 0,
+                },
+                "live": live,
+            }
+
+        return await self._run(_read)
