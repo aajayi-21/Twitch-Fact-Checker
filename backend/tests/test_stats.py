@@ -31,10 +31,15 @@ def seed(db_path: str) -> None:
             " 3600, 10, 4, 0.02)",
             (now.replace("Z", "") + "Z", now),
         )
-        # Make it a 2-hour session: started 2h before ended_at.
+        # Make it a 2-hour session WITHOUT crossing a UTC date line: anchor
+        # both ends inside today. The old "-2 hours before now" version made
+        # this test fail every day between 00:00 and 02:00 UTC, because the
+        # start date fell on yesterday and the today[] block lost the session.
         conn.execute(
-            "UPDATE sessions SET started_at = datetime(ended_at,"
-            " '-2 hours') WHERE id = 's-a'"
+            "UPDATE sessions SET"
+            " started_at = strftime('%Y-%m-%dT00:00:00Z', ended_at),"
+            " ended_at = strftime('%Y-%m-%dT02:00:00Z', ended_at)"
+            " WHERE id = 's-a'"
         )
         # streamer_b: OLD session, no verdicts.
         conn.execute(

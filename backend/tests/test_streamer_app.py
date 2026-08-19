@@ -365,6 +365,7 @@ class TestSessionConfigRoutes:
         class LivePipeline(FakePipeline):
             sensitivity = "medium"
             sends_transcripts = False
+            enabled_topics = frozenset({"other"})
 
             def __init__(self) -> None:
                 super().__init__("s1", "twitch", "teststreamer")
@@ -429,3 +430,77 @@ class TestSessionConfigRoutes:
             "/session/config", json={"sensitivity": "low"}
         ).json()
         assert state["sessions"] == []
+
+
+class TestOverlayConfig:
+    def test_defaults_when_nothing_stored(self, streamer_client: TestClient) -> None:
+        config = streamer_client.get("/overlay/config").json()
+        assert config["style"] == "toast"
+        assert config["labels"] == ["FALSE", "MISLEADING"]
+        assert config["duration_s"] == 14
+
+    def test_post_persists_and_reads_back(self, streamer_client: TestClient) -> None:
+        posted = streamer_client.post(
+            "/overlay/config",
+            json={"style": "lowerthird", "duration_s": 8, "max_stack": 2},
+        )
+        assert posted.status_code == 200
+        fetched = streamer_client.get("/overlay/config").json()
+        assert fetched["style"] == "lowerthird"
+        assert fetched["duration_s"] == 8
+        assert fetched["position"] == "bottom-left"  # untouched default
+
+    def test_post_pushes_a_live_hub_frame(self, streamer_client: TestClient) -> None:
+        """A live overlay restyles without a reload — the OBS source URL
+        never changes."""
+        hub: EventHub = streamer_client.app.state.events
+        subscription = hub.subscribe(name="test", types={"overlay_config"})
+        streamer_client.post("/overlay/config", json={"style": "stamp"})
+        event = subscription._queue.get_nowait()
+        assert event.frame["type"] == "overlay_config"
+        assert event.frame["config"]["style"] == "stamp"
+
+    def test_invalid_values_are_422_with_reasons(
+        self, streamer_client: TestClient
+    ) -> None:
+        assert (
+            streamer_client.post(
+                "/overlay/config", json={"style": "hologram"}
+            ).status_code
+            == 422
+        )
+        assert (
+            streamer_client.post("/overlay/config", json={"duration_s": 2}).status_code
+            == 422
+        )
+
+
+class TestConsoleStats:
+    def test_shape_on_an_empty_database(self, streamer_client: TestClient) -> None:
+        stats = streamer_client.get("/stats/console").json()
+        assert stats["approval_7d"]["rate"] is None
+        assert stats["latency_today"] == {"median_ms": None, "n": 0}
+        assert stats["funnel_today"]["heard"] == 0
+        assert stats["live"] == []
+
+
+class TestBotStatusAdditions:
+    def test_review_ttl_is_exposed(self, streamer_client: TestClient) -> None:
+        install_bot(streamer_client)
+        status = streamer_client.get("/bot/status").json()
+        assert status["bot"]["review_ttl_s"] == 180.0
+
+
+class TestSessionConfigTopics:
+    def test_enabled_topics_are_readable(self, streamer_client: TestClient) -> None:
+        from tests.test_sessions import FakePipeline
+
+        class TopicPipeline(FakePipeline):
+            sensitivity = "medium"
+            sends_transcripts = False
+            enabled_topics = frozenset({"sports", "other"})
+
+        pipeline = TopicPipeline("s1", "twitch", "teststreamer")
+        streamer_client.app.state.sessions._sessions[pipeline.session_id] = pipeline
+        state = streamer_client.get("/session/config").json()
+        assert state["sessions"][0]["enabled_topics"] == ["other", "sports"]

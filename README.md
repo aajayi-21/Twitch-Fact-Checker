@@ -256,10 +256,22 @@ you can see, this chart…") — same privacy posture as the extension's toggle:
 frames go only to your local backend, live in a 3-frame memory ring, and are
 never stored.
 
-**Live pipeline controls** — the panel's *Pipeline* card mirrors the
-extension's options, applied to the running session instantly: sensitivity
-(low/medium/high), the vision gate (whether captured frames are used in
-verification), and a live-transcript view (panel-only, never on the overlay).
+**The console** (`/control`) is a no-build Preact webapp on the Nocturne
+design system — vendored runtime, zero Node, works offline. Six views:
+**Cockpit** (MUTE/mode/review queue with J·K·↵·X·M keys, session stats, live
+pipeline controls), **Setup** (the checklist + the overlay style picker),
+**Pipeline** (sensitivity, topics-to-check, vision, live transcript —
+instant-apply to the running session), **Bot settings** (the full posting
+policy), **Decisions** (every verdict and why it did or didn't post, with
+Retract), and **Analytics** (approval rate, median latency, verdict mix,
+claim funnel, per-channel cards). `/control#/dock` is a 340px queue-first
+layout for an OBS Custom Browser Dock. OBS 30+ recommended (modern CEF).
+
+**The overlay** (`/overlay`) has four **console-selectable styles** — refined
+toast, broadcast lower-third, minimal chip, verdict stamp — picked in Setup
+and applied to the running overlay live (the OBS source URL never changes).
+URL params (`style=`, `position=`, `duration=`, `labels=` — narrowing-only)
+pin per-source overrides, so two browser sources can run different styles.
 
 **What actually posts** — deliberately much less than what gets checked:
 FALSE/MISLEADING only, ≥2 citations across ≥2 distinct reputable domains

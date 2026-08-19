@@ -24,7 +24,7 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.events import EventHub, Subscription
 from app.models import Source, Verdict, VerdictFrame
@@ -77,7 +77,7 @@ async def overlay_page() -> FileResponse:
 @router.get("/control")
 async def control_page() -> FileResponse:
     """The streamer control panel (single file, no build step)."""
-    return FileResponse(_STATIC_DIR / "control.html", media_type="text/html")
+    return FileResponse(_STATIC_DIR / "console.html", media_type="text/html")
 
 
 @router.get("/meta/topics")
@@ -249,6 +249,8 @@ def _bot_status(request: Request) -> dict[str, Any]:
             "posts_this_hour": bot.history.posts_in_window(3600.0, now=now),
             "posts_per_hour": bot.policy.posts_per_hour,
             "labels": sorted(bot.policy.labels),
+            # For the console's TTL countdowns (server owns actual expiry).
+            "review_ttl_s": bot._review_ttl_s,
             # The full policy, so the panel's settings form renders every
             # knob from one authoritative source.
             "settings": bot.policy.to_config(),
@@ -262,6 +264,11 @@ def _bot_status(request: Request) -> dict[str, Any]:
                     "post_id": pending.post_id,
                     "label": pending.verdict.label,
                     "claim": pending.verdict.claim,
+                    "explanation": pending.verdict.explanation,
+                    "topic": pending.verdict.topic,
+                    "sources": [
+                        {"url": source.url} for source in pending.verdict.sources
+                    ],
                     "message": pending.message,
                     "age_s": now - pending.created_at,
                 }
@@ -453,6 +460,7 @@ def _session_config(request: Request) -> dict[str, Any]:
                 "channel": live.channel,
                 "sensitivity": live.sensitivity,
                 "send_transcripts": live.sends_transcripts,
+                "enabled_topics": sorted(live.enabled_topics),
             }
             for live in registry.all()
         ],
@@ -510,16 +518,106 @@ async def chat_stats(request: Request) -> dict[str, Any]:
 
 @router.get("/bot/posts")
 async def recent_decisions(
-    request: Request, status: str | None = None, limit: int = 50
+    request: Request,
+    status: str | None = None,
+    limit: int = 50,
+    before: str | None = None,
 ) -> list[dict[str, Any]]:
     """The panel's transparency feed: every decision row, reason included —
-    "why didn't it post that?" answered from data, not logs."""
+    "why didn't it post that?" answered from data, not logs. ``before`` is an
+    ISO created_at cursor for honest Older pagination."""
     settings: StreamerSettings = request.app.state.settings
     channel = settings.twitch_channel.strip().lstrip("#").lower()
     if not channel:
         return []
     return await request.app.state.db.fetch_chat_posts(
-        "twitch", channel, status=status, limit=max(1, min(limit, 200))
+        "twitch",
+        channel,
+        status=status,
+        limit=max(1, min(limit, 200)),
+        before=before,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Overlay config — the console-selected style, persisted server-side
+# --------------------------------------------------------------------------- #
+
+
+class OverlayConfig(BaseModel):
+    """The overlay's server-side appearance defaults.
+
+    Persisted so the OBS browser-source URL stays stable while the streamer
+    changes styles from the console; pushed over the hub so a live overlay
+    restyles without a reload. URL params on the overlay still override
+    per-source (and labels remain narrowing-only client-side).
+    """
+
+    style: Literal["toast", "lowerthird", "chip", "stamp"] = "toast"
+    position: Literal[
+        "top-left",
+        "top-center",
+        "top-right",
+        "bottom-left",
+        "bottom-center",
+        "bottom-right",
+    ] = "bottom-left"
+    duration_s: int = Field(default=14, ge=4, le=60)
+    labels: list[Literal["TRUE", "FALSE", "MISLEADING", "UNVERIFIED"]] = Field(
+        default_factory=lambda: ["FALSE", "MISLEADING"]
+    )
+    max_stack: int = Field(default=1, ge=1, le=3)
+    scale: float = Field(default=1.0, ge=0.5, le=3.0)
+    margin: int = Field(default=56, ge=0, le=400)
+
+
+class OverlayConfigFrame(BaseModel):
+    """Hub frame telling live overlays the config changed."""
+
+    type: Literal["overlay_config"] = "overlay_config"
+    config: OverlayConfig
+
+
+OVERLAY_PREF_KEY = "overlay_config"
+
+
+@router.get("/overlay/config")
+async def get_overlay_config(request: Request) -> OverlayConfig:
+    stored = await request.app.state.db.get_ui_pref(OVERLAY_PREF_KEY)
+    if stored is None:
+        return OverlayConfig()
+    try:
+        # Re-validate on read: missing keys pick up defaults, which is the
+        # free forward-migration path when the model grows fields.
+        return OverlayConfig(**stored)
+    except Exception:
+        logger.error("stored overlay config invalid; serving defaults")
+        return OverlayConfig()
+
+
+@router.post("/overlay/config")
+async def set_overlay_config(body: OverlayConfig, request: Request) -> OverlayConfig:
+    """Persist + push live. Pydantic bounds give 422s carrying the exact
+    reason — refused loudly, never clamped silently."""
+    await request.app.state.db.set_ui_pref(OVERLAY_PREF_KEY, body.model_dump())
+    hub: EventHub = request.app.state.events
+    hub.publish(
+        OverlayConfigFrame(config=body),
+        session_id="overlay-config",
+        platform=None,
+        channel=None,
+    )
+    return body
+
+
+@router.get("/stats/console")
+async def console_stats(request: Request) -> dict[str, Any]:
+    """The cockpit/analytics numbers in one round-trip: approval rate (7d),
+    median verify latency (today), the claim funnel (today), live sessions
+    with start times (elapsed ticks client-side)."""
+    registry: SessionRegistry = request.app.state.sessions
+    return await request.app.state.db.fetch_console_stats(
+        [live.session_id for live in registry.all()]
     )
 
 

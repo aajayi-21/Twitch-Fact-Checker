@@ -1,0 +1,269 @@
+/* Console app layer — everything the mockups add on top of Nocturne.
+   nocturne.css stays pristine; verdict colors and app structures live here.
+   Topic colors are NOT here: they come from /meta/topics at runtime. */
+
+:root {
+  --verdict-false: #e5484d;
+  --verdict-false-text: #ff9d9f;
+  --verdict-misleading: #dfa63e;
+  --verdict-misleading-text: #f2cf8b;
+  --verdict-true: #4cc38a;
+  --verdict-true-text: #9fe2c0;
+  --verdict-unverified: var(--color-neutral-700);
+}
+
+/* ── shell (design 1b) ─────────────────────────────────────────────────── */
+.shell { display: grid; grid-template-columns: 216px 1fr; min-height: 100vh; }
+.sidebar {
+  background: var(--color-surface);
+  display: flex; flex-direction: column;
+  padding: 18px 0 14px;
+  position: sticky; top: 0; height: 100vh;
+}
+.brand {
+  display: flex; align-items: center; gap: 9px;
+  font-family: var(--font-heading); font-weight: 500; font-size: 15px;
+  padding: 0 18px 16px;
+}
+.brand-mark {
+  width: 20px; height: 20px; border-radius: 5px;
+  border: 1.5px solid var(--color-accent);
+  display: grid; place-items: center;
+  color: var(--color-accent); font-size: 11px; font-weight: 700;
+}
+.sidenav { display: flex; flex-direction: column; gap: 2px; font-size: 13.5px; }
+.sidenav a {
+  display: flex; gap: 10px; align-items: center;
+  color: var(--color-neutral-400); text-decoration: none;
+  padding: 8px 18px; border-left: 2px solid transparent;
+}
+.sidenav a:hover { color: var(--color-text); }
+.sidenav a[aria-current="page"] {
+  color: var(--color-accent);
+  border-left-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+}
+.sidenav .nav-badge { margin-left: auto; font-size: 10px; padding: 1px 7px; }
+.sidenav .nav-ok { margin-left: auto; color: var(--verdict-true); font-size: 11px; }
+.side-foot {
+  margin-top: auto; padding: 14px 18px 0;
+  display: flex; flex-direction: column; gap: 7px;
+  font-size: 11.5px; color: var(--color-neutral-500);
+}
+.main { padding: 20px 26px 26px; min-width: 0; }
+
+/* status dots */
+.dot { display: inline-flex; align-items: center; gap: 5px; }
+.dot::before {
+  content: ""; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--verdict-false);
+}
+.dot[data-on]::before { background: var(--verdict-true); }
+.dot[data-warn]::before { background: var(--verdict-misleading); }
+
+/* ── identity bar + command row (design 1a) ────────────────────────────── */
+.identity {
+  display: flex; align-items: center; gap: 16px;
+  padding: 14px 0; flex-wrap: wrap;
+}
+.identity .who { margin-left: auto; display: flex; gap: 14px; font-size: 12px;
+  color: var(--color-neutral-500); }
+.fade-rule {
+  height: 1px;
+  background: linear-gradient(to right,
+    transparent, var(--color-divider) 48px,
+    var(--color-divider) calc(100% - 48px), transparent);
+}
+.command {
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 0; flex-wrap: wrap;
+}
+.mute-btn { font-size: 15px; padding: 11px 26px; letter-spacing: 0.04em; }
+.mute-btn[data-muted="true"] {
+  color: var(--verdict-misleading); border-color: var(--verdict-misleading);
+  background: color-mix(in srgb, var(--verdict-misleading) 10%, transparent);
+}
+.key-hint {
+  font: 11px ui-monospace, Menlo, monospace;
+  border: 1px solid var(--color-divider); border-radius: 4px;
+  padding: 1px 6px; color: var(--color-neutral-400);
+}
+.pips { display: inline-flex; gap: 3px; }
+.pip { width: 12px; height: 5px; border-radius: 2px; background: var(--color-neutral-800); }
+.pip[data-filled] { background: var(--color-accent); }
+.dry-banner {
+  display: flex; align-items: center; gap: 10px; margin-left: auto;
+  border: 1px solid var(--verdict-misleading); border-radius: var(--radius-md);
+  padding: 6px 12px; font-size: 12.5px; color: var(--verdict-misleading);
+  background: color-mix(in srgb, var(--verdict-misleading) 8%, transparent);
+}
+
+/* ── cockpit grid + queue (design 1a) ──────────────────────────────────── */
+.cockpit { display: grid; grid-template-columns: 1fr 320px; gap: 18px; padding-top: 6px; }
+.rail { display: flex; flex-direction: column; gap: 14px; }
+.q-head { display: flex; align-items: baseline; gap: 10px; }
+.q-head h6 { margin: 0; color: var(--color-neutral-500); }
+.q-hint { margin-left: auto; font-size: 11px; color: var(--color-neutral-600); }
+
+.queue-card {
+  background: var(--color-surface); border-radius: var(--radius-md);
+  padding: 16px 18px 14px; border-left: 3px solid var(--color-neutral-700);
+  display: flex; flex-direction: column; gap: 0;
+  transition: opacity 0.15s linear;
+}
+.queue-card[data-label="FALSE"] { border-left-color: var(--verdict-false); }
+.queue-card[data-label="MISLEADING"] { border-left-color: var(--verdict-misleading); }
+.queue-card[data-label="TRUE"] { border-left-color: var(--verdict-true); }
+.queue-card[data-selected] { box-shadow: var(--shadow-md); }
+.queue-card:not([data-selected]) { opacity: 0.82; }
+.q-row { display: flex; align-items: center; gap: 10px; }
+.q-ttl { margin-left: auto; font-size: 12px; font-variant-numeric: tabular-nums;
+  color: var(--color-neutral-500); }
+.q-ttl[data-urgent] { color: var(--verdict-false); }
+.ttl-bar { height: 2px; border-radius: 1px; background: var(--color-neutral-800);
+  margin: 10px 0 12px; }
+.ttl-bar > div { height: 2px; border-radius: 1px; transform-origin: left center; }
+.q-claim { margin: 0 0 6px; font-size: 16px; font-weight: 500; line-height: 1.35; }
+.q-expl { margin: 0 0 12px; font-size: 13px; color: var(--color-neutral-400); }
+.chatmsg {
+  font: 12px/1.5 ui-monospace, Menlo, monospace;
+  color: var(--color-neutral-400); background: var(--color-neutral-900);
+  border-radius: var(--radius-sm); padding: 8px 10px; margin: 0 0 12px;
+  white-space: pre-wrap; word-break: break-word;
+}
+.q-actions { display: flex; gap: 10px; align-items: center; }
+.q-note { margin-left: auto; font-size: 11px; color: var(--color-neutral-600); }
+.keys-legend {
+  display: flex; gap: 14px; align-items: center;
+  font-size: 11.5px; color: var(--color-neutral-600); padding: 2px 2px 0;
+}
+.topic-dot { width: 8px; height: 8px; border-radius: 50%; flex: none;
+  background: var(--color-neutral-600); }
+
+/* verdict label tags (tinted, from the mocks) */
+.tag[data-label="FALSE"] {
+  background: color-mix(in srgb, var(--verdict-false) 20%, transparent);
+  color: var(--verdict-false-text); font-weight: 600;
+}
+.tag[data-label="MISLEADING"] {
+  background: color-mix(in srgb, var(--verdict-misleading) 20%, transparent);
+  color: var(--verdict-misleading-text); font-weight: 600;
+}
+.tag[data-label="TRUE"] {
+  background: color-mix(in srgb, var(--verdict-true) 18%, transparent);
+  color: var(--verdict-true-text); font-weight: 600;
+}
+.tag[data-label="UNVERIFIED"] { background: var(--color-neutral-800);
+  color: var(--color-neutral-100); }
+/* decision-state tags (decisions table) */
+.tag[data-decision="posted"] { border: 1px solid var(--verdict-true);
+  color: var(--verdict-true); background: transparent; }
+.tag[data-decision="dry_run"] { border: 1px solid var(--verdict-misleading);
+  color: var(--verdict-misleading); background: transparent; }
+
+/* rail cards */
+.kv { display: grid; grid-template-columns: 1fr auto; gap: 5px 12px; font-size: 13px; }
+.kv .num { font-variant-numeric: tabular-nums; text-align: right; }
+.transcript-box {
+  font: 11.5px/1.6 ui-monospace, Menlo, monospace;
+  color: var(--color-neutral-500); background: var(--color-neutral-900);
+  border-radius: var(--radius-sm); padding: 8px 10px;
+  max-height: 66px; overflow: hidden;
+}
+.toggle {
+  width: 30px; height: 17px; border-radius: 999px; flex: none;
+  border: 1px solid var(--color-divider); position: relative; cursor: pointer;
+  background: transparent; padding: 0;
+}
+.toggle::after {
+  content: ""; position: absolute; left: 2px; top: 2px;
+  width: 11px; height: 11px; border-radius: 50%;
+  background: var(--color-neutral-600);
+  transition: left 0.15s ease, background 0.15s ease;
+}
+.toggle[aria-pressed="true"] {
+  border-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 22%, transparent);
+}
+.toggle[aria-pressed="true"]::after { left: 15px; background: var(--color-accent); }
+
+/* ── decisions view (design 1b) ────────────────────────────────────────── */
+.stat-strip { display: flex; gap: 26px; margin: 0 0 14px; font-size: 12px;
+  color: var(--color-neutral-500); }
+.stat-strip .big { font-size: 19px; color: var(--color-text);
+  font-variant-numeric: tabular-nums; margin-right: 6px; }
+.view-head { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; }
+.view-head h4 { margin: 0; }
+.pager { display: flex; align-items: center; gap: 10px; margin-top: 12px;
+  font-size: 12px; color: var(--color-neutral-600); }
+
+/* ── analytics view (design 1c) ────────────────────────────────────────── */
+.tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px;
+  margin-bottom: 20px; }
+.tile-num { font-size: 30px; font-family: var(--font-heading); font-weight: 500;
+  font-variant-numeric: tabular-nums; }
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
+  margin-bottom: 20px; }
+.mix-bar { display: flex; height: 10px; border-radius: 5px; overflow: hidden;
+  margin: 6px 0 4px; }
+.mix-legend { display: flex; gap: 16px; font-size: 12px;
+  color: var(--color-neutral-400); flex-wrap: wrap; }
+.mix-legend .swatch { width: 8px; height: 8px; border-radius: 2px;
+  display: inline-block; margin-right: 6px; }
+.funnel { display: grid; grid-template-columns: 110px 1fr 52px;
+  gap: 7px 10px; align-items: center; font-size: 12px;
+  color: var(--color-neutral-400); }
+.funnel .bar { display: block; height: 8px; border-radius: 4px;
+  background: var(--color-accent-600); }
+.funnel .num { text-align: right; font-variant-numeric: tabular-nums;
+  color: var(--color-text); }
+.channels-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.connect-card {
+  border: 1px dashed var(--color-divider); background: transparent;
+  align-items: center; justify-content: center;
+  color: var(--color-neutral-600); font-size: 13px; min-height: 118px;
+}
+
+/* ── setup / forms shared ──────────────────────────────────────────────── */
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.style-picker { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.style-opt {
+  border: 1px solid var(--color-divider); border-radius: var(--radius-md);
+  padding: 10px; cursor: pointer; text-align: center; font-size: 12.5px;
+  background: transparent; color: var(--color-text);
+  display: flex; flex-direction: column; gap: 6px; align-items: center;
+}
+.style-opt[aria-pressed="true"] {
+  border-color: var(--color-accent);
+  box-shadow: inset 0 0 0 1px var(--color-accent);
+  color: var(--color-accent);
+}
+.style-thumb { width: 100%; height: 34px; border-radius: 5px;
+  background: var(--color-neutral-900); position: relative; overflow: hidden; }
+.error-text { color: var(--verdict-false-text); font-size: 12.5px; }
+.ok-text { color: var(--verdict-true-text); font-size: 12.5px; }
+
+/* ── dock (design 1d) ──────────────────────────────────────────────────── */
+.dock { max-width: 360px; margin: 0 auto; padding: 14px 14px 16px;
+  display: flex; flex-direction: column; gap: 12px; }
+.dock .mute-btn { width: 100%; font-size: 16px; padding: 13px;
+  letter-spacing: 0.05em; }
+.dock .seg { width: 100%; }
+.dock .seg-opt { flex: 1; justify-content: center; }
+.dock .queue-card { padding: 12px 13px; }
+.dock .q-claim { font-size: 13.5px; }
+.dock .q-actions .btn { flex: 1; padding: 10px; }
+
+/* toast/notice (transient UI messages, e.g. clamp reasons) */
+.notice {
+  position: fixed; bottom: 16px; right: 16px; z-index: 10;
+  max-width: 380px; padding: 10px 14px;
+  background: var(--color-surface); border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md); font-size: 13px;
+}
+.notice[data-kind="error"] { border-left: 3px solid var(--verdict-false); }
+.notice[data-kind="ok"] { border-left: 3px solid var(--verdict-true); }
+
+@media (max-width: 900px) { .cockpit { grid-template-columns: 1fr; }
+  .tiles, .channels-grid { grid-template-columns: 1fr 1fr; }
+  .two-col, .form-grid { grid-template-columns: 1fr; } }
