@@ -77,7 +77,7 @@ async def overlay_page() -> FileResponse:
 @router.get("/control")
 async def control_page() -> FileResponse:
     """The streamer control panel (single file, no build step)."""
-    return FileResponse(_STATIC_DIR / "control.html", media_type="text/html")
+    return FileResponse(_STATIC_DIR / "console.html", media_type="text/html")
 
 
 @router.get("/meta/topics")
@@ -264,6 +264,11 @@ def _bot_status(request: Request) -> dict[str, Any]:
                     "post_id": pending.post_id,
                     "label": pending.verdict.label,
                     "claim": pending.verdict.claim,
+                    "explanation": pending.verdict.explanation,
+                    "topic": pending.verdict.topic,
+                    "sources": [
+                        {"url": source.url} for source in pending.verdict.sources
+                    ],
                     "message": pending.message,
                     "age_s": now - pending.created_at,
                 }

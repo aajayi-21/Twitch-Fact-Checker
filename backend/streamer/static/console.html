@@ -1,0 +1,42 @@
+<!doctype html>
+<!--
+  The streamer console (served at /control): a no-build Preact webapp on the
+  Nocturne design system.
+
+  Views (hash-routed): #/cockpit (default) #/setup #/pipeline #/bot
+  #/decisions #/analytics — plus #/dock, the 340px queue-first layout for an
+  OBS Custom Browser Dock (Docks -> Custom Browser Docks -> this URL + #/dock;
+  ?dock=1 works too). Keyboard on cockpit/dock: J/K select · ↵ post · X skip
+  · M mute.
+
+  No build step, no Node, no network: the runtime is vendored ESM resolved
+  by the inline import map below (see static/vendor/README.md for versions
+  and the OBS/Chromium floor). Data flow: /ws/events pushes are a doorbell;
+  a 5s /bot/status poll reconciles; every mutation returns the authoritative
+  status payload.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fact-Checker</title>
+<link rel="stylesheet" href="/static/css/fonts.css">
+<link rel="stylesheet" href="/static/css/nocturne.css">
+<link rel="stylesheet" href="/static/css/app.css">
+<script type="importmap">
+{
+  "imports": {
+    "preact":               "/static/vendor/preact/preact.module.js",
+    "preact/hooks":         "/static/vendor/preact/hooks.module.js",
+    "@preact/signals":      "/static/vendor/preact/signals.module.js",
+    "@preact/signals-core": "/static/vendor/preact/signals-core.module.js",
+    "htm":                  "/static/vendor/htm/htm.module.js"
+  }
+}
+</script>
+</head>
+<body>
+<div id="root"></div>
+<script type="module" src="/static/js/console.mjs"></script>
+</body>
+</html>
