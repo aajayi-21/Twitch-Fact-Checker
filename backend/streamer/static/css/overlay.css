@@ -1,0 +1,236 @@
+/* On-stream overlay chrome + the four verdict-display styles.
+   Rendering rules for an OBS browser source (doctrine):
+   - transparent ground; the scene composites behind us
+   - pointer-events: none — nothing is ever clickable on a broadcast
+   - transform/opacity animation only (compositor-friendly in CEF)
+   - no backdrop-filter: there is nothing behind a transparent page to blur,
+     and it costs the encoder headroom */
+
+:root {
+  --verdict-false: #e5484d;
+  --verdict-misleading: #dfa63e;
+  --verdict-true: #4cc38a;
+  --verdict-unverified: #75798c;
+  --ov-card: rgba(12, 12, 18, 0.94);
+  --ov-text: #f5f5f7;
+  --ov-muted: #b9b9c6;
+  --ov-dim: #8b8b9e;
+  --ov-purple: #9184d9;
+  --ov-purple-strong: #a970ff;
+  --ov-hairline: rgba(255, 255, 255, 0.09);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { background: transparent; overflow: hidden; width: 100%; height: 100%; }
+body {
+  font-family: "Inter", system-ui, sans-serif;
+  pointer-events: none;
+  user-select: none;
+  color: var(--ov-text);
+}
+body.preview {
+  background:
+    repeating-conic-gradient(#2a2a33 0% 25%, #1d1d24 0% 50%) 0 0 / 40px 40px;
+}
+#badge {
+  position: fixed; top: 8px; left: 8px;
+  font: 600 12px/1.6 system-ui, sans-serif;
+  color: #fff; background: rgba(0, 0, 0, 0.6);
+  padding: 2px 10px; border-radius: 999px;
+  display: none;
+}
+body.preview #badge { display: block; }
+#badge[data-state="open"] { border-left: 4px solid var(--verdict-true); }
+#badge[data-state="closed"] { border-left: 4px solid var(--verdict-false); }
+
+#anchor {
+  position: fixed;
+  display: flex; flex-direction: column; gap: 0.75rem;
+  max-width: 40rem;
+  width: calc(100vw - 2 * var(--margin, 56px));
+}
+/* The lower-third owns the full width between margins. */
+#anchor[data-style="lowerthird"] { max-width: none; }
+
+.ov-item {
+  transform: translateY(1rem); opacity: 0;
+  transition:
+    transform 0.26s cubic-bezier(0.2, 0.8, 0.3, 1),
+    opacity 0.26s cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+.ov-item[data-phase="in"] { transform: translateY(0); opacity: 1; }
+.ov-item[data-phase="out"] {
+  transform: translateY(-0.5rem); opacity: 0;
+  transition-duration: 0.2s;
+}
+
+/* Verdict color helper: each style paints from --v. */
+.ov-item[data-label="FALSE"] { --v: var(--verdict-false); }
+.ov-item[data-label="MISLEADING"] { --v: var(--verdict-misleading); }
+.ov-item[data-label="TRUE"] { --v: var(--verdict-true); }
+.ov-item[data-label="UNVERIFIED"] { --v: var(--verdict-unverified); }
+
+.ov-dwell {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 3px;
+  background: color-mix(in srgb, var(--v) 25%, transparent);
+}
+.ov-dwell > div {
+  height: 100%; background: var(--v);
+  transform-origin: left center;
+  /* animated scaleX(1 -> 0) from JS; compositor-only */
+}
+.ov-source {
+  font: 600 0.7rem/1.6 "Inter", sans-serif;
+  color: #cbb6ff;
+  background: rgba(145, 71, 255, 0.16);
+  border: 1px solid rgba(145, 71, 255, 0.4);
+  padding: 0.05rem 0.55rem; border-radius: 999px;
+}
+.ov-bot { font: 500 0.65rem/1 "Inter", sans-serif; color: var(--ov-dim); }
+.ov-kicker {
+  font: 700 0.6rem/1 "Inter", sans-serif;
+  letter-spacing: 0.16em; color: var(--ov-purple-strong);
+  text-transform: uppercase;
+}
+
+/* ── 1e refined toast ─────────────────────────────────────────────────── */
+.ov-toast {
+  position: relative; width: 22rem; max-width: 100%;
+  background: var(--ov-card);
+  border: 1px solid var(--ov-hairline);
+  border-radius: 0.9rem;
+  padding: 0.9rem 1rem 1rem;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+.ov-toast-head {
+  display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem;
+}
+.ov-label-pill {
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  font: 800 0.7rem/1 "Inter", sans-serif; letter-spacing: 0.07em;
+  color: #fff; background: var(--v);
+  border-radius: 0.4rem; padding: 0.32rem 0.55rem;
+}
+.ov-toast .ov-bot { margin-left: auto; }
+.ov-claim { font: 700 0.95rem/1.3 "Inter", sans-serif; margin-bottom: 0.32rem; }
+.ov-expl { font: 400 0.75rem/1.45 "Inter", sans-serif; color: var(--ov-muted); margin-bottom: 0.55rem; }
+.ov-sources { display: flex; gap: 0.32rem; align-items: center; flex-wrap: wrap; }
+
+/* ── 1f lower-third ───────────────────────────────────────────────────── */
+.ov-lowerthird {
+  position: relative;
+  display: flex; align-items: stretch;
+  background: rgba(11, 11, 17, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 0.65rem;
+  overflow: hidden;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+}
+.ov-lt-block {
+  flex: none; width: 5.4rem;
+  background: linear-gradient(170deg,
+    color-mix(in srgb, var(--v) 92%, #fff 8%),
+    color-mix(in srgb, var(--v) 72%, #000 28%));
+  clip-path: polygon(0 0, 100% 0, 88% 100%, 0 100%);
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 0.1rem;
+  color: #fff;
+}
+.ov-lt-mark { font: 800 1.25rem/1 "Inter", sans-serif; }
+.ov-lt-word { font: 800 0.72rem/1 "Inter", sans-serif; letter-spacing: 0.08em; }
+.ov-lt-main { flex: 1; padding: 0.6rem 0.9rem; min-width: 0; }
+.ov-lt-main .ov-kicker { margin-bottom: 0.3rem; display: block; }
+.ov-lt-claim {
+  font: 700 0.88rem/1.25 "Inter", sans-serif;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  margin-bottom: 0.18rem;
+}
+.ov-lt-expl {
+  font: 400 0.7rem/1.4 "Inter", sans-serif; color: var(--ov-muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ov-lt-side {
+  flex: none; display: flex; flex-direction: column; justify-content: center;
+  gap: 0.24rem; padding: 0 0.9rem;
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+  font: 600 0.62rem/1.4 "Inter", sans-serif; color: #cbb6ff;
+}
+.ov-lowerthird .ov-dwell { height: 2px; }
+
+/* ── 1g minimal chip ──────────────────────────────────────────────────── */
+.ov-chip {
+  position: relative;
+  display: flex; align-items: center; gap: 0.55rem;
+  width: max-content; max-width: 100%;
+  background: rgba(11, 11, 17, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  padding: 0.42rem 0.9rem 0.42rem 0.5rem;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+.ov-chip .ov-label-pill { border-radius: 999px; font-size: 0.62rem; }
+.ov-chip-claim {
+  font: 600 0.78rem/1.3 "Inter", sans-serif;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ov-chip-src {
+  flex: none; font: 500 0.62rem/1 "Inter", sans-serif; color: var(--ov-dim);
+  border-left: 1px solid rgba(255, 255, 255, 0.12); padding-left: 0.55rem;
+}
+.ov-chip-dwell {
+  position: absolute; left: 1rem; bottom: -0.4rem;
+  width: 11rem; height: 2px; border-radius: 1px;
+  background: color-mix(in srgb, var(--v) 25%, transparent);
+}
+.ov-chip-dwell > div {
+  height: 100%; border-radius: 1px; background: var(--v);
+  transform-origin: left center;
+}
+
+/* ── 1h verdict stamp ─────────────────────────────────────────────────── */
+.ov-stamp {
+  position: relative; width: 22.5rem; max-width: 100%;
+  background: rgba(11, 11, 17, 0.95);
+  border-radius: 0.75rem; overflow: hidden;
+  border: 1px solid rgba(145, 71, 255, 0.35);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.55);
+}
+.ov-stamp-band {
+  display: flex; align-items: center; gap: 0.5rem;
+  background: linear-gradient(90deg, #9147ff, #6c2bd9);
+  padding: 0.38rem 0.75rem;
+}
+.ov-stamp-band .ov-kicker { color: #fff; letter-spacing: 0.18em; }
+.ov-stamp-band .ov-bot { margin-left: auto; color: rgba(255, 255, 255, 0.75); }
+.ov-stamp-body { position: relative; padding: 0.9rem 1rem 1rem; }
+.ov-stamp-water {
+  position: absolute; right: -0.85rem; bottom: -0.6rem;
+  font: 900 4rem/1 "Inter", sans-serif; letter-spacing: -0.02em;
+  color: transparent;
+  -webkit-text-stroke: 1.5px color-mix(in srgb, var(--v) 28%, transparent);
+  user-select: none;
+}
+.ov-stamp-body .ov-claim,
+.ov-stamp-body .ov-expl { position: relative; padding-right: 3.6rem; }
+.ov-stamp-seal {
+  position: absolute; right: 0.75rem; top: -0.25rem;
+  transform: rotate(-9deg);
+  font: 800 0.8rem/1 "Inter", sans-serif; letter-spacing: 0.1em;
+  color: var(--v);
+  border: 2.5px solid var(--v); border-radius: 0.4rem;
+  padding: 0.3rem 0.55rem;
+  background: color-mix(in srgb, var(--v) 8%, transparent);
+  box-shadow: 0 0 14px color-mix(in srgb, var(--v) 25%, transparent);
+}
+.ov-stamp .ov-dwell {
+  position: static; height: 3px;
+  background: rgba(145, 71, 255, 0.25);
+}
+.ov-stamp .ov-dwell > div {
+  background: linear-gradient(90deg, #9147ff, #c084fc);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ov-item { transition: opacity 0.2s linear; transform: none; }
+  .ov-item[data-phase="in"], .ov-item[data-phase="out"] { transform: none; }
+}

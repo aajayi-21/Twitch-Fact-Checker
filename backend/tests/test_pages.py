@@ -149,3 +149,40 @@ class TestImportMapIntegrity:
                 assert (
                     STATIC_DIR / src.removeprefix("/static/")
                 ).is_file(), f"{page.name}: missing entrypoint {src}"
+
+
+class TestOverlayDoctrine:
+    """The broadcast-surface rules, retargeted at the module sources."""
+
+    OVERLAY_SOURCES = [
+        path
+        for path in APP_SOURCES
+        if path.name == "overlay.html" or "overlay" in path.parts
+    ]
+
+    def test_overlay_renders_no_anchors(self) -> None:
+        """Nothing in a browser source may navigate: a clicked link would
+        replace the overlay mid-broadcast. Sources render as spans."""
+        assert self.OVERLAY_SOURCES, "overlay sources missing"
+        for path in self.OVERLAY_SOURCES:
+            assert "<a " not in path.read_text(), path.name
+
+    def test_overlay_default_labels_exclude_true_and_unverified(self) -> None:
+        """Corrections are the format; a TRUE toast for every accurate remark
+        is noise. The default must stay FALSE+MISLEADING."""
+        main = (STATIC_DIR / "js" / "overlay" / "main.mjs").read_text()
+        assert 'DEFAULT_LABELS = ["FALSE", "MISLEADING"]' in main
+
+    def test_overlay_labels_are_narrowing_only(self) -> None:
+        """A URL param can hide labels the server shows, never surface ones
+        it hides — the intersection must be the mechanism."""
+        main = (STATIC_DIR / "js" / "overlay" / "main.mjs").read_text()
+        assert "serverLabels.filter((label) => urlLabels.includes(label))" in main
+
+    def test_overlay_subscribes_without_a_server_channel_filter(self) -> None:
+        """A server-side channel filter would also drop the console's test
+        verdicts (__test__) and overlay_config pushes; narrowing happens
+        client-side instead."""
+        main = (STATIC_DIR / "js" / "overlay" / "main.mjs").read_text()
+        assert '__test__' in main
+        assert 'socketParams.set("channel"' not in main
