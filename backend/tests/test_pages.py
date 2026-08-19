@@ -141,9 +141,7 @@ class TestImportMapIntegrity:
                     )
 
     def test_html_module_entrypoints_exist(self) -> None:
-        script_re = re.compile(
-            r"<script type=\"module\" src=\"(/static/[^\"]+)\">"
-        )
+        script_re = re.compile(r"<script type=\"module\" src=\"(/static/[^\"]+)\">")
         for page in HTML_PAGES:
             for src in script_re.findall(page.read_text()):
                 assert (
@@ -184,5 +182,5 @@ class TestOverlayDoctrine:
         verdicts (__test__) and overlay_config pushes; narrowing happens
         client-side instead."""
         main = (STATIC_DIR / "js" / "overlay" / "main.mjs").read_text()
-        assert '__test__' in main
+        assert "__test__" in main
         assert 'socketParams.set("channel"' not in main
