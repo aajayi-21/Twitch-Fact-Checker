@@ -85,6 +85,12 @@ ErrorCode = Literal[
     # Fatal: MAX_SESSIONS capture sessions are already live. Capacity is
     # bounded by the single STT worker, not by bookkeeping (app/sessions.py).
     "too_many_sessions",
+    # Non-fatal, once per session: the speech engine broke on its accelerator
+    # and was reloaded on CPU (app/stt_supervisor.py); captions may lag.
+    "stt_degraded",
+    # Fatal: the speech engine is unrecoverable (the CPU reload failed too or
+    # was disabled). Also used to reject new connections until a restart.
+    "stt_failure",
 ]
 
 
@@ -379,6 +385,17 @@ class FeedbackRequest(BaseModel):
 # --------------------------------------------------------------------------- #
 # Debug endpoint (§3.2)
 # --------------------------------------------------------------------------- #
+
+
+class SttFaultRequest(BaseModel):
+    """``POST /debug/stt/fail``: make the next N transcription windows fail.
+
+    Fault injection for the STT supervisor's breaker (app/stt_supervisor.py)
+    so the whole CPU-fallback / fatal path can be rehearsed on a real machine
+    without breaking a GPU.
+    """
+
+    windows: int = Field(default=3, ge=1, le=100)
 
 
 class DebugTextRequest(BaseModel):

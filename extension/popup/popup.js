@@ -47,6 +47,10 @@ const ERROR_COPY = {
   [ERR.ERR_NOT_CONFIGURED]: "Backend has no API key — add one in settings.",
   [ERR.ERR_CREDENTIALS_UPDATED]:
     "Session restarted after key update — press Start again.",
+  // Generic backend fatal codes arrive as "backend:<code>" (offscreen.js /
+  // page_session.js); the speech engine's unrecoverable failure gets copy.
+  "backend:stt_failure":
+    "Transcription engine failed — restart the backend, then click Start.",
 };
 
 const STATUS_LABEL = {

@@ -26,6 +26,7 @@ from app.rate_limit import QuotaCooldown, TokenBucket
 from app.sessions import SessionRegistry
 from app.setup import router as setup_router
 from app.stats import router as stats_router
+from app.stt_supervisor import SttSupervisor
 from app.transcriber import create_transcriber
 from app.ws import router as ws_router
 
@@ -98,6 +99,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.transcriber = transcriber
     stt_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="stt")
     app.state.stt_executor = stt_executor
+    # Circuit breaker + CPU fallback around the shared engine, and the
+    # startup warm-up (accelerator kernel compilation belongs here, not in
+    # the first live window). A GPU that faults during warm-up starts the
+    # server degraded on the CPU; only a failed CPU load aborts startup.
+    stt_supervisor = SttSupervisor(
+        transcriber,
+        stt_executor,
+        failure_threshold=settings.stt_failure_threshold,
+        cpu_fallback=settings.stt_cpu_fallback,
+    )
+    if settings.stt_warm_up:
+        await stt_supervisor.warm_up(settings.stt_hop_s)
+    app.state.stt_supervisor = stt_supervisor
 
     configured = app.state.llm_runtime.configured
     rows: list[tuple[str, str]] = [
@@ -152,9 +166,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # unload below frees the model out from under it (on a GPU that means
         # releasing device memory mid-kernel). The wait is bounded by a single
         # ~4 s window, and runs off the event loop so shutdown stays async.
-        await asyncio.to_thread(
-            stt_executor.shutdown, wait=True, cancel_futures=True
-        )
+        await asyncio.to_thread(stt_executor.shutdown, wait=True, cancel_futures=True)
         # Release the speech model AFTER its executor is down, so no job is
         # mid-inference. Matters most on GPUs, where the weights would
         # otherwise hold VRAM for the whole process lifetime.
@@ -215,11 +227,15 @@ def create_app() -> FastAPI:
         settings: Settings = request.app.state.settings
         runtime: LLMRuntime = request.app.state.llm_runtime
         counter: DayCounter = request.app.state.verify_counter
+        stt: SttSupervisor = request.app.state.stt_supervisor
         configured = runtime.configured
         return {
-            "status": "ok",
+            # ok | degraded (speech engine fell back to the CPU) | unhealthy
+            # (speech engine unrecoverable; restart). Details under "stt".
+            "status": stt.status_word,
             "server_version": SERVER_VERSION,
             "whisper_model": settings.whisper_model,
+            "stt": stt.snapshot(),
             "configured": configured,
             "llm_provider": runtime.settings.llm_provider if configured else None,
             "gate_provider": (

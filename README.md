@@ -201,11 +201,43 @@ Notes worth knowing:
   silently inactive.
 - Because uv hardlinks from a shared cache (`~/.cache/uv`), a PyTorch you
   already installed for another uv project costs no extra disk here.
-- **First inference on an accelerator is slow** — SYCL/CUDA kernels JIT-compile
-  on first use. Measured on an Intel Arc 140V (Lunar Lake), 11 s of speech,
-  steady state after warm-up: `whisper-small.en` runs **16.6× realtime on XPU vs
-  2.0× on CPU**, and `tiny.en` 51× vs 16×. The first window after startup takes
-  several seconds regardless; that is warm-up, not a hang.
+- **Warm-up runs at startup, not in your first session.** SYCL/CUDA kernels
+  JIT-compile on first use (~5 s on an Intel Arc 140V with a warm kernel cache,
+  longer cold) — inside a live session that alone stalled the STT loop past
+  the ring buffer's high watermark and dropped audio. The backend now pushes
+  one synthetic window through the whole inference path twice before it
+  listens, and logs both timings: `torch STT warm-up on xpu: pass 1 5.4s,
+  pass 2 0.9s`. Pass 2 is your steady state; if it exceeds the 3.5 s hop
+  budget you get a WARNING naming the fix (smaller model or faster device).
+  Measured on the same Arc 140V: `whisper-small.en` takes ~0.9 s per 4 s
+  window (3.7× realtime) after warm-up, ~2 s on the CPU. Set
+  `STT_WARM_UP=false` to skip it.
+- **A broken GPU no longer takes the session down with it.** Accelerator
+  kernels report indexing faults *asynchronously* (Intel XPU:
+  `IndexKernelUtils.h ... vectorized gather kernel index out of bounds`), and
+  once one fires the device context is poisoned — every later window fails.
+  `app/stt_supervisor.py` counts consecutive failed windows; at
+  `STT_FAILURE_THRESHOLD` (3) it reloads the same model on the **CPU in
+  fp32**, once, and sessions continue. The client gets one non-fatal
+  `stt_degraded` notice ("switched to CPU — captions may lag"), `/healthz`
+  reports `status: "degraded"` with the details under `stt`, and the log
+  says `STT recovered on the CPU: ... [degraded from xpu]`. If the CPU reload
+  fails too (or `STT_CPU_FALLBACK=false`), the session ends with a fatal
+  `stt_failure` frame, new connections are refused with the same code, and
+  `/healthz` says `unhealthy` until you restart. Rehearse the whole path
+  without breaking anything: `curl -X POST 127.0.0.1:8710/debug/stt/fail
+  -H 'content-type: application/json' -d '{"windows":3}'` while a capture
+  is running.
+- The torch path also synchronizes the device right after `generate`, so a
+  fault is attributed to the window that caused it; bounds-checks token ids
+  before they index anything; and pins greedy decoding and the modern
+  (non-`forced_decoder_ids`) generation config that transformers 5.x
+  maintains.
+- **`torch`/`transformers` are pinned** (`torch>=2.13,<2.14`,
+  `transformers>=5.15,<6` in pyproject's `gpu` extra). The GPU install runs
+  outside `uv.lock`, so these upper bounds are the only thing stopping the
+  next major from arriving silently; `install_stt_gpu.sh` reads them from
+  pyproject and prints the versions it installed.
 
 ## Analytics & dashboard
 

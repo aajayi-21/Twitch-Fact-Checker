@@ -11,6 +11,7 @@ exists.
 """
 
 import logging
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -21,12 +22,14 @@ from app.llm_provider import LLMRuntime
 from app.models import (
     DebugTextRequest,
     DebugTextResponse,
+    SttFaultRequest,
     Verdict,
     VerdictFrame,
     resolve_enabled_topics,
 )
 from app.rate_limit import QuotaCooldown, TokenBucket
 from app.sessions import SessionRegistry
+from app.stt_supervisor import SttSupervisor
 
 logger = logging.getLogger(__name__)
 
@@ -148,3 +151,26 @@ async def inject_text(body: DebugTextRequest, request: Request) -> DebugTextResp
 
     _push_verdicts_to_live_sessions(request.app.state.sessions, verdicts)
     return DebugTextResponse(claims=claims, verdicts=verdicts)
+
+
+@router.post("/debug/stt/fail")
+async def inject_stt_fault(body: SttFaultRequest, request: Request) -> dict[str, Any]:
+    """Make the next ``windows`` transcription windows fail (breaker rehearsal).
+
+    Drives :class:`app.stt_supervisor.SttSupervisor` through its real
+    recovery path: at the failure threshold it reloads the engine on the CPU
+    (``stt_degraded`` frame, ``/healthz`` status ``degraded``); injecting
+    again afterwards exercises the fatal ``stt_failure`` path. 404 when
+    ``DEBUG_ENDPOINTS=false``.
+    """
+    settings: Settings = request.app.state.settings
+    if not settings.debug_endpoints:
+        raise HTTPException(status_code=404, detail="Not Found")
+    supervisor: SttSupervisor = request.app.state.stt_supervisor
+    supervisor.inject_failures = body.windows
+    logger.warning(
+        "debug: the next %d transcription window(s) will fail (threshold %d)",
+        body.windows,
+        supervisor.failure_threshold,
+    )
+    return {"injected": body.windows, "stt": supervisor.snapshot()}

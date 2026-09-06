@@ -25,8 +25,9 @@ from app.contradiction import ContradictionDetector
 from app.embeddings import OllamaEmbedder
 from app.llm_provider import LLMRuntime, create_claim_gate, create_fact_checker
 from app.models import ClientHello, ErrorCode, ErrorFrame, ReadyFrame
-from app.pipeline import SessionPipeline
+from app.pipeline import STT_FAILURE_MESSAGE, SessionPipeline
 from app.sessions import SessionLimitExceeded, SessionRegistry
+from app.stt_supervisor import SttSupervisor
 
 NOT_CONFIGURED_MESSAGE = (
     "Backend has no API key yet — add one in the extension options."
@@ -103,6 +104,7 @@ def _build_pipeline(websocket: WebSocket, hello: ClientHello) -> SessionPipeline
         settings=settings,
         transcriber=state.transcriber,
         stt_executor=state.stt_executor,
+        stt_supervisor=getattr(state, "stt_supervisor", None),
         claim_gate=claim_gate,
         fact_checker=create_fact_checker(
             settings, runtime.verify_client, state.quota_cooldown
@@ -150,6 +152,18 @@ async def audio_ws(websocket: WebSocket) -> None:
             code="not_configured",
             message=NOT_CONFIGURED_MESSAGE,
             close_code=1011,
+        )
+        return
+
+    # An unrecoverable speech engine (app/stt_supervisor.py) is process-wide:
+    # refuse new sessions with the same fatal code the dying session got, so
+    # the extension stops reconnecting into a dead engine.
+    supervisor: SttSupervisor | None = getattr(
+        websocket.app.state, "stt_supervisor", None
+    )
+    if supervisor is not None and supervisor.state == "failed":
+        await _reject(
+            websocket, code="stt_failure", message=STT_FAILURE_MESSAGE, close_code=1011
         )
         return
 

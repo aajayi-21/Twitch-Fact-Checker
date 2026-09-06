@@ -213,7 +213,10 @@ class TestUnconfiguredSurface:
     ) -> None:
         response = unconfigured_client.get("/healthz")
         assert response.status_code == 200
-        assert response.json() == {
+        body = response.json()
+        # The speech-engine block is covered exactly in test_ws_protocol.
+        assert body.pop("stt")["state"] == "ok"
+        assert body == {
             "status": "ok",
             "server_version": "0.1.0",
             "whisper_model": "fake-whisper.en",

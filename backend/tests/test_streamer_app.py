@@ -23,6 +23,7 @@ from app.sessions import SessionRegistry
 from streamer.config import StreamerSettings
 from streamer.db import StreamerDatabase
 from streamer.main import create_app as create_streamer_app
+from app.stt_supervisor import SttSupervisor
 from tests.conftest import (
     FakeGenAIClient,
     FakeTranscriber,
@@ -74,6 +75,12 @@ def install_fake_streamer_state(
         app.state.transcriber = FakeTranscriber()
         executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="stt-test")
         app.state.stt_executor = executor
+        app.state.stt_supervisor = SttSupervisor(
+            app.state.transcriber,
+            executor,
+            failure_threshold=settings.stt_failure_threshold,
+            cpu_fallback=settings.stt_cpu_fallback,
+        )
         app.state.chat_bot = None
         app.state.chat_bot_task = None
         app.state.ensure_chat_bot = lambda: None
@@ -113,6 +120,8 @@ class TestProductSplit:
         health = streamer_client.get("/healthz").json()
         assert health["product"] == "streamer"
         assert health["twitch_configured"] is False
+        assert health["status"] == "ok"
+        assert health["stt"]["state"] == "ok"
         assert streamer_client.get("/stats/summary").status_code == 200
         assert streamer_client.get("/setup/status").status_code == 200
 

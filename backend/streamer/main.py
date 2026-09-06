@@ -42,6 +42,7 @@ from app.rate_limit import QuotaCooldown, TokenBucket
 from app.sessions import SessionRegistry
 from app.setup import router as setup_router
 from app.stats import router as stats_router
+from app.stt_supervisor import SttSupervisor
 from app.transcriber import create_transcriber
 from app.ws import router as ws_router
 
@@ -89,6 +90,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.transcriber = transcriber
     stt_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="stt")
     app.state.stt_executor = stt_executor
+    # Same breaker + warm-up as the viewer app (app/main.py).
+    stt_supervisor = SttSupervisor(
+        transcriber,
+        stt_executor,
+        failure_threshold=settings.stt_failure_threshold,
+        cpu_fallback=settings.stt_cpu_fallback,
+    )
+    if settings.stt_warm_up:
+        await stt_supervisor.warm_up(settings.stt_hop_s)
+    app.state.stt_supervisor = stt_supervisor
 
     # ---- the chat bot ---------------------------------------------------- #
     app.state.chat_bot = None
@@ -258,10 +269,12 @@ def create_app() -> FastAPI:
         runtime = request.app.state.llm_runtime
         counter: DayCounter = request.app.state.verify_counter
         bot: ChannelBot | None = request.app.state.chat_bot
+        stt: SttSupervisor = request.app.state.stt_supervisor
         return {
-            "status": "ok",
+            "status": stt.status_word,
             "product": "streamer",
             "server_version": STREAMER_VERSION,
+            "stt": stt.snapshot(),
             "configured": runtime.configured,
             "twitch_configured": settings.chat_bot_configured,
             "chat_connected": bot is not None and bot.transport.connected,

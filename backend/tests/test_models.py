@@ -259,6 +259,17 @@ class TestServerFrames:
         with pytest.raises(ValidationError):
             ErrorFrame(code="mystery", message="boom")
 
+    @pytest.mark.parametrize(
+        ("code", "fatal"), [("stt_degraded", False), ("stt_failure", True)]
+    )
+    def test_stt_supervisor_codes_are_in_the_vocabulary(
+        self, code: str, fatal: bool
+    ) -> None:
+        """The breaker's two frames (app/stt_supervisor.py) must be sendable."""
+        frame = ErrorFrame(code=code, message="engine", fatal=fatal)  # type: ignore[arg-type]
+        assert frame.model_dump()["code"] == code
+        assert frame.fatal is fatal
+
 
 class TestTranscriptSegment:
     def test_fields(self) -> None:

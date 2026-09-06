@@ -75,9 +75,21 @@ uv sync --inexact
 # already satisfied by whatever variant is installed, so without it, re-running
 # this script with a DIFFERENT backend is a no-op that reports success while
 # leaving the old wheel (e.g. +cpu) in place.
-echo "Installing torch/transformers with --torch-backend=${BACKEND} …"
+# The version specifiers come from pyproject's `gpu` extra so this script and
+# the lock universe can never disagree about which torch/transformers line is
+# validated (the extra carries upper bounds for exactly this reason).
+mapfile -t GPU_REQUIREMENTS < <(uv run --no-sync python - <<'PY'
+import tomllib
+
+with open("pyproject.toml", "rb") as handle:
+    project = tomllib.load(handle)["project"]
+for requirement in project["optional-dependencies"]["gpu"]:
+    print(requirement)
+PY
+)
+echo "Installing with --torch-backend=${BACKEND}: ${GPU_REQUIREMENTS[*]}"
 uv pip install --torch-backend="${BACKEND}" --reinstall-package torch \
-    torch transformers accelerate
+    "${GPU_REQUIREMENTS[@]}"
 
 echo
 echo "Installed:"
@@ -85,6 +97,7 @@ uv run --no-sync python - "$BACKEND" <<'PY'
 import sys
 
 import torch
+import transformers
 
 requested = sys.argv[1]
 cuda_ok = torch.cuda.is_available()
@@ -92,6 +105,7 @@ hip = getattr(torch.version, "hip", None)
 xpu_ok = getattr(getattr(torch, "xpu", None), "is_available", lambda: False)()
 
 print(f"  torch        {torch.__version__}")
+print(f"  transformers {transformers.__version__}")
 print(f"  cuda avail   {cuda_ok}")
 if hip:
     print(f"  rocm/hip     {hip}")

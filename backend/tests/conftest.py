@@ -63,6 +63,7 @@ from app.main import create_app
 from app.models import GateClaim, GateResult, TranscriptSegment
 from app.rate_limit import QuotaCooldown, TokenBucket
 from app.sessions import SessionRegistry
+from app.stt_supervisor import SttSupervisor
 from app.transcriber import SessionTextState
 
 SAMPLE_RATE = 16000
@@ -464,8 +465,10 @@ class FakeTranscriber:
     """Scripted transcriber: pops one segment list per window, ``[]`` after.
 
     Matches the ``BaseTranscriber`` surface the app uses (``load``,
-    ``unload``, ``describe``, ``transcribe_window``); ``transcribe_window``
-    is sync because the pipeline runs it on the STT executor.
+    ``unload``, ``describe``, ``transcribe_window``, the supervisor hooks
+    ``warm_up``/``fall_back_to_cpu`` and the ``/healthz`` snapshot
+    properties); ``transcribe_window`` is sync because the pipeline runs it
+    on the STT executor.
     """
 
     BACKEND_NAME = "fake"
@@ -474,6 +477,14 @@ class FakeTranscriber:
         self.segments_script: deque[list[TranscriptSegment]] = deque()
         self.calls: list[dict[str, Any]] = []
         self.unloaded = False
+        self.warm_up_calls: list[float | None] = []
+        self.fall_back_calls = 0
+        # Fault knobs for the STT supervisor tests: the next N windows raise
+        # (a poisoned accelerator), and the CPU reload can be made to fail.
+        self.fail_next = 0
+        self.fallback_error: Exception | None = None
+        self._device = "cpu"
+        self._degraded_from: str | None = None
 
     def load(self) -> None:
         """No model to load; present for interface parity."""
@@ -482,12 +493,40 @@ class FakeTranscriber:
         """Interface parity with the real backends' teardown hook."""
         self.unloaded = True
 
+    def warm_up(self, budget_s: float | None = None) -> None:
+        """Records the call; the supervisor runs this at startup."""
+        self.warm_up_calls.append(budget_s)
+
+    def fall_back_to_cpu(self) -> None:
+        """Records the call and mirrors the real hook's bookkeeping."""
+        self.fall_back_calls += 1
+        if self.fallback_error is not None:
+            raise self.fallback_error
+        previous = self._device
+        self._device = "cpu"
+        self._degraded_from = previous if previous != "cpu" else None
+
     def describe(self) -> str:
-        return "fake:fake-whisper.en (device=cpu)"
+        suffix = (
+            f" [degraded from {self._degraded_from}]" if self._degraded_from else ""
+        )
+        return f"fake:fake-whisper.en (device={self._device}){suffix}"
 
     @property
     def backend_name(self) -> str:
         return self.BACKEND_NAME
+
+    @property
+    def model_name(self) -> str:
+        return "fake-whisper.en"
+
+    @property
+    def device(self) -> str:
+        return self._device
+
+    @property
+    def degraded_from(self) -> str | None:
+        return self._degraded_from
 
     def transcribe_window(
         self,
@@ -504,6 +543,9 @@ class FakeTranscriber:
                 "text_state": text_state,
             }
         )
+        if self.fail_next > 0:
+            self.fail_next -= 1
+            raise RuntimeError("vectorized gather kernel index out of bounds")
         if self.segments_script:
             return self.segments_script.popleft()
         return []
@@ -619,6 +661,13 @@ def _install_fake_state(
         app.state.transcriber = transcriber
         executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="stt-test")
         app.state.stt_executor = executor
+        # Breaker around the fake engine (same contract as the real lifespan).
+        app.state.stt_supervisor = SttSupervisor(
+            transcriber,
+            executor,
+            failure_threshold=settings.stt_failure_threshold,
+            cpu_fallback=settings.stt_cpu_fallback,
+        )
         # Real Database on the per-test temp path (same contract as the real
         # lifespan); torn down together with its WAL sidecars.
         db = Database(settings.db_path)
