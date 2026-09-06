@@ -245,19 +245,32 @@ class Source(BaseModel):
     title: str | None = None
 
 
+#: How directly the retrieved results addressed THE claim (OpenRouter verify).
+#: A web search always returns *something*, so the source count alone cannot
+#: tell "confirmed" from "topically adjacent"; the model rates it explicitly
+#: and the invariants downgrade anything but ``strong`` to UNVERIFIED.
+Evidence = Literal["strong", "partial", "none"]
+
+
 class VerdictPayload(BaseModel):
-    """The flat two-field schema the verify model must return.
+    """The flat schema the verify model must return.
 
     Deliberately minimal: complex schemas combined with search grounding are
-    the known 400 sharp edge.
+    the known 400 sharp edge. ``evidence`` is required in the OpenRouter
+    schema and absent on Gemini and the text fallbacks, hence optional here.
     """
 
     label: Label
     explanation: str
+    evidence: Evidence | None = None
 
 
 class Verdict(BaseModel):
-    """A fully-assembled fact-check result."""
+    """A fully-assembled fact-check result.
+
+    ``evidence`` is persisted for analytics but deliberately NOT part of the
+    wire :class:`VerdictFrame` (the frame drops unknown fields).
+    """
 
     id: str = Field(default_factory=new_verdict_id)
     claim: str
@@ -267,6 +280,7 @@ class Verdict(BaseModel):
     sources: list[Source]
     checked_at: str = Field(default_factory=utc_now_iso)
     used_fallback: bool = False
+    evidence: Evidence | None = None
 
 
 # --------------------------------------------------------------------------- #

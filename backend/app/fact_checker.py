@@ -45,6 +45,11 @@ logger = logging.getLogger(__name__)
 DUPLICATE_SIMILARITY_THRESHOLD = 85
 MAX_SOURCES = 5
 MAX_EXPLANATION_CHARS = 450
+#: The verify model's rating of how directly the results addressed the claim
+#: (see :data:`app.models.Evidence`); only "strong" may carry a real verdict.
+EVIDENCE_LEVELS: tuple[str, ...] = ("strong", "partial", "none")
+NO_SOURCES_NOTE = "No verifiable sources were retrieved."
+WEAK_EVIDENCE_NOTE = "Retrieved sources did not directly address this claim."
 
 # Flat two-field schema for the grounded structured call (plan §4): complex
 # schemas combined with search grounding are the known 400 risk, so this stays
@@ -63,6 +68,9 @@ FLAT_VERDICT_SCHEMA: dict[str, Any] = {
 
 _LABEL_LINE_RE = re.compile(
     r"LABEL\s*:\s*\**\s*(TRUE|FALSE|MISLEADING|UNVERIFIED)", re.IGNORECASE
+)
+_EVIDENCE_LINE_RE = re.compile(
+    r"EVIDENCE\s*:\s*\**\s*(strong|partial|none)", re.IGNORECASE
 )
 _EXPLANATION_LINE_RE = re.compile(r"EXPLANATION\s*:\s*(.+)", re.IGNORECASE | re.DOTALL)
 _JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
@@ -181,6 +189,7 @@ class FactChecker(ABC):
             explanation=payload.explanation,
             sources=sources,
             used_fallback=used_fallback,
+            evidence=payload.evidence,
         )
 
     async def _check_text_only_with_retry(
@@ -263,24 +272,47 @@ class FactChecker(ABC):
 
     @staticmethod
     def _parse_label_explanation(raw: str) -> VerdictPayload | None:
-        """Lenient parse of the ``LABEL:`` / ``EXPLANATION:`` fallback format."""
+        """Lenient parse of the ``LABEL:`` / [``EVIDENCE:``] / ``EXPLANATION:``
+        fallback format. The evidence line is optional (Gemini's fallback has
+        none); when a model puts it AFTER the explanation it is trimmed off
+        the explanation text.
+        """
         label_match = _LABEL_LINE_RE.search(raw)
         explanation_match = _EXPLANATION_LINE_RE.search(raw)
         if label_match is None or explanation_match is None:
             return None
-        explanation = " ".join(explanation_match.group(1).split()).strip()
+        evidence_match = _EVIDENCE_LINE_RE.search(raw)
+        explanation_text = explanation_match.group(1)
+        if (
+            evidence_match is not None
+            and evidence_match.start() > explanation_match.start()
+        ):
+            explanation_text = raw[explanation_match.start(1) : evidence_match.start()]
+        explanation = " ".join(explanation_text.split()).strip()
         if not explanation:
             return None
         return VerdictPayload(
             label=label_match.group(1).upper(),  # type: ignore[arg-type]
             explanation=explanation,
+            evidence=(
+                evidence_match.group(1).lower()  # type: ignore[arg-type]
+                if evidence_match is not None
+                else None
+            ),
         )
 
     @staticmethod
     def _enforce_invariants(
         payload: VerdictPayload, sources: list[Source]
     ) -> VerdictPayload:
-        """HARD RULE: a non-UNVERIFIED verdict without citations is downgraded."""
+        """HARD RULES, applied to every verdict before it leaves the checker.
+
+        1. A non-UNVERIFIED verdict without citations is downgraded.
+        2. A non-UNVERIFIED verdict whose own ``evidence`` rating is not
+           ``strong`` is downgraded: a web search always returns results, so
+           five topically-adjacent pages must not read as confirmation.
+        3. The explanation is clamped to :data:`MAX_EXPLANATION_CHARS`.
+        """
         label = payload.label
         explanation = payload.explanation.strip()
         if label != "UNVERIFIED" and not sources:
@@ -289,9 +321,19 @@ class FactChecker(ABC):
                 label,
             )
             label = "UNVERIFIED"
-            note = "No verifiable sources were retrieved."
-            if note not in explanation:
-                explanation = f"{explanation} {note}".strip()
+            if NO_SOURCES_NOTE not in explanation:
+                explanation = f"{explanation} {NO_SOURCES_NOTE}".strip()
+        if label != "UNVERIFIED" and payload.evidence in ("partial", "none"):
+            logger.warning(
+                "downgrading %s verdict to UNVERIFIED: evidence rated %s",
+                label,
+                payload.evidence,
+            )
+            label = "UNVERIFIED"
+            if WEAK_EVIDENCE_NOTE not in explanation:
+                explanation = f"{explanation} {WEAK_EVIDENCE_NOTE}".strip()
         if len(explanation) > MAX_EXPLANATION_CHARS:
             explanation = explanation[: MAX_EXPLANATION_CHARS - 1].rstrip() + "…"
-        return VerdictPayload(label=label, explanation=explanation)
+        return VerdictPayload(
+            label=label, explanation=explanation, evidence=payload.evidence
+        )

@@ -31,6 +31,7 @@ from app.llm_openrouter import (
     _ReasoningSupport,
 )
 from app.models import TOPICS, Source, TranscriptSegment
+from app.openrouter_catalogue import ModelCapabilities, set_model_capabilities
 from app.rate_limit import QuotaCooldown
 from tests.conftest import (
     FakeOpenRouterClient,
@@ -586,6 +587,11 @@ class TestVerifyGroundedStructured:
             "type": "json_schema",
             "json_schema": VERDICT_JSON_SCHEMA,
         }
+        assert VERDICT_JSON_SCHEMA["schema"]["required"] == [
+            "label",
+            "explanation",
+            "evidence",
+        ]
         assert call["extra_body"]["provider"] == {"require_parameters": True}
         # The web plugin must carry the custom search prompt: the default one
         # demands inline markdown citations, which fights strict JSON output.
@@ -597,8 +603,13 @@ class TestVerifyGroundedStructured:
                 "search_prompt": WEB_SEARCH_PROMPT,
             }
         ]
-        assert CLAIM in call["messages"][0]["content"]
-        assert "Today is" in call["messages"][0]["content"]
+        # Instructions in the system message; the USER message is the bare
+        # claim, because the web plugin searches on the user message.
+        system, user = call["messages"]
+        assert system["role"] == "system" and user["role"] == "user"
+        assert user["content"] == CLAIM
+        assert "Today is" in system["content"]
+        assert "Google Search" not in system["content"]
 
     async def test_zero_citations_downgrades_to_unverified(
         self,
@@ -896,3 +907,306 @@ class TestCitationExtraction:
         # …but the wire Source model exposes url and title ONLY.
         (source,) = OpenRouterFactChecker._extract_citations(message)
         assert source.model_dump() == {"url": "https://example.com/a", "title": "A"}
+
+
+# --------------------------------------------------------------------------- #
+# Capability-aware requests (app/openrouter_catalogue.py)
+# --------------------------------------------------------------------------- #
+
+
+def caps(*names: str) -> ModelCapabilities:
+    return ModelCapabilities(supported_parameters=frozenset(names))
+
+
+FULL = caps("temperature", "reasoning", "response_format", "structured_outputs")
+# openai/gpt-5.6-luna as published: strict JSON yes, temperature NO.
+NO_TEMPERATURE = caps("reasoning", "response_format", "structured_outputs")
+# google/gemma-4 free endpoint: response_format but no structured outputs.
+JSON_OBJECT_ONLY = caps("temperature", "reasoning", "response_format")
+
+
+class TestCapabilityAwareRequests:
+    async def test_gate_omits_temperature_and_reasoning_the_model_lacks(
+        self, fake_openrouter_client: FakeOpenRouterClient
+    ) -> None:
+        gate = OpenRouterClaimGate(
+            client=fake_openrouter_client,  # type: ignore[arg-type]
+            model="openai/gpt-5.6-luna",
+            capabilities=caps("response_format", "structured_outputs"),
+        )
+        fake_openrouter_client.completion_results.append(
+            make_chat_completion(GATE_CLAIMS_JSON)
+        )
+        gate.add_transcript(make_segment(CLAIM))
+        assert await gate.run()
+        call = fake_openrouter_client.completion_calls[0]
+        assert "temperature" not in call
+        assert "reasoning" not in call["extra_body"]
+        # Still strict: the model DOES publish structured outputs.
+        assert call["response_format"]["type"] == "json_schema"
+        assert call["extra_body"]["provider"] == {"require_parameters": True}
+
+    async def test_gate_without_structured_outputs_starts_in_json_object_mode(
+        self, fake_openrouter_client: FakeOpenRouterClient
+    ) -> None:
+        """No failing strict call, no latch mutation — the catalogue decided."""
+        gate = OpenRouterClaimGate(
+            client=fake_openrouter_client,  # type: ignore[arg-type]
+            model="google/gemma-4-26b-a4b-it:free",
+            capabilities=JSON_OBJECT_ONLY,
+        )
+        fake_openrouter_client.completion_results.append(
+            make_chat_completion(GATE_CLAIMS_JSON)
+        )
+        gate.add_transcript(make_segment(CLAIM))
+        assert await gate.run()
+        assert len(fake_openrouter_client.completion_calls) == 1
+        call = fake_openrouter_client.completion_calls[0]
+        assert call["response_format"] == {"type": "json_object"}
+        assert "provider" not in call["extra_body"]
+        assert call["temperature"] == 0.0
+        assert OpenRouterClaimGate._json_schema_unsupported is False
+
+    async def test_gate_reads_the_process_cache_when_primed_after_construction(
+        self, gate: OpenRouterClaimGate, fake_openrouter_client: FakeOpenRouterClient
+    ) -> None:
+        set_model_capabilities("fake-or-gate-model", NO_TEMPERATURE)
+        fake_openrouter_client.completion_results.append(
+            make_chat_completion(GATE_CLAIMS_JSON)
+        )
+        gate.add_transcript(make_segment(CLAIM))
+        await gate.run()
+        assert "temperature" not in fake_openrouter_client.completion_calls[0]
+
+    async def test_verify_omits_temperature_the_model_lacks(
+        self, fake_openrouter_client: FakeOpenRouterClient, cooldown: QuotaCooldown
+    ) -> None:
+        checker = OpenRouterFactChecker(
+            client=fake_openrouter_client,  # type: ignore[arg-type]
+            verify_model="openai/gpt-5.6-luna",
+            cooldown=cooldown,
+            capabilities=NO_TEMPERATURE,
+        )
+        fake_openrouter_client.completion_results.append(
+            make_verdict_completion("TRUE", "Confirmed.")
+        )
+        verdict = await checker.check(CLAIM)
+        assert verdict.used_fallback is False
+        call = fake_openrouter_client.completion_calls[0]
+        assert "temperature" not in call
+        assert call["response_format"]["type"] == "json_schema"
+        assert len(fake_openrouter_client.completion_calls) == 1
+
+    async def test_verify_json_object_mode_for_response_format_only_models(
+        self, fake_openrouter_client: FakeOpenRouterClient, cooldown: QuotaCooldown
+    ) -> None:
+        """One grounded json_object call, counted as its own mode, not a fallback."""
+        checker = OpenRouterFactChecker(
+            client=fake_openrouter_client,  # type: ignore[arg-type]
+            verify_model="google/gemma-4-26b-a4b-it:free",
+            cooldown=cooldown,
+            capabilities=JSON_OBJECT_ONLY,
+        )
+        fake_openrouter_client.completion_results.append(
+            make_verdict_completion("FALSE", "Refuted.")
+        )
+        verdict = await checker.check(CLAIM)
+        assert verdict.label == "FALSE"
+        assert verdict.used_fallback is False
+        assert len(fake_openrouter_client.completion_calls) == 1
+        call = fake_openrouter_client.completion_calls[0]
+        assert call["response_format"] == {"type": "json_object"}
+        assert "provider" not in call["extra_body"]
+        plugin_ids = [plugin["id"] for plugin in call["extra_body"]["plugins"]]
+        assert plugin_ids == ["web", "response-healing"]
+        assert llm_openrouter_module.verify_mode_snapshot() == {
+            "google/gemma-4-26b-a4b-it:free": {"json_object": 1}
+        }
+
+    async def test_verify_without_any_response_format_goes_straight_to_fallback(
+        self, fake_openrouter_client: FakeOpenRouterClient, cooldown: QuotaCooldown
+    ) -> None:
+        checker = OpenRouterFactChecker(
+            client=fake_openrouter_client,  # type: ignore[arg-type]
+            verify_model="bare/model",
+            cooldown=cooldown,
+            capabilities=caps("temperature"),
+        )
+        fake_openrouter_client.completion_results.append(
+            make_chat_completion(
+                "LABEL: TRUE\nEVIDENCE: strong\nEXPLANATION: Confirmed by sources.",
+                citations=[("https://example.com/a", "A")],
+            )
+        )
+        verdict = await checker.check(CLAIM)
+        assert verdict.used_fallback is True
+        assert verdict.label == "TRUE"
+        assert verdict.evidence == "strong"
+        assert len(fake_openrouter_client.completion_calls) == 1
+        assert "response_format" not in fake_openrouter_client.completion_calls[0]
+        assert llm_openrouter_module.verify_mode_snapshot() == {
+            "bare/model": {"fallback": 1}
+        }
+
+    async def test_strict_mode_records_its_mode(
+        self,
+        checker: OpenRouterFactChecker,
+        fake_openrouter_client: FakeOpenRouterClient,
+    ) -> None:
+        fake_openrouter_client.completion_results.append(
+            make_verdict_completion("TRUE", "Confirmed.")
+        )
+        await checker.check(CLAIM)
+        assert llm_openrouter_module.verify_mode_snapshot() == {
+            "fake-or-verify-model": {"strict": 1}
+        }
+
+    async def test_first_strict_rejection_is_explained_once(
+        self,
+        fake_openrouter_client: FakeOpenRouterClient,
+        cooldown: QuotaCooldown,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # reasoning disabled: otherwise a rejected strict call is retried
+        # once without it (consuming the next scripted response).
+        checker = OpenRouterFactChecker(
+            client=fake_openrouter_client,  # type: ignore[arg-type]
+            verify_model="fake-or-verify-model",
+            cooldown=cooldown,
+            reasoning_effort=None,
+        )
+        for _ in range(2):
+            fake_openrouter_client.completion_results.append(
+                make_openrouter_status_error(404, "No endpoints found that support")
+            )
+            fake_openrouter_client.completion_results.append(
+                make_chat_completion(
+                    "LABEL: TRUE\nEVIDENCE: strong\nEXPLANATION: Fine.",
+                    citations=[("https://example.com/a", "A")],
+                )
+            )
+        with caplog.at_level("WARNING", logger="app.llm_openrouter"):
+            await checker.check(CLAIM)
+            await checker.check("Another claim entirely about bridges.")
+        hints = [r for r in caplog.records if "supported_parameters" in r.message]
+        assert len(hints) == 1
+        assert "openrouter.ai/api/v1/models/fake-or-verify-model/endpoints" in (
+            hints[0].message
+        )
+
+
+class TestVerifyMessagesSplit:
+    async def test_image_call_keeps_the_claim_as_the_text_part(
+        self,
+        checker: OpenRouterFactChecker,
+        fake_openrouter_client: FakeOpenRouterClient,
+    ) -> None:
+        fake_openrouter_client.completion_results.append(
+            make_verdict_completion("TRUE", "Confirmed.")
+        )
+        await checker.check(CLAIM, image_b64="QUJD")
+        system, user = fake_openrouter_client.completion_calls[0]["messages"]
+        assert system["role"] == "system"
+        assert "frame captured from the live stream" in system["content"]
+        assert user["content"][0] == {"type": "text", "text": CLAIM}
+        assert user["content"][1]["type"] == "image_url"
+
+    async def test_fallback_call_is_also_split(
+        self, fake_openrouter_client: FakeOpenRouterClient, cooldown: QuotaCooldown
+    ) -> None:
+        checker = OpenRouterFactChecker(
+            client=fake_openrouter_client,  # type: ignore[arg-type]
+            verify_model="fake-or-verify-model",
+            cooldown=cooldown,
+            reasoning_effort=None,  # no no-reasoning retry in this scenario
+        )
+        fake_openrouter_client.completion_results.append(
+            make_openrouter_status_error(400, "bad params")
+        )
+        fake_openrouter_client.completion_results.append(
+            make_chat_completion(
+                "LABEL: FALSE\nEVIDENCE: strong\nEXPLANATION: Refuted.",
+                citations=[("https://example.com/a", "A")],
+            )
+        )
+        verdict = await checker.check(CLAIM)
+        assert verdict.used_fallback is True
+        system, user = fake_openrouter_client.completion_calls[1]["messages"]
+        assert user["content"] == CLAIM
+        assert "EVIDENCE:" in system["content"]
+
+
+class TestEvidence:
+    async def test_partial_evidence_downgrades_a_labelled_verdict(
+        self,
+        checker: OpenRouterFactChecker,
+        fake_openrouter_client: FakeOpenRouterClient,
+    ) -> None:
+        fake_openrouter_client.completion_results.append(
+            make_verdict_completion("TRUE", "Broadly consistent.", evidence="partial")
+        )
+        verdict = await checker.check(CLAIM)
+        assert verdict.label == "UNVERIFIED"
+        assert verdict.evidence == "partial"
+        assert "did not directly address this claim" in verdict.explanation
+
+    async def test_strong_evidence_keeps_the_label(
+        self,
+        checker: OpenRouterFactChecker,
+        fake_openrouter_client: FakeOpenRouterClient,
+    ) -> None:
+        fake_openrouter_client.completion_results.append(
+            make_verdict_completion("FALSE", "Directly refuted.", evidence="strong")
+        )
+        verdict = await checker.check(CLAIM)
+        assert verdict.label == "FALSE"
+        assert verdict.evidence == "strong"
+
+    async def test_invalid_evidence_value_is_unparseable_and_falls_back(
+        self,
+        checker: OpenRouterFactChecker,
+        fake_openrouter_client: FakeOpenRouterClient,
+    ) -> None:
+        fake_openrouter_client.completion_results.append(
+            make_verdict_completion("TRUE", "Sure.", evidence="overwhelming")
+        )
+        fake_openrouter_client.completion_results.append(
+            make_chat_completion(
+                "LABEL: TRUE\nEVIDENCE: strong\nEXPLANATION: Sure.",
+                citations=[("https://example.com/a", "A")],
+            )
+        )
+        verdict = await checker.check(CLAIM)
+        assert verdict.used_fallback is True
+        assert verdict.label == "TRUE"
+
+
+class TestWebEngine:
+    def test_native_and_auto_engines(
+        self, fake_openrouter_client: FakeOpenRouterClient, cooldown: QuotaCooldown
+    ) -> None:
+        native = OpenRouterFactChecker(
+            client=fake_openrouter_client,  # type: ignore[arg-type]
+            verify_model="m",
+            cooldown=cooldown,
+            web_engine="native",
+        )
+        assert native._web_plugin()["engine"] == "native"
+        auto = OpenRouterFactChecker(
+            client=fake_openrouter_client,  # type: ignore[arg-type]
+            verify_model="m",
+            cooldown=cooldown,
+            web_engine="auto",
+        )
+        assert "engine" not in auto._web_plugin()
+
+    def test_unknown_engine_is_rejected(
+        self, fake_openrouter_client: FakeOpenRouterClient, cooldown: QuotaCooldown
+    ) -> None:
+        with pytest.raises(ValueError):
+            OpenRouterFactChecker(
+                client=fake_openrouter_client,  # type: ignore[arg-type]
+                verify_model="m",
+                cooldown=cooldown,
+                web_engine="bing",
+            )

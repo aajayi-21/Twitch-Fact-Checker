@@ -111,6 +111,8 @@ class TestHealthz:
             "verify_model": "fake-verify-model",
             "checks_today": 0,
             "est_cost_today_usd": 0.0,
+            # Gemini fixtures: no OpenRouter stage is active.
+            "openrouter": None,
         }
 
 

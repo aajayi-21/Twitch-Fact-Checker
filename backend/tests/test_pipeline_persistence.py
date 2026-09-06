@@ -135,7 +135,7 @@ class TestSessionPersistence:
         assert session_row[2] == "Reacting to news!"
         assert session_row[3] == 1  # one real gate call (final flush pass)
         assert session_row[4] == 1  # one verify attempt
-        assert session_row[5] == 0.005
+        assert session_row[5] == 0.007
         assert session_row[6] > 0  # speech seconds accumulated
 
         outcomes = dict(rows(db_path, "SELECT text, outcome FROM claims"))
@@ -158,7 +158,7 @@ class TestSessionPersistence:
         ]
         health = client.get("/healthz").json()
         assert health["checks_today"] == 1
-        assert health["est_cost_today_usd"] == 0.005
+        assert health["est_cost_today_usd"] == 0.007
 
     def test_verify_failure_records_outcome_and_session_survives(
         self,

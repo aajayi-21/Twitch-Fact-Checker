@@ -40,6 +40,14 @@ from pydantic import BaseModel
 from app.config import Settings, resolve_env_file
 from app.llm_openrouter import reset_openrouter_capability_latches
 from app.llm_provider import LLMRuntime, build_llm_runtime, close_llm_runtime
+from app.openrouter_catalogue import (  # noqa: F401 — re-exported for callers/tests
+    OPENROUTER_MODELS_URL,
+    PROBE_TIMEOUT_S,
+    OpenRouterCatalogue,
+    ProviderUnreachable,
+    fetch_openrouter_catalogue,
+    prime_openrouter_capabilities,
+)
 from app.rate_limit import QuotaCooldown
 from app.sessions import SessionRegistry
 
@@ -47,11 +55,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-PROBE_TIMEOUT_S = 10.0
 OPENROUTER_KEY_URL = "https://openrouter.ai/api/v1/key"
 OPENROUTER_CREDITS_URL = "https://openrouter.ai/api/v1/credits"
-# Public, keyless, free: the catalogue used to validate model slugs.
-OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 
 #: SetupStagesRequest field -> the .env key that persists it.
 _MODEL_ENV_KEYS = {
@@ -81,10 +86,6 @@ _KNOWN_PROVIDERS: frozenset[str] = frozenset({"openrouter", "gemini", "ollama"})
 
 class ProviderKeyRejected(Exception):
     """The provider answered and explicitly rejected the candidate key."""
-
-
-class ProviderUnreachable(Exception):
-    """The provider could not be reached (or answered unusably)."""
 
 
 class CreditsInfo(BaseModel):
@@ -289,44 +290,15 @@ async def fetch_openrouter_model_slugs(
 ) -> set[str]:
     """Every model slug OpenRouter currently publishes.
 
-    ``GET /api/v1/models`` is public, free, and needs no key. Fetching the
-    live list (rather than hardcoding one) means a model works the day it
-    launches and a retired one is caught immediately.
-
-    ``transport`` is a test seam for ``httpx.MockTransport`` (same pattern as
-    :class:`app.embeddings.OllamaEmbedder`), so the suite never patches httpx
-    globally.
+    Thin wrapper over :func:`app.openrouter_catalogue.fetch_openrouter_catalogue`
+    (which also carries per-model parameter support); kept for callers that
+    only need the slug set. ``transport`` is a test seam for
+    ``httpx.MockTransport``.
 
     Raises:
         ProviderUnreachable: on network failure, timeout, or a bad payload.
     """
-    try:
-        async with httpx.AsyncClient(
-            timeout=PROBE_TIMEOUT_S, transport=transport
-        ) as http_client:
-            response = await http_client.get(OPENROUTER_MODELS_URL)
-    except httpx.HTTPError as exc:
-        raise ProviderUnreachable(
-            f"could not reach OpenRouter's model list: {exc}"
-        ) from exc
-    if response.status_code != 200:
-        raise ProviderUnreachable(
-            f"OpenRouter model list returned HTTP {response.status_code}"
-        )
-    try:
-        payload = response.json()
-        # AttributeError guards a non-dict entry: without it a malformed
-        # payload escapes as an unhandled 500 instead of the documented 502.
-        slugs = {
-            str(entry["id"]) for entry in payload["data"] if entry.get("id")
-        }
-    except (ValueError, KeyError, TypeError, AttributeError) as exc:
-        raise ProviderUnreachable(
-            f"malformed OpenRouter model list: {exc}"
-        ) from exc
-    if not slugs:
-        raise ProviderUnreachable("OpenRouter model list came back empty")
-    return slugs
+    return (await fetch_openrouter_catalogue(transport)).slugs
 
 
 async def validate_openrouter_model(slug: str, known_slugs: set[str]) -> None:
@@ -662,6 +634,11 @@ async def submit_credentials(
             _PROVIDER_SETTINGS_FIELDS[provider]: api_key,
         }
     )
+    if provider == "openrouter":
+        # Best-effort: an unreachable catalogue only costs a warning.
+        await prime_openrouter_capabilities(
+            {new_settings.openrouter_gate_model, new_settings.openrouter_verify_model}
+        )
     await _swap_runtime(request, new_settings)
     return await _build_status(new_settings)
 
@@ -742,18 +719,17 @@ async def submit_stages(
         for field, slug in requested_models.items()
         if slug != stored_models[field]
     }
+    catalogue: OpenRouterCatalogue | None = None
     if changed_models:
         try:
-            known_slugs = await fetch_openrouter_model_slugs()
+            catalogue = await fetch_openrouter_catalogue()
         except ProviderUnreachable as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         for field, slug in changed_models.items():
             try:
-                await validate_openrouter_model(slug, known_slugs)
+                await validate_openrouter_model(slug, catalogue.slugs)
             except ModelSlugRejected as exc:
-                raise HTTPException(
-                    status_code=400, detail=f"{field}: {exc}"
-                ) from exc
+                raise HTTPException(status_code=400, detail=f"{field}: {exc}") from exc
 
     env_path = resolve_env_file()
     env_updates = {
@@ -786,5 +762,10 @@ async def submit_stages(
         # model would otherwise inherit the previous one's learned
         # capabilities (e.g. "no json_schema support") forever.
         reset_openrouter_capability_latches()
+        # Same fetch that validated the slugs also tells the transport which
+        # parameters each new model accepts — zero extra requests.
+        await prime_openrouter_capabilities(
+            requested_models.values(), catalogue=catalogue
+        )
     await _swap_runtime(request, new_settings)
     return await _build_status(new_settings)

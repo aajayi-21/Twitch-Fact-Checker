@@ -201,6 +201,13 @@ class TorchWhisperTranscriber(BaseTranscriber):
     WARM_UP_SECONDS = 4.0
     #: Accelerators whose kernels compile lazily and fault asynchronously.
     ACCELERATOR_DEVICES: frozenset[str] = frozenset({"cuda", "xpu"})
+    #: transformers loggers that emit per-call WARNING notices during
+    #: generate(); raised to ERROR outside DEBUG (see load()).
+    NOISY_TRANSFORMERS_LOGGERS: tuple[str, ...] = (
+        "transformers.generation",
+        "transformers.models.whisper.generation_whisper",
+        "transformers.tokenization_utils_base",
+    )
 
     def __init__(
         self,
@@ -279,6 +286,14 @@ class TorchWhisperTranscriber(BaseTranscriber):
                 logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
             except Exception as exc:  # pragma: no cover - transformers drift
                 logger.debug("could not quiet the Hugging Face loggers: %s", exc)
+            # generate() re-logs the same benign notices on EVERY window —
+            # max_new_tokens vs the checkpoint's max_length, Whisper's own
+            # suppress-token processors "taking precedence", the
+            # return_segments note, the BPE clean-up note. Once would be
+            # information; ~1000 times an hour is noise that buries the
+            # lines that matter. Errors still come through.
+            for name in self.NOISY_TRANSFORMERS_LOGGERS:
+                logging.getLogger(name).setLevel(logging.ERROR)
 
         self._torch = torch
         self._torch_device = resolve_device(self._device, torch)

@@ -8,12 +8,29 @@ the ``plugins``/``provider``/``reasoning`` extra-body params, the strict
 
 Transport notes (verified July 2026 against openrouter.ai docs):
 
+- Requests are built from the model's published capabilities
+  (:mod:`app.openrouter_catalogue`): ``temperature`` and ``reasoning`` are
+  only sent when the catalogue lists them, and strict ``json_schema`` mode is
+  only attempted when it lists ``structured_outputs`` (a model with plain
+  ``response_format`` support gets ONE grounded ``json_object`` call
+  instead). Production lesson behind this: OpenAI's GPT-5.x endpoints accept
+  no ``temperature``; sending it under ``require_parameters`` rejected every
+  strict call, so every verdict silently took the 2-3-call fallback chain.
+  When the catalogue is unreachable every parameter is assumed supported and
+  the latches below take over, exactly as before.
 - ``provider.require_parameters: true`` routes only to providers that support
   EVERY parameter in the request — including ``reasoning``, not just
   ``response_format`` — so unsupported combinations fail with 400/404/422/503
   instead of silently degrading. A strict-path failure is first retried once
   WITHOUT ``reasoning``: success means reasoning was the disqualifier, so it
   is dropped process-wide while strict ``json_schema`` mode is preserved.
+- Verify prompts are split into a ``system`` message (instructions) and a
+  ``user`` message holding the bare claim: the ``web`` plugin searches on the
+  user message BEFORE the model runs, so instruction text there pollutes the
+  query. The model rates ``evidence`` (strong/partial/none) alongside the
+  label, and :meth:`app.fact_checker.FactChecker._enforce_invariants`
+  downgrades anything but ``strong`` — a search always returns *something*,
+  so the citation count alone cannot tell confirmation from adjacency.
 - 400/404/422 are structural proof the strict path cannot work and latch the
   gate's ``json_object`` fallback permanently. 503 ("no available model
   provider meets your routing requirements") is AMBIGUOUS: OpenRouter also
@@ -26,7 +43,8 @@ Transport notes (verified July 2026 against openrouter.ai docs):
   to cite with inline markdown links, which fights strict JSON output, so a
   custom prompt (:data:`WEB_SEARCH_PROMPT`) tells the model to use the
   results as evidence and never cite inline.
-- Web search bills OpenRouter credits (~$0.005/request on Exa) EVEN on
+- Web search bills OpenRouter credits ($0.007/request on Exa; the model
+  provider's own price with ``OPENROUTER_WEB_ENGINE=native``) EVEN on
   ``:free`` model variants; a 402 therefore usually means "top up", not a
   code bug — hence the loud message and long cooldown.
 - ``openai.RateLimitError`` (429) carries a standard ``Retry-After`` header;
@@ -39,6 +57,7 @@ import asyncio
 import json
 import logging
 import time
+from collections import Counter
 from typing import Any
 
 import httpx
@@ -55,6 +74,7 @@ from app.claim_gate import (
 )
 from app.fact_checker import (
     DEFAULT_RETRY_AFTER_S,
+    EVIDENCE_LEVELS,
     FLAT_VERDICT_SCHEMA,
     MAX_SOURCES,
     FactChecker,
@@ -64,12 +84,13 @@ from app.fact_checker import (
     _today,
 )
 from app.models import ContradictionJudgement, GateClaim, Source, VerdictPayload
+from app.openrouter_catalogue import ModelCapabilities, lookup_model_capabilities
 from app.prompts import (
     build_contradiction_prompt,
     build_gate_prompt,
-    build_verdict_extraction_prompt,
-    build_verify_fallback_prompt,
-    build_verify_prompt,
+    build_verdict_extraction_messages,
+    build_verify_fallback_messages,
+    build_verify_messages,
 )
 from app.rate_limit import QuotaCooldown
 
@@ -127,21 +148,73 @@ JSON_SCHEMA_RETRY_WINDOW_S = 900.0
 # message.annotations instead, so the model must never cite inline.
 WEB_SEARCH_PROMPT = (
     "The following web search results are evidence for the fact-check. "
-    "Base your verdict strictly on them. Do NOT cite them inline: no "
-    "markdown links, no URLs, and no source names in your response — "
-    "citations are collected separately from metadata."
+    "Base your verdict strictly on them. Judge how directly each result "
+    "addresses the exact claim; results that are merely on the same topic "
+    "are not evidence. Do NOT cite them inline: no markdown links, no URLs, "
+    "and no source names in your response — citations are collected "
+    "separately from metadata."
 )
+
+#: Web-search engines the verify plugin accepts (``OPENROUTER_WEB_ENGINE``);
+#: ``auto`` omits the key so OpenRouter picks native-if-available, else Exa.
+WEB_ENGINES: frozenset[str] = frozenset({"exa", "native", "auto"})
 
 # The strict gate schema lives in app.claim_gate (GATE_JSON_SCHEMA, imported
 # above): it is provider-neutral and shared with the local (Ollama) gate.
 
-# The verify schema is the shared flat two-field schema plus the strict-mode
-# additionalProperties requirement.
+# The verify schema: the shared flat label+explanation schema plus the
+# OpenRouter-only ``evidence`` rating, all required, strict-mode
+# additionalProperties=False.
+OPENROUTER_VERDICT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        **FLAT_VERDICT_SCHEMA["properties"],
+        "evidence": {"type": "string", "enum": list(EVIDENCE_LEVELS)},
+    },
+    "required": ["label", "explanation", "evidence"],
+    "additionalProperties": False,
+}
 VERDICT_JSON_SCHEMA: dict[str, Any] = {
     "name": "verdict",
     "strict": True,
-    "schema": {**FLAT_VERDICT_SCHEMA, "additionalProperties": False},
+    "schema": OPENROUTER_VERDICT_SCHEMA,
 }
+
+#: How each verification was produced: ``strict`` (json_schema + web),
+#: ``json_object`` (plain response_format + web, for models without
+#: structured outputs) or ``fallback`` (the LABEL:/EXPLANATION: text chain).
+VERIFY_MODES: tuple[str, ...] = ("strict", "json_object", "fallback")
+
+
+class _VerifyModeStats:
+    """Process-wide per-model tally of verify modes (``/healthz``).
+
+    Exists because the production fallback storm (every verdict on one model
+    took the text chain for weeks) was invisible outside the database.
+    """
+
+    counts: dict[str, Counter[str]] = {}
+
+    @classmethod
+    def record(cls, model: str, mode: str) -> None:
+        cls.counts.setdefault(model, Counter())[mode] += 1
+
+    @classmethod
+    def snapshot(cls) -> dict[str, dict[str, int]]:
+        return {model: dict(counter) for model, counter in cls.counts.items()}
+
+    @classmethod
+    def reset(cls) -> None:
+        cls.counts.clear()
+
+
+def verify_mode_snapshot() -> dict[str, dict[str, int]]:
+    """``{model: {"strict": n, "json_object": n, "fallback": n}}`` so far."""
+    return _VerifyModeStats.snapshot()
+
+
+#: Models whose first strict-mode rejection has already been explained.
+_WARNED_FALLBACK_MODELS: set[str] = set()
 
 
 def create_openrouter_client(api_key: str) -> AsyncOpenAI:
@@ -197,10 +270,15 @@ class _ReasoningSupport:
     unsupported: bool = False
 
 
-def _reasoning_body(effort: str | None) -> dict[str, Any] | None:
+def _reasoning_body(
+    effort: str | None, capabilities: ModelCapabilities | None = None
+) -> dict[str, Any] | None:
     """The ``reasoning`` extra-body field, or ``None`` when it must be omitted
-    (effort disabled via config, or reasoning latched unsupported)."""
+    (effort disabled via config, reasoning latched unsupported, or the
+    catalogue says the model's endpoints do not accept it)."""
     if not effort or _ReasoningSupport.unsupported:
+        return None
+    if capabilities is not None and not capabilities.supports("reasoning"):
         return None
     return {"effort": effort}
 
@@ -267,18 +345,37 @@ class OpenRouterClaimGate(ClaimGate):
         gate_interval_s: float = 12.0,
         gate_timeout_s: float = 15.0,
         reasoning_effort: str | None = "low",
+        capabilities: ModelCapabilities | None = None,
     ) -> None:
         super().__init__(gate_interval_s=gate_interval_s, gate_timeout_s=gate_timeout_s)
         self._client = client
         self._model = model
         self._reasoning_effort = reasoning_effort
+        self._capabilities = capabilities
+
+    @property
+    def _caps(self) -> ModelCapabilities:
+        """Explicit capabilities, else the process cache (read per call so a
+        prime after construction still applies)."""
+        return self._capabilities or lookup_model_capabilities(self._model)
 
     @classmethod
-    def _strict_mode_available(cls) -> bool:
-        """True when the strict json_schema path should be attempted."""
+    def _latch_allows_strict(cls) -> bool:
+        """The runtime latches' verdict on the strict json_schema path."""
         if cls._json_schema_unsupported:
             return False
         return time.monotonic() >= cls._json_schema_retry_at
+
+    def _strict_mode_available(self) -> bool:
+        """True when the strict json_schema path should be attempted.
+
+        The catalogue is consulted first: a model whose endpoints publish no
+        ``structured_outputs`` goes straight to json_object mode without
+        spending a failing call or touching the latches.
+        """
+        if not self._caps.supports("structured_outputs"):
+            return False
+        return self._latch_allows_strict()
 
     @classmethod
     def _record_strict_failure(cls, exc: openai.APIStatusError) -> None:
@@ -384,7 +481,7 @@ class OpenRouterClaimGate(ClaimGate):
         except openai.APIStatusError as exc:
             if (
                 exc.status_code not in UNSUPPORTED_PARAMS_STATUS_CODES
-                or _reasoning_body(self._reasoning_effort) is None
+                or _reasoning_body(self._reasoning_effort, self._caps) is None
             ):
                 raise
             raw = await self._complete(
@@ -403,25 +500,32 @@ class OpenRouterClaimGate(ClaimGate):
         require_parameters: bool,
         include_reasoning: bool = True,
     ) -> str:
-        """One gate completion; returns the stripped message text."""
+        """One gate completion; returns the stripped message text.
+
+        ``temperature`` and ``reasoning`` are sent only when the model's
+        catalogue entry lists them (unknown = send, as before).
+        """
+        caps = self._caps
         extra_body: dict[str, Any] = {"plugins": [{"id": "response-healing"}]}
         reasoning = (
-            _reasoning_body(self._reasoning_effort) if include_reasoning else None
+            _reasoning_body(self._reasoning_effort, caps) if include_reasoning else None
         )
         if reasoning is not None:
             extra_body["reasoning"] = reasoning
         if require_parameters:
             extra_body["provider"] = {"require_parameters": True}
+        kwargs: dict[str, Any] = {
+            "model": self._model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": GATE_MAX_TOKENS,
+            "response_format": response_format,
+            "extra_body": extra_body,
+        }
+        if caps.supports("temperature"):
+            kwargs["temperature"] = 0.0
         response = await self._client.with_options(
             timeout=httpx.Timeout(self._gate_timeout_s, connect=CONNECT_TIMEOUT_S)
-        ).chat.completions.create(
-            model=self._model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.0,
-            max_tokens=GATE_MAX_TOKENS,
-            response_format=response_format,  # type: ignore[arg-type]
-            extra_body=extra_body,
-        )
+        ).chat.completions.create(**kwargs)
         if not response.choices:
             raise GateError("gate response contained no choices")
         return (response.choices[0].message.content or "").strip()
@@ -463,10 +567,13 @@ class OpenRouterClaimGate(ClaimGate):
 class OpenRouterFactChecker(FactChecker):
     """Grounded verification via the ``web`` plugin with a fallback chain.
 
-    Chain (mirrors the Gemini design): strict json_schema + web plugin ->
-    same web-plugin call without ``response_format`` demanding the two-line
-    ``LABEL:``/``EXPLANATION:`` format -> lenient parse -> one last-resort
-    ``json_object`` extraction pass over the raw text (no web plugin).
+    Chain: strict json_schema + web plugin (or, for a model whose catalogue
+    entry has ``response_format`` but no ``structured_outputs``, ONE
+    grounded ``json_object`` call) -> same web-plugin call without
+    ``response_format`` demanding the three-line
+    ``LABEL:``/``EVIDENCE:``/``EXPLANATION:`` format -> lenient parse -> one
+    last-resort ``json_object`` extraction pass over the raw text (no web
+    plugin).
     """
 
     def __init__(
@@ -477,48 +584,99 @@ class OpenRouterFactChecker(FactChecker):
         web_max_results: int = 5,
         verify_timeout_s: float = 45.0,
         reasoning_effort: str | None = "low",
+        web_engine: str = "exa",
+        capabilities: ModelCapabilities | None = None,
     ) -> None:
         super().__init__(cooldown=cooldown, verify_timeout_s=verify_timeout_s)
+        if web_engine not in WEB_ENGINES:
+            raise ValueError(
+                f"web_engine must be one of {sorted(WEB_ENGINES)}, got {web_engine!r}"
+            )
         self._client = client
         self._verify_model = verify_model
         self._web_max_results = web_max_results
         self._reasoning_effort = reasoning_effort
+        self._web_engine = web_engine
+        self._capabilities = capabilities
+
+    @property
+    def _caps(self) -> ModelCapabilities:
+        """Explicit capabilities, else the process cache (read per call)."""
+        return self._capabilities or lookup_model_capabilities(self._verify_model)
 
     def _web_plugin(self) -> dict[str, Any]:
-        """The web-search plugin config (custom prompt: never cite inline)."""
-        return {
+        """The web-search plugin config (custom prompt: never cite inline).
+
+        ``auto`` omits ``engine`` so OpenRouter uses the model provider's
+        native search when it has one and Exa otherwise.
+        """
+        plugin: dict[str, Any] = {
             "id": "web",
-            "engine": "exa",
             "max_results": self._web_max_results,
             "search_prompt": WEB_SEARCH_PROMPT,
         }
+        if self._web_engine != "auto":
+            plugin["engine"] = self._web_engine
+        return plugin
 
     async def _grounded_structured(
         self, claim: str, image_b64: str | None = None
     ) -> tuple[VerdictPayload, list[Source]]:
-        """Web search + strict flat structured output in a single call."""
-        try:
-            response = await self._strict_grounded_completion(
-                build_verify_prompt(claim, _today(), with_image=image_b64 is not None),
-                image_b64=image_b64,
+        """Web search + structured output in a single call.
+
+        Mode follows the catalogue: ``structured_outputs`` -> strict
+        json_schema; plain ``response_format`` -> one json_object call with
+        response healing; neither -> straight to the text fallback chain.
+        """
+        caps = self._caps
+        system, user = build_verify_messages(
+            claim, _today(), with_image=image_b64 is not None
+        )
+        if caps.supports("structured_outputs"):
+            mode = "strict"
+            try:
+                response = await self._strict_grounded_completion(
+                    system, user, image_b64=image_b64
+                )
+            except Exception as exc:
+                raise self._translate_api_error(
+                    exc, stage="grounded structured", fallback_on_unsupported=True
+                ) from exc
+        elif caps.supports("response_format"):
+            mode = "json_object"
+            try:
+                response = await self._create_completion(
+                    system,
+                    user,
+                    response_format={"type": "json_object"},
+                    extra_body=self._extra_body_with_reasoning(
+                        {"plugins": [self._web_plugin(), {"id": "response-healing"}]}
+                    ),
+                    max_tokens=VERIFY_MAX_TOKENS,
+                    image_b64=image_b64,
+                )
+            except Exception as exc:
+                raise self._translate_api_error(
+                    exc, stage="grounded json_object", fallback_on_unsupported=True
+                ) from exc
+        else:
+            raise _FallbackNeeded(
+                f"{self._verify_model} publishes no response_format support"
             )
-        except Exception as exc:
-            raise self._translate_api_error(
-                exc, stage="grounded structured", fallback_on_unsupported=True
-            ) from exc
         if not response.choices:
-            raise _FallbackNeeded("grounded structured response had no choices")
+            raise _FallbackNeeded(f"grounded {mode} response had no choices")
         message = response.choices[0].message
         sources = self._extract_citations(message)
         raw = (message.content or "").strip()
         try:
             payload = self._parse_verdict_json(raw)
         except (json.JSONDecodeError, ValidationError, ValueError) as exc:
-            raise _FallbackNeeded(f"structured output unparseable: {exc}") from exc
+            raise _FallbackNeeded(f"{mode} output unparseable: {exc}") from exc
+        _VerifyModeStats.record(self._verify_model, mode)
         return payload, sources
 
     async def _strict_grounded_completion(
-        self, prompt: str, image_b64: str | None = None
+        self, system: str, user: str, image_b64: str | None = None
     ) -> Any:
         """One strict verify completion, retried once without ``reasoning``.
 
@@ -540,7 +698,9 @@ class OpenRouterFactChecker(FactChecker):
                 "plugins": [self._web_plugin()],
             }
             reasoning = (
-                _reasoning_body(self._reasoning_effort) if include_reasoning else None
+                _reasoning_body(self._reasoning_effort, self._caps)
+                if include_reasoning
+                else None
             )
             if reasoning is not None:
                 extra_body["reasoning"] = reasoning
@@ -549,7 +709,8 @@ class OpenRouterFactChecker(FactChecker):
         first_extra_body = build_extra_body(include_reasoning=True)
         try:
             return await self._create_completion(
-                prompt,
+                system,
+                user,
                 response_format=response_format,
                 extra_body=first_extra_body,
                 max_tokens=VERIFY_MAX_TOKENS,
@@ -562,7 +723,8 @@ class OpenRouterFactChecker(FactChecker):
             ):
                 raise
             response = await self._create_completion(
-                prompt,
+                system,
+                user,
                 response_format=response_format,
                 extra_body=build_extra_body(include_reasoning=False),
                 max_tokens=VERIFY_MAX_TOKENS,
@@ -579,11 +741,14 @@ class OpenRouterFactChecker(FactChecker):
         Citations still come from the grounded step regardless of which parse
         succeeds.
         """
+        _VerifyModeStats.record(self._verify_model, "fallback")
+        system, user = build_verify_fallback_messages(
+            claim, _today(), with_image=image_b64 is not None
+        )
         try:
             response = await self._create_completion(
-                build_verify_fallback_prompt(
-                    claim, _today(), with_image=image_b64 is not None
-                ),
+                system,
+                user,
                 response_format=None,
                 extra_body=self._extra_body_with_reasoning(
                     {"plugins": [self._web_plugin()]}
@@ -620,16 +785,18 @@ class OpenRouterFactChecker(FactChecker):
         These non-strict calls never set ``require_parameters``, so providers
         that lack reasoning simply ignore the field — no retry needed here.
         """
-        reasoning = _reasoning_body(self._reasoning_effort)
+        reasoning = _reasoning_body(self._reasoning_effort, self._caps)
         if reasoning is not None:
             extra_body["reasoning"] = reasoning
         return extra_body
 
     async def _extract_verdict_json_object(self, raw_text: str) -> VerdictPayload:
         """Last resort: one ``json_object`` extraction pass (no web plugin)."""
+        system, user = build_verdict_extraction_messages(raw_text)
         try:
             response = await self._create_completion(
-                build_verdict_extraction_prompt(raw_text),
+                system,
+                user,
                 response_format={"type": "json_object"},
                 extra_body=self._extra_body_with_reasoning(
                     {"plugins": [{"id": "response-healing"}]}
@@ -652,7 +819,8 @@ class OpenRouterFactChecker(FactChecker):
 
     async def _create_completion(
         self,
-        prompt: str,
+        system: str,
+        user: str,
         response_format: dict[str, Any] | None,
         extra_body: dict[str, Any],
         max_tokens: int,
@@ -660,14 +828,15 @@ class OpenRouterFactChecker(FactChecker):
     ) -> Any:
         """One verify-model completion with the per-call SDK timeout applied.
 
-        With ``image_b64`` the message content becomes OpenAI-style parts
-        (text + ``image_url`` data URI); plain string content otherwise, so
-        text-only call shapes stay byte-identical to the pre-vision wire.
+        ``system`` carries the instructions; ``user`` is the bare claim (the
+        web plugin's search query). With ``image_b64`` the user content
+        becomes OpenAI-style parts (text + ``image_url`` data URI).
+        ``temperature`` is sent only when the catalogue lists it.
         """
-        content: Any = prompt
+        content: Any = user
         if image_b64 is not None:
             content = [
-                {"type": "text", "text": prompt},
+                {"type": "text", "text": user},
                 {
                     "type": "image_url",
                     "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"},
@@ -675,11 +844,15 @@ class OpenRouterFactChecker(FactChecker):
             ]
         kwargs: dict[str, Any] = {
             "model": self._verify_model,
-            "messages": [{"role": "user", "content": content}],
-            "temperature": 0.0,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": content},
+            ],
             "max_tokens": max_tokens,
             "extra_body": extra_body,
         }
+        if self._caps.supports("temperature"):
+            kwargs["temperature"] = 0.0
         if response_format is not None:
             kwargs["response_format"] = response_format
         return await self._client.with_options(
@@ -720,11 +893,31 @@ class OpenRouterFactChecker(FactChecker):
                 fallback_on_unsupported
                 and exc.status_code in UNSUPPORTED_PARAMS_STATUS_CODES
             ):
+                self._warn_first_fallback(exc.status_code, message)
                 return _FallbackNeeded(f"{exc.status_code} during {stage}: {message}")
             return VerificationError(
                 f"{stage} call failed ({exc.status_code}): {message}"
             )
         return VerificationError(f"{stage} call failed: {exc}")
+
+    def _warn_first_fallback(self, status_code: int, message: str) -> None:
+        """Explain the FIRST structured-mode rejection per model, loudly.
+
+        Every later one is a per-claim WARNING from the checker ladder; this
+        is the one that says what to look at.
+        """
+        if self._verify_model in _WARNED_FALLBACK_MODELS:
+            return
+        _WARNED_FALLBACK_MODELS.add(self._verify_model)
+        logger.warning(
+            "verify structured mode rejected for %s (%s: %s); using the text "
+            "fallback chain for this model — check its supported_parameters at "
+            "https://openrouter.ai/api/v1/models/%s/endpoints",
+            self._verify_model,
+            status_code,
+            message,
+            self._verify_model,
+        )
 
     @staticmethod
     def _extract_citations(message: Any) -> list[Source]:
@@ -770,4 +963,6 @@ def reset_openrouter_capability_latches() -> None:
     OpenRouterClaimGate._consecutive_strict_503s = 0
     OpenRouterClaimGate._json_schema_retry_at = 0.0
     _ReasoningSupport.unsupported = False
+    _VerifyModeStats.reset()
+    _WARNED_FALLBACK_MODELS.clear()
     logger.info("reset OpenRouter capability latches after a model change")

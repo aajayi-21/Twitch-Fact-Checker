@@ -397,11 +397,17 @@ def make_verdict_completion(
     citations: Sequence[tuple[str, str | None]] = (
         ("https://example.com/source", "Example Source"),
     ),
+    evidence: str | None = "strong",
 ) -> ChatCompletion:
-    """A grounded structured-verify response: flat JSON verdict + citations."""
-    return make_chat_completion(
-        json.dumps({"label": label, "explanation": explanation}), citations
-    )
+    """A grounded structured-verify response: flat JSON verdict + citations.
+
+    ``evidence`` defaults to ``"strong"`` (the OpenRouter schema requires it
+    and the invariants downgrade anything else); pass ``None`` to omit it.
+    """
+    payload: dict[str, Any] = {"label": label, "explanation": explanation}
+    if evidence is not None:
+        payload["evidence"] = evidence
+    return make_chat_completion(json.dumps(payload), citations)
 
 
 _OPENROUTER_REQUEST = httpx.Request(
@@ -713,8 +719,14 @@ def _reset_llm_process_latches() -> Iterator[None]:
     RULE: every new process-wide latch (class attribute surviving session
     rebuilds) needs a reset here.
     """
+    from app import openrouter_catalogue
     from app.llm_local import LocalClaimGate
-    from app.llm_openrouter import OpenRouterClaimGate, _ReasoningSupport
+    from app.llm_openrouter import (
+        _WARNED_FALLBACK_MODELS,
+        OpenRouterClaimGate,
+        _ReasoningSupport,
+        _VerifyModeStats,
+    )
 
     def reset() -> None:
         OpenRouterClaimGate._json_schema_unsupported = False
@@ -722,10 +734,31 @@ def _reset_llm_process_latches() -> Iterator[None]:
         OpenRouterClaimGate._json_schema_retry_at = 0.0
         _ReasoningSupport.unsupported = False
         LocalClaimGate._json_schema_unsupported = False
+        _VerifyModeStats.reset()
+        _WARNED_FALLBACK_MODELS.clear()
+        openrouter_catalogue.clear_model_capabilities()
 
     reset()
     yield
     reset()
+
+
+@pytest.fixture(autouse=True)
+def _offline_openrouter_catalogue(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the suite offline: the catalogue fetch always "fails".
+
+    ``prime_openrouter_capabilities`` then logs its one warning and leaves
+    the cache empty (every parameter assumed supported), which is exactly the
+    pre-lookup request shape the OpenRouter tests were written against.
+    Tests that need real capabilities call ``set_model_capabilities`` or pass
+    ``capabilities=`` explicitly.
+    """
+    from app import openrouter_catalogue
+
+    async def offline(*args: Any, **kwargs: Any) -> Any:
+        raise openrouter_catalogue.ProviderUnreachable("offline test suite")
+
+    monkeypatch.setattr(openrouter_catalogue, "fetch_openrouter_catalogue", offline)
 
 
 @pytest.fixture()

@@ -22,6 +22,11 @@ from app.events import EventHub
 from app.feedback import router as feedback_router
 from app.llm_provider import LLMRuntime, build_llm_runtime, close_llm_runtime
 from app.logging_setup import banner, configure_logging
+from app.llm_openrouter import verify_mode_snapshot
+from app.openrouter_catalogue import (
+    lookup_model_capabilities,
+    prime_openrouter_capabilities,
+)
 from app.rate_limit import QuotaCooldown, TokenBucket
 from app.sessions import SessionRegistry
 from app.setup import router as setup_router
@@ -36,6 +41,16 @@ logger = logging.getLogger(__name__)
 _CORS_ORIGIN_REGEX = (
     r"^(chrome-extension://[a-z]{32}|https?://(localhost|127\.0\.0\.1)(:\d+)?)$"
 )
+
+
+def _active_openrouter_models(settings: Settings) -> set[str]:
+    """The OpenRouter slugs actually routed to a pipeline stage."""
+    models: set[str] = set()
+    if settings.resolved_gate_provider == "openrouter":
+        models.add(settings.openrouter_gate_model)
+    if settings.resolved_verify_provider == "openrouter":
+        models.add(settings.openrouter_verify_model)
+    return models
 
 
 @asynccontextmanager
@@ -70,6 +85,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.quota_cooldown = cooldown
     app.state.verify_bucket = TokenBucket(rate_per_min=settings.verify_rpm, burst=2)
     app.state.llm_runtime = build_llm_runtime(settings, cooldown)
+    # Which parameters the active OpenRouter models accept (temperature,
+    # reasoning, strict JSON): looked up from the public catalogue so the
+    # transport never sends a parameter the model's endpoints reject. Best
+    # effort — offline, it warns once and the runtime latches take over.
+    if settings.is_configured:
+        await prime_openrouter_capabilities(_active_openrouter_models(settings))
     # Live /ws/audio sessions + the preemption rule. On app.state rather than a
     # module global so every consumer reaches it through its own app handle
     # (and so registry state is per-app, hence per-test).
@@ -252,9 +273,28 @@ def create_app() -> FastAPI:
             "est_cost_today_usd": round(
                 counter.value * settings.cost_per_verify_usd, 4
             ),
+            # Which parameters each active OpenRouter model accepts (from the
+            # public catalogue, or "assumed" when it was unreachable) and how
+            # verifications have been produced so far (strict / json_object /
+            # fallback per model). None unless an OpenRouter stage is active.
+            "openrouter": (
+                _openrouter_health(runtime.settings) if configured else None
+            ),
         }
 
     return app
+
+
+def _openrouter_health(settings: Settings) -> dict[str, Any] | None:
+    models = _active_openrouter_models(settings)
+    if not models:
+        return None
+    return {
+        "capabilities": {
+            slug: lookup_model_capabilities(slug).as_dict() for slug in sorted(models)
+        },
+        "verify_modes": verify_mode_snapshot(),
+    }
 
 
 app = create_app()

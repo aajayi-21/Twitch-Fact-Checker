@@ -189,8 +189,25 @@ class Database:
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.executescript(SCHEMA_SQL)
+        self._migrate(conn)
         conn.commit()
         self._conn = conn
+
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        """Additive, idempotent upgrades for databases created by older schemas.
+
+        ``CREATE TABLE IF NOT EXISTS`` never touches an existing table, so
+        columns added later need an explicit guarded ``ALTER``.
+        """
+        verdict_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(verdicts)")
+        }
+        if "evidence" not in verdict_columns:
+            # The verify model's own rating of how directly the sources
+            # addressed the claim (strong/partial/none; NULL for providers
+            # and fallbacks that do not produce it).
+            conn.execute("ALTER TABLE verdicts ADD COLUMN evidence TEXT")
 
     async def close(self) -> None:
         """Flush queued work (executor drains), close the connection."""
@@ -391,7 +408,8 @@ class Database:
             conn.execute(
                 "INSERT OR REPLACE INTO verdicts (id, claim_id, session_id,"
                 " label, explanation, checked_at, used_fallback, latency_ms,"
-                " provider, model) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " provider, model, evidence)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     verdict.id,
                     claim_id,
@@ -403,6 +421,7 @@ class Database:
                     latency_ms,
                     provider,
                     model,
+                    verdict.evidence,
                 ),
             )
             conn.executemany(
@@ -565,7 +584,28 @@ class Database:
                     "funnel": funnel,
                 }
 
-            return {"totals": block(None), "today": block(today)}
+            # Per-model strict-vs-fallback split, persisted, survives restarts.
+            # This is the number that would have exposed the production
+            # fallback storm (70/70 verdicts on one model via the text chain).
+            verify_modes = [
+                {
+                    "model": row["model"],
+                    "n": row["n"],
+                    "fallback_n": row["fallback_n"],
+                    "fallback_rate": (
+                        round(row["fallback_n"] / row["n"], 3) if row["n"] else 0.0
+                    ),
+                }
+                for row in conn.execute(
+                    "SELECT model, COUNT(*) AS n, COALESCE(SUM(used_fallback), 0)"
+                    " AS fallback_n FROM verdicts GROUP BY model ORDER BY n DESC"
+                )
+            ]
+            return {
+                "totals": block(None),
+                "today": block(today),
+                "verify_modes": verify_modes,
+            }
 
         return await self._run(_read)
 

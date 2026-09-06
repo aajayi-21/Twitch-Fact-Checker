@@ -18,6 +18,7 @@ from app.models import (
     TranscriptSegment,
     Verdict,
     VerdictFrame,
+    VerdictPayload,
     new_verdict_id,
     resolve_enabled_topics,
     utc_now_iso,
@@ -209,6 +210,38 @@ class TestVerdict:
         assert frame["label"] == "FALSE"
         assert frame["used_fallback"] is True
         assert frame["sources"] == [{"url": "https://example.com/a", "title": "A"}]
+
+
+class TestEvidence:
+    def test_payload_without_evidence_still_validates(self) -> None:
+        payload = VerdictPayload(label="TRUE", explanation="ok")
+        assert payload.evidence is None
+
+    @pytest.mark.parametrize("evidence", ["strong", "partial", "none"])
+    def test_known_levels_accepted(self, evidence: str) -> None:
+        assert VerdictPayload(label="TRUE", explanation="ok", evidence=evidence).evidence == evidence  # type: ignore[arg-type]
+
+    def test_unknown_level_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            VerdictPayload(label="TRUE", explanation="ok", evidence="huge")  # type: ignore[arg-type]
+
+    def test_evidence_never_reaches_the_wire_frame(self) -> None:
+        verdict = Verdict(
+            claim="c", label="TRUE", explanation="e", sources=[], evidence="strong"
+        )
+        frame = VerdictFrame.from_verdict(verdict).model_dump()
+        assert "evidence" not in frame
+        assert set(frame) == {
+            "type",
+            "id",
+            "claim",
+            "topic",
+            "label",
+            "explanation",
+            "sources",
+            "checked_at",
+            "used_fallback",
+        }
 
 
 class TestServerFrames:

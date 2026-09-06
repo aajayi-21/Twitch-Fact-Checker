@@ -37,10 +37,26 @@ philosophers/texts ("Nietzsche wrote X in 1886") is labelled ``history``.
 **Verify prompt.** Anti-hallucination is structural, not rhetorical: the
 model must decide strictly from retrieved sources, ``UNVERIFIED`` is the
 explicit default for weak/inconclusive results, and the requested output is a
-flat two-field object (label + explanation) — source URLs come exclusively
-from grounding metadata in code, never from model text (models fabricate
-URLs). The current date is injected because live streams discuss current
-events and the model's training cutoff is otherwise ambiguous.
+flat object (label + explanation, plus an ``evidence`` rating on OpenRouter)
+— source URLs come exclusively from grounding metadata in code, never from
+model text (models fabricate URLs). The current date is injected because
+live streams discuss current events and the model's training cutoff is
+otherwise ambiguous.
+
+The two providers search differently, so they get different verify layouts:
+
+- **OpenRouter** (primary) does not let the model search. Its ``web`` plugin
+  runs a search on the request's USER message before the model runs and
+  injects the results. The instructions therefore live in a ``system``
+  message and the user message is the bare claim — anything else in it
+  pollutes the search query (``build_verify_messages``). The wording says
+  "the results attached to this request", never "search for".
+- **Gemini** searches itself with the Google Search tool, so its prompt is
+  one string that tells it to search (``build_verify_prompt``).
+
+Both share :data:`VERIFY_LABEL_GUIDANCE`, which carries the calibration
+learned from production verdicts: MISLEADING was being used for pedantry and
+FALSE for near-correct facts.
 """
 
 GATE_PROMPT_TEMPLATE = """\
@@ -58,6 +74,14 @@ HARD EXCLUSIONS — never extract any of the following:
 - Sponsor reads, ads, promo codes, and calls to action ("use code X", "hit that follow").
 - Song lyrics or quoted media dialogue.
 - Garbled, incoherent, or clearly mis-transcribed text.
+- Live, hyper-local events unfolding at or around the stream right now: what
+  the crowd, the police, or a passer-by is doing, who is being arrested, how
+  many people are present, who is "gaining ground". No published source can
+  exist yet, so nothing can verify them.
+- Imperatives, demands, and should/must statements ("police must remove the
+  protesters", "they should resign").
+- Vague comparatives or superlatives with no explicit referent or quantity
+  ("Poland is a lot closer to Russia", "prices went up a lot").
 
 INPUT LAYOUT:
 - "CONTEXT" is transcript that was ALREADY processed. Use it ONLY to resolve
@@ -69,14 +93,20 @@ INPUT LAYOUT:
 RULES:
 1. Rewrite every claim as ONE self-contained declarative sentence. Resolve
    pronouns and vague references using CONTEXT. If a reference cannot be
-   resolved, SKIP the claim.
+   resolved, SKIP the claim. The sentence must stand alone as a web search
+   query: use people's full names, and name the place, event, and year when
+   CONTEXT supplies them ("Francesca Hong", "the Wisconsin Democratic
+   primary"), never a bare surname or "the election". If CONTEXT cannot
+   supply them, SKIP the claim.
 2. Only real-world claims a third party could verify against reputable
    published sources qualify.
 3. A factual claim wrapped in opinion framing ("I think...", "everyone knows
    ...") is still a claim — extract the factual core.
 4. Score each claim's check_worthiness from 0 to 1: would a professional
    fact-checker bother checking this? Substantial, contestable, real-world
-   assertions score high; trivia and near-tautologies score low.
+   assertions score high; trivia and near-tautologies score low. A claim
+   about what the speaker is watching happen right now scores at most 0.3
+   even when phrased factually.
 5. Classify each claim's topic as EXACTLY ONE of these slugs:
    - "politics": elections, legislation, geopolitics, breaking-news claims.
    - "health": medicine, nutrition, fitness, disease.
@@ -133,6 +163,16 @@ Example 8 (opinion-wrapped fact):
 NEW TRANSCRIPT: I think the earth is like six thousand years old that's just facts chat look it up
 Output: {{"claims": [{{"claim_text": "The Earth is approximately 6,000 years old.", "check_worthiness": 0.9, "topic": "science_tech"}}]}}
 
+Example 9 (live scene + imperative, IRL stream):
+CONTEXT (reference resolution only): we're at the port in Dover chat look at all these people
+NEW TRANSCRIPT: cops are totally outnumbered right now they're gaining ground police must clear them out immediately
+Output: {{"claims": []}}
+
+Example 10 (entity resolution from CONTEXT):
+CONTEXT (reference resolution only): so the Wisconsin Democratic primary for governor last night Francesca Hong versus David Crowley and Crowley barely won
+NEW TRANSCRIPT: real polls had Hong ahead before the election though that's the crazy part
+Output: {{"claims": [{{"claim_text": "Pre-election polls showed Francesca Hong leading David Crowley before the Wisconsin Democratic gubernatorial primary.", "check_worthiness": 0.8, "topic": "politics"}}]}}
+
 Now process the real input.
 
 CONTEXT (reference resolution only): {context}
@@ -141,6 +181,88 @@ NEW TRANSCRIPT: {new_transcript}
 """
 
 
+VERIFY_LABEL_GUIDANCE = """\
+Label definitions (apply strictly):
+- TRUE: reputable sources confirm the SUBSTANCE of the claim. A detail that is
+  approximate, rounded, hedged ("about", "a lot", "for a long time"), or
+  slightly out of date does not stop a substantively correct claim from being
+  TRUE.
+- FALSE: reputable sources clearly and directly refute the substance of the
+  claim — a direct contradiction, not a nuance or a missing caveat.
+- MISLEADING: the claim has a kernel of truth but its framing, numbers, or
+  omitted context would materially deceive a reasonable listener. Never use it
+  for pedantic precision, and never for a hedged approximation that is broadly
+  right.
+- UNVERIFIED: the DEFAULT. Use it whenever the results are inconclusive,
+  conflicting, off-topic, or weak (forums, fan wikis, content farms), or the
+  claim is too vague or too recent to verify.
+
+Calibration examples:
+- "Migrants have been arriving in Kent for a long time" + sources showing
+  small-boat arrivals since 2014 -> TRUE (hedged duration; substance right).
+- "The Politburo has 24 members" + sources: 24 elected, one seat currently
+  vacant -> TRUE (substantively correct; the vacancy belongs in the
+  explanation, not in the verdict).
+- "China accounts for 30% of U.S. trade" + sources showing about 6% -> FALSE
+  (the number IS the claim, and it is directly refuted).
+"""
+
+
+# OpenRouter (primary): instructions in the SYSTEM message, the bare claim in
+# the USER message. OpenRouter's web plugin searches on the user message before
+# the model runs, so anything else there pollutes the search query.
+VERIFY_SYSTEM_TEMPLATE = """\
+You are a fact-checker for live-stream speech. Today is {date}.
+
+The user message is ONE claim heard on a live stream. Web search results
+retrieved for that claim are attached to this request. Decide STRICTLY from
+those results — never from memory alone — and ignore results that are merely
+on the same topic without addressing the claim itself.
+
+{label_guidance}
+Evidence rating:
+- "strong": at least one reputable result directly confirms or refutes THIS
+  claim.
+- "partial": results are related and suggestive but not decisive.
+- "none": results are off-topic or absent.
+TRUE, FALSE, and MISLEADING require "strong" evidence; anything less is
+UNVERIFIED.
+
+Write the explanation as 2-3 plain-language sentences grounded only in the
+retrieved results, including the key fact or number that decides the verdict.
+Do not put URLs in the explanation text.
+
+Respond with a JSON object with exactly three fields:
+{{"label": "TRUE" | "FALSE" | "MISLEADING" | "UNVERIFIED", "explanation": "...",
+"evidence": "strong" | "partial" | "none"}}
+"""
+
+VERIFY_USER_TEMPLATE = "{claim}"
+
+
+VERIFY_FALLBACK_SYSTEM_TEMPLATE = """\
+You are a fact-checker for live-stream speech. Today is {date}.
+
+The user message is ONE claim heard on a live stream. Web search results
+retrieved for that claim are attached to this request. Decide STRICTLY from
+those results — never from memory alone — and ignore results that are merely
+on the same topic without addressing the claim itself.
+
+{label_guidance}
+Evidence rating: "strong" = at least one reputable result directly confirms
+or refutes THIS claim; "partial" = related but not decisive; "none" =
+off-topic or absent. TRUE, FALSE, and MISLEADING require "strong".
+
+Respond in EXACTLY this three-line format and nothing else:
+LABEL: <TRUE|FALSE|MISLEADING|UNVERIFIED>
+EVIDENCE: <strong|partial|none>
+EXPLANATION: <2-3 plain-language sentences grounded only in the retrieved \
+results, including the key fact or number. No URLs.>
+"""
+
+
+# Gemini (optional secondary): the model runs the Google Search tool itself,
+# so the prompt is one string that tells it to search.
 VERIFY_PROMPT_TEMPLATE = """\
 Fact-check EXACTLY this claim using Google Search. Today is {date}.
 
@@ -149,15 +271,7 @@ CLAIM: "{claim}"
 Search for reputable, independent sources and decide STRICTLY from what the
 retrieved sources say — never from memory alone.
 
-Label definitions (apply strictly):
-- TRUE: reputable sources clearly and directly confirm the claim.
-- FALSE: reputable sources clearly and directly refute the claim.
-- MISLEADING: the claim contains a kernel of truth but its framing, numbers,
-  or missing context make it materially deceptive.
-- UNVERIFIED: the DEFAULT. Use it whenever search results are inconclusive or
-  conflicting, the sources are weak (forums, fan wikis, content farms), or the
-  claim is too vague or too recent to verify.
-
+{label_guidance}
 Write the explanation as 2-3 plain-language sentences grounded only in the
 retrieved sources, including the key fact or number that decides the verdict.
 Do not put URLs in the explanation text.
@@ -175,15 +289,7 @@ CLAIM: "{claim}"
 Search for reputable, independent sources and decide STRICTLY from what the
 retrieved sources say — never from memory alone.
 
-Label definitions (apply strictly):
-- TRUE: reputable sources clearly and directly confirm the claim.
-- FALSE: reputable sources clearly and directly refute the claim.
-- MISLEADING: the claim contains a kernel of truth but its framing, numbers,
-  or missing context make it materially deceptive.
-- UNVERIFIED: the DEFAULT. Use it whenever search results are inconclusive or
-  conflicting, the sources are weak (forums, fan wikis, content farms), or the
-  claim is too vague or too recent to verify.
-
+{label_guidance}
 Respond in EXACTLY this two-line format and nothing else:
 LABEL: <TRUE|FALSE|MISLEADING|UNVERIFIED>
 EXPLANATION: <2-3 plain-language sentences grounded only in the retrieved \
@@ -192,16 +298,16 @@ sources, including the key fact or number. No URLs.>
 
 
 # Appended to verify prompts when a captured stream frame is attached. The
-# label rules stay structural: an image can never produce url_citation
-# sources, so the no-citations => UNVERIFIED invariant already caps what a
-# misread frame can do.
+# frame is context, never evidence: the label and evidence rules stay
+# anchored to the retrieved sources, so a misread frame cannot move a verdict.
 VERIFY_IMAGE_NOTE = """\
 
 
 A frame captured from the live stream is attached. Use it ONLY if it is
 clearly legible and directly relevant to the claim; otherwise ignore it
-entirely. The label rules above are unchanged — never move off UNVERIFIED
-based on the image alone.
+entirely. The frame is not a source: never move off UNVERIFIED, and never
+rate the evidence higher than the retrieved results justify, on the basis of
+the image alone.
 """
 
 
@@ -239,12 +345,16 @@ Respond with a JSON object with exactly three fields:
 """
 
 
-VERDICT_EXTRACTION_PROMPT_TEMPLATE = """\
-The text below is a fact-check verdict written in free form. Extract it into
-JSON with exactly two fields: "label" (one of TRUE, FALSE, MISLEADING,
-UNVERIFIED) and "explanation" (2-3 sentences copied or minimally condensed
-from the text — do not add any new information). If no clear label is stated,
-use "UNVERIFIED".
+VERDICT_EXTRACTION_INSTRUCTIONS = """\
+The text is a fact-check verdict written in free form. Extract it into JSON
+with the fields "label" (one of TRUE, FALSE, MISLEADING, UNVERIFIED) and
+"explanation" (2-3 sentences copied or minimally condensed from the text — do
+not add any new information), plus "evidence" (one of strong, partial, none)
+ONLY when the text states how directly the sources addressed the claim;
+otherwise omit "evidence". If no clear label is stated, use "UNVERIFIED".\
+"""
+
+VERDICT_EXTRACTION_PROMPT_TEMPLATE = VERDICT_EXTRACTION_INSTRUCTIONS + """
 
 TEXT:
 {raw_text}
@@ -260,22 +370,60 @@ def build_gate_prompt(context: str, new_transcript: str) -> str:
 
 
 def build_verify_prompt(claim: str, date: str, with_image: bool = False) -> str:
-    """Render the grounded structured verification prompt."""
-    prompt = VERIFY_PROMPT_TEMPLATE.format(claim=claim, date=date)
+    """Render the Gemini grounded structured verification prompt (one string)."""
+    prompt = VERIFY_PROMPT_TEMPLATE.format(
+        claim=claim, date=date, label_guidance=VERIFY_LABEL_GUIDANCE
+    )
     return prompt + VERIFY_IMAGE_NOTE if with_image else prompt
 
 
 def build_verify_fallback_prompt(
     claim: str, date: str, with_image: bool = False
 ) -> str:
-    """Render the grounded plain-text (LABEL:/EXPLANATION:) fallback prompt."""
-    prompt = VERIFY_FALLBACK_PROMPT_TEMPLATE.format(claim=claim, date=date)
+    """Render the Gemini plain-text (LABEL:/EXPLANATION:) fallback prompt."""
+    prompt = VERIFY_FALLBACK_PROMPT_TEMPLATE.format(
+        claim=claim, date=date, label_guidance=VERIFY_LABEL_GUIDANCE
+    )
     return prompt + VERIFY_IMAGE_NOTE if with_image else prompt
+
+
+def build_verify_messages(
+    claim: str, date: str, with_image: bool = False
+) -> tuple[str, str]:
+    """``(system, user)`` for the OpenRouter structured verify call.
+
+    The user message is the bare claim: OpenRouter's web plugin uses it as
+    the search query. Everything else — including the image note — goes in
+    the system message.
+    """
+    system = VERIFY_SYSTEM_TEMPLATE.format(
+        date=date, label_guidance=VERIFY_LABEL_GUIDANCE
+    )
+    if with_image:
+        system += VERIFY_IMAGE_NOTE
+    return system, VERIFY_USER_TEMPLATE.format(claim=claim)
+
+
+def build_verify_fallback_messages(
+    claim: str, date: str, with_image: bool = False
+) -> tuple[str, str]:
+    """``(system, user)`` for the OpenRouter LABEL:/EVIDENCE:/EXPLANATION: call."""
+    system = VERIFY_FALLBACK_SYSTEM_TEMPLATE.format(
+        date=date, label_guidance=VERIFY_LABEL_GUIDANCE
+    )
+    if with_image:
+        system += VERIFY_IMAGE_NOTE
+    return system, VERIFY_USER_TEMPLATE.format(claim=claim)
 
 
 def build_verdict_extraction_prompt(raw_text: str) -> str:
     """Render the last-resort ungrounded structured-extraction prompt."""
     return VERDICT_EXTRACTION_PROMPT_TEMPLATE.format(raw_text=raw_text.strip())
+
+
+def build_verdict_extraction_messages(raw_text: str) -> tuple[str, str]:
+    """``(system, user)`` for the OpenRouter extraction pass (no search)."""
+    return VERDICT_EXTRACTION_INSTRUCTIONS, raw_text.strip()
 
 
 def build_contradiction_prompt(current: str, prior: str) -> str:

@@ -284,3 +284,44 @@ class TestRecordSessionProgress:
             " WHERE id = 's2'",
         )
         assert row == (1, 99.0)
+
+
+class TestEvidenceColumnMigration:
+    async def test_older_database_gains_the_column_idempotently(
+        self, tmp_path: Path
+    ) -> None:
+        """A db created before the evidence column existed is upgraded on open."""
+        from app.db import SCHEMA_SQL
+
+        path = tmp_path / "old.db"
+        legacy_schema = SCHEMA_SQL.replace(",\n    evidence", ",\n    _unused")
+        with sqlite3.connect(path) as conn:
+            conn.executescript(legacy_schema)
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(verdicts)")}
+        assert "evidence" not in columns or "evidence" in SCHEMA_SQL
+        for _ in range(2):  # open twice: the ALTER must be guarded
+            db = Database(str(path))
+            await db.open()
+            await db.close()
+        with sqlite3.connect(path) as conn:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(verdicts)")}
+        assert "evidence" in columns
+
+    async def test_record_verdict_persists_evidence(self, database: Database) -> None:
+        claim = make_claim()
+        verdict = make_verdict().model_copy(update={"evidence": "partial"})
+        await database.record_session_start(
+            session_id="s1", platform=None, channel=None, title=None
+        )
+        await database.record_claim(claim=claim, session_id="s1", outcome="verified")
+        await database.record_verdict(
+            verdict=verdict,
+            claim_id=claim.id,
+            session_id="s1",
+            latency_ms=1,
+            provider="openrouter",
+            model="m",
+        )
+        assert read_rows(
+            database._path.as_posix(), "SELECT evidence FROM verdicts"
+        ) == [("partial",)]
