@@ -197,6 +197,12 @@ Label definitions (apply strictly):
   conflicting, off-topic, or weak (forums, fan wikis, content farms), or the
   claim is too vague or too recent to verify.
 
+Unverifiable claim types — always UNVERIFIED, whatever the results say: a claim
+about something happening live at the speaker's location right now ("is being
+arrested", "showed up", "are gaining ground"), a demand or should/must
+statement, an opinion, or a prediction. Published sources cannot settle these;
+a similar incident somewhere else is not this one.
+
 Calibration examples:
 - "Migrants have been arriving in Kent for a long time" + sources showing
   small-boat arrivals since 2014 -> TRUE (hedged duration; substance right).
@@ -221,12 +227,15 @@ on the same topic without addressing the claim itself.
 
 {label_guidance}
 Evidence rating:
-- "strong": at least one reputable result directly confirms or refutes THIS
-  claim.
-- "partial": results are related and suggestive but not decisive.
-- "none": results are off-topic or absent.
+- "strong": at least one reputable result reports the SAME specific event,
+  entity, place, and time as the claim and directly confirms or refutes it.
+- "partial": results are related and suggestive but not decisive — a similar
+  incident elsewhere or at another time, a general rule, or the same topic
+  without the claim's specifics.
+- "none": results are off-topic or absent, or the claim names no identifiable
+  event, entity, place, or time that a result could match.
 TRUE, FALSE, and MISLEADING require "strong" evidence; anything less is
-UNVERIFIED.
+UNVERIFIED. Unverifiable claim types (above) are always "none".
 
 Write the explanation as 2-3 plain-language sentences grounded only in the
 retrieved results, including the key fact or number that decides the verdict.
@@ -249,9 +258,12 @@ those results — never from memory alone — and ignore results that are merely
 on the same topic without addressing the claim itself.
 
 {label_guidance}
-Evidence rating: "strong" = at least one reputable result directly confirms
-or refutes THIS claim; "partial" = related but not decisive; "none" =
-off-topic or absent. TRUE, FALSE, and MISLEADING require "strong".
+Evidence rating: "strong" = at least one reputable result reports the SAME
+specific event, entity, place, and time as the claim and directly confirms or
+refutes it; "partial" = related but not decisive (a similar incident
+elsewhere, a general rule, the same topic without the specifics); "none" =
+off-topic, absent, or the claim names nothing a result could match. TRUE,
+FALSE, and MISLEADING require "strong"; unverifiable claim types are "none".
 
 Respond in EXACTLY this three-line format and nothing else:
 LABEL: <TRUE|FALSE|MISLEADING|UNVERIFIED>
