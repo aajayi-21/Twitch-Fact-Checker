@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 from typing import Any, Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 SERVER_VERSION: str = "0.1.0"
@@ -23,6 +24,15 @@ SERVER_VERSION: str = "0.1.0"
 SENSITIVITY_THRESHOLDS: dict[str, float] = {"low": 0.75, "medium": 0.55, "high": 0.35}
 
 _DEFAULT_ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
+
+# OpenRouter is the primary provider; these are the shipped model slugs.
+# inception/mercury-2.5-preview: cheap ($0.04/M input) and fast enough for the
+# ~300 gate calls an hour, lists temperature + structured_outputs + reasoning
+# on its endpoint (so strict JSON mode works first time), and produced zero
+# fallback verdicts in production. Override per stage in .env or the options
+# page; slugs are validated against the live catalogue on Apply.
+DEFAULT_OPENROUTER_GATE_MODEL = "inception/mercury-2.5-preview"
+DEFAULT_OPENROUTER_VERIFY_MODEL = "inception/mercury-2.5-preview"
 
 # The analytics database lives next to `.env` by default; tests point DB_PATH
 # at temp files instead.
@@ -80,9 +90,16 @@ class Settings(BaseSettings):
     ollama_embed_model: str = "nomic-embed-text"
 
     openrouter_api_key: str = ""
-    openrouter_gate_model: str = "google/gemma-4-26b-a4b-it:free"
-    openrouter_verify_model: str = "google/gemma-4-26b-a4b-it:free"
+    openrouter_gate_model: str = DEFAULT_OPENROUTER_GATE_MODEL
+    openrouter_verify_model: str = DEFAULT_OPENROUTER_VERIFY_MODEL
     openrouter_web_max_results: int = 5
+    # Web-search engine for the verify call's ``web`` plugin:
+    #   exa    (default) — OpenRouter's Exa search, works for EVERY model and
+    #          returns uniform url_citation annotations; $0.007/request.
+    #   native — the model provider's own search (OpenAI/Google/...); higher
+    #          per-call price, fails on models without one (e.g. mercury).
+    #   auto   — native when the model has it, Exa otherwise.
+    openrouter_web_engine: Literal["exa", "native", "auto"] = "exa"
     # Reasoning-effort cap sent with every OpenRouter call (bounds latency on
     # reasoning-default models). Empty string = never send ``reasoning`` —
     # for models whose providers reject it under require_parameters routing.
@@ -125,6 +142,23 @@ class Settings(BaseSettings):
     def whisper_language_or_none(self) -> str | None:
         """The configured language, with empty/whitespace normalized to None."""
         return self.whisper_language.strip() or None
+
+    # --- STT resilience (app/stt_supervisor.py) ---
+    # Run the full inference path once at startup so accelerator kernel
+    # compilation (SYCL/CUDA JIT, several seconds) never lands inside a live
+    # session, where it would stall the STT loop and overflow the ring.
+    stt_warm_up: bool = True
+    # Consecutive failed transcription windows before the engine is treated
+    # as broken. A poisoned GPU context fails deterministically within
+    # seconds; one or two failures may still be a transient.
+    stt_failure_threshold: int = Field(default=3, ge=1)
+    # After the threshold: reload the same model on CPU (fp32) ONCE and keep
+    # sessions alive in a degraded state, instead of ending them. Off = end
+    # the session with a fatal ``stt_failure`` frame straight away.
+    stt_cpu_fallback: bool = True
+    # Persist the running session counters every N seconds so a crash
+    # mid-session does not lose them (they used to be written at end only).
+    session_stats_flush_s: float = Field(default=60.0, gt=0)
 
     stt_window_s: float = 4.0
     stt_hop_s: float = 3.5
@@ -169,8 +203,9 @@ class Settings(BaseSettings):
     # Analytics persistence (app/db.py). One SQLite file; delete it to reset.
     db_path: str = str(_DEFAULT_DB_PATH)
     # Estimated marginal cost of ONE verification attempt (the web-search fee
-    # dominates; tokens are noise). Used for the popup/dashboard cost readouts.
-    cost_per_verify_usd: float = 0.005
+    # dominates; tokens are noise): Exa's documented $0.007/request. Used for
+    # the popup/dashboard cost readouts.
+    cost_per_verify_usd: float = 0.007
 
     host: str = "127.0.0.1"
     port: int = 8710

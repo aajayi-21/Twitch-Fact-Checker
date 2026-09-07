@@ -85,6 +85,12 @@ ErrorCode = Literal[
     # Fatal: MAX_SESSIONS capture sessions are already live. Capacity is
     # bounded by the single STT worker, not by bookkeeping (app/sessions.py).
     "too_many_sessions",
+    # Non-fatal, once per session: the speech engine broke on its accelerator
+    # and was reloaded on CPU (app/stt_supervisor.py); captions may lag.
+    "stt_degraded",
+    # Fatal: the speech engine is unrecoverable (the CPU reload failed too or
+    # was disabled). Also used to reject new connections until a restart.
+    "stt_failure",
 ]
 
 
@@ -239,19 +245,32 @@ class Source(BaseModel):
     title: str | None = None
 
 
+#: How directly the retrieved results addressed THE claim (OpenRouter verify).
+#: A web search always returns *something*, so the source count alone cannot
+#: tell "confirmed" from "topically adjacent"; the model rates it explicitly
+#: and the invariants downgrade anything but ``strong`` to UNVERIFIED.
+Evidence = Literal["strong", "partial", "none"]
+
+
 class VerdictPayload(BaseModel):
-    """The flat two-field schema the verify model must return.
+    """The flat schema the verify model must return.
 
     Deliberately minimal: complex schemas combined with search grounding are
-    the known 400 sharp edge.
+    the known 400 sharp edge. ``evidence`` is required in the OpenRouter
+    schema and absent on Gemini and the text fallbacks, hence optional here.
     """
 
     label: Label
     explanation: str
+    evidence: Evidence | None = None
 
 
 class Verdict(BaseModel):
-    """A fully-assembled fact-check result."""
+    """A fully-assembled fact-check result.
+
+    ``evidence`` is persisted for analytics but deliberately NOT part of the
+    wire :class:`VerdictFrame` (the frame drops unknown fields).
+    """
 
     id: str = Field(default_factory=new_verdict_id)
     claim: str
@@ -261,6 +280,7 @@ class Verdict(BaseModel):
     sources: list[Source]
     checked_at: str = Field(default_factory=utc_now_iso)
     used_fallback: bool = False
+    evidence: Evidence | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -379,6 +399,17 @@ class FeedbackRequest(BaseModel):
 # --------------------------------------------------------------------------- #
 # Debug endpoint (§3.2)
 # --------------------------------------------------------------------------- #
+
+
+class SttFaultRequest(BaseModel):
+    """``POST /debug/stt/fail``: make the next N transcription windows fail.
+
+    Fault injection for the STT supervisor's breaker (app/stt_supervisor.py)
+    so the whole CPU-fallback / fatal path can be rehearsed on a real machine
+    without breaking a GPU.
+    """
+
+    windows: int = Field(default=3, ge=1, le=100)
 
 
 class DebugTextRequest(BaseModel):

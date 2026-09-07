@@ -585,6 +585,13 @@ tier list applied in `_enforce_invariants` (downgrade a TRUE/FALSE whose citatio
 entirely content farms or fan wikis) fits the existing structure exactly and is maybe
 40 lines.
 
+> **PARTIALLY ADDRESSED (2026-09-06, `feat/viewer-stt-openrouter-hardening`).** The
+> OpenRouter verify schema now carries an `evidence` rating (strong/partial/none — how
+> directly the results address *this* claim) and `_enforce_invariants` downgrades any
+> labelled verdict rated below `strong`. Production showed the citation count alone
+> carried no signal: Exa always returned five results, so the no-sources rule never
+> fired in 90 verdicts. The domain tier list remains a follow-up.
+
 **6.6 — The extension has zero tests.** ~2,900 lines of JS. The pure-logic parts —
 `getEnabledTopicSlugs`, the settings merge, `encodeInt16Le`, the reconnect backoff — are
 testable with Node's built-in test runner and no build step. Worth doing before the §1
@@ -601,6 +608,13 @@ audience expansion if you want it.
 
 **6.9 — `used_fallback` crosses the wire and is never shown.** The overlay could mark
 verdicts that came through the degraded parse chain. Cheap honesty signal.
+
+> **ADDRESSED (2026-09-06, `feat/viewer-stt-openrouter-hardening`).** `/healthz` now
+> reports per-model verify modes (`strict` / `json_object` / `fallback`) and
+> `/stats/summary` a persisted per-model fallback rate; the first strict-mode
+> rejection per model is logged with a pointer to its `supported_parameters`. The
+> catalogue lookup that builds requests from those parameters is what stops the
+> fallback from being taken in the first place.
 
 **6.10 — Minor security note.** DNS-rebinding is already handled (`TrustedHostMiddleware`,
 `main.py`), which is more than most local backends do. The remaining exposure is that the

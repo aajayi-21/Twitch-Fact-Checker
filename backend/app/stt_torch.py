@@ -29,11 +29,22 @@ depends on them:
    expensive forward pass entirely on music/silence — Whisper pads every
    input to 30 s, so a skipped 4 s window is a large saving.
 
+4. **Device faults.** Accelerator kernels report indexing faults
+   asynchronously (an XPU "gather kernel index out of bounds" assert lands at
+   the next synchronization point, possibly a later window), and once one has
+   fired the device context is poisoned for the process. The inference path
+   therefore synchronizes right after ``generate`` so the fault is raised in
+   the window that caused it, and lets ``RuntimeError`` propagate to
+   :class:`app.stt_supervisor.SttSupervisor`, which reloads the model on the
+   CPU. The hand-written gather in the scoring pass keeps every operand on the
+   model device and bounds-checks token ids first.
+
 ``torch`` and ``transformers`` are imported inside :meth:`load` so the
 default install never needs them.
 """
 
 import logging
+import time
 from collections.abc import Iterable
 from typing import Any
 
@@ -181,6 +192,22 @@ class TorchWhisperTranscriber(BaseTranscriber):
     #: Silero speech coverage below this fraction of the window is treated as
     #: "no speech" and skips the encoder entirely.
     MIN_SPEECH_RATIO = 0.02
+    #: Whisper's decoder has ``max_target_positions`` (448) position
+    #: embeddings; generate() counts the forced prefix plus up to this many
+    #: bookkeeping tokens (timestamps, EOS) against the same table.
+    GENERATION_TOKEN_HEADROOM = 4
+    #: Length of the synthetic window :meth:`warm_up` pushes through the
+    #: engine — the pipeline's real window size.
+    WARM_UP_SECONDS = 4.0
+    #: Accelerators whose kernels compile lazily and fault asynchronously.
+    ACCELERATOR_DEVICES: frozenset[str] = frozenset({"cuda", "xpu"})
+    #: transformers loggers that emit per-call WARNING notices during
+    #: generate(); raised to ERROR outside DEBUG (see load()).
+    NOISY_TRANSFORMERS_LOGGERS: tuple[str, ...] = (
+        "transformers.generation",
+        "transformers.models.whisper.generation_whisper",
+        "transformers.tokenization_utils_base",
+    )
 
     def __init__(
         self,
@@ -208,13 +235,21 @@ class TorchWhisperTranscriber(BaseTranscriber):
         # language/task kwargs outright, so the name heuristic above is only
         # a pre-load guess.
         self._is_multilingual = False
+        # Effective generation cap: MAX_NEW_TOKENS bounded by the decoder's
+        # position table at load() (see _resolve_max_new_tokens).
+        self._max_new_tokens = self.MAX_NEW_TOKENS
 
     def describe(self) -> str:
         return (
             f"{self.BACKEND_NAME}:{self._model_name} "
             f"(device={self._torch_device}, dtype={self._dtype_name()}, "
-            f"language={self._language or 'auto'})"
+            f"language={self._language or 'auto'}){self._degraded_suffix()}"
         )
+
+    @property
+    def effective_device(self) -> str:
+        """The resolved torch device (``cpu``/``cuda``/``xpu``), not the request."""
+        return self._torch_device
 
     def _dtype_name(self) -> str:
         return str(self._dtype).removeprefix("torch.") if self._dtype else "?"
@@ -251,6 +286,14 @@ class TorchWhisperTranscriber(BaseTranscriber):
                 logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
             except Exception as exc:  # pragma: no cover - transformers drift
                 logger.debug("could not quiet the Hugging Face loggers: %s", exc)
+            # generate() re-logs the same benign notices on EVERY window —
+            # max_new_tokens vs the checkpoint's max_length, Whisper's own
+            # suppress-token processors "taking precedence", the
+            # return_segments note, the BPE clean-up note. Once would be
+            # information; ~1000 times an hour is noise that buries the
+            # lines that matter. Errors still come through.
+            for name in self.NOISY_TRANSFORMERS_LOGGERS:
+                logging.getLogger(name).setLevel(logging.ERROR)
 
         self._torch = torch
         self._torch_device = resolve_device(self._device, torch)
@@ -270,6 +313,7 @@ class TorchWhisperTranscriber(BaseTranscriber):
             )
             model.to(self._torch_device)
             model.eval()
+            self._configure_generation(model.generation_config, model.config)
             self._model = model
             # English-only checkpoints raise if generate() is given
             # language/task at all, so read the truth off the checkpoint
@@ -279,14 +323,18 @@ class TorchWhisperTranscriber(BaseTranscriber):
             )
             if not self._is_multilingual and self._language not in (None, "en"):
                 logger.warning(
-                    "WHISPER_LANGUAGE=%s ignored: %s is an English-only "
-                    "checkpoint",
+                    "WHISPER_LANGUAGE=%s ignored: %s is an English-only " "checkpoint",
                     self._language,
                     self._model_name,
                 )
             if not self._is_multilingual:
                 self._language = "en"
             self._prefix_token_ids = self._build_prefix_token_ids()
+            self._max_new_tokens = self._resolve_max_new_tokens(
+                getattr(model.config, "max_target_positions", None),
+                len(self._prefix_token_ids),
+                self.MAX_NEW_TOKENS,
+            )
         except Exception as exc:
             raise RuntimeError(
                 f"failed to load Whisper model {self._model_name!r} "
@@ -332,7 +380,6 @@ class TorchWhisperTranscriber(BaseTranscriber):
     # ------------------------------------------------------------------ #
 
     def _run_model(self, audio: np.ndarray) -> Iterable[RawSegment]:
-        torch = self._torch
         speech_spans = self._speech_spans(audio)
         if speech_spans is not None:
             covered = sum(end - start for start, end in speech_spans)
@@ -340,13 +387,52 @@ class TorchWhisperTranscriber(BaseTranscriber):
                 # No speech: skip the encoder entirely. Whisper pads every
                 # input to 30 s, so this is the single biggest saving here.
                 return []
+        return self._infer(audio, speech_spans)
 
+    def _infer(
+        self, audio: np.ndarray, speech_spans: list[tuple[int, int]] | None
+    ) -> list[RawSegment]:
+        """Encoder -> generate -> device sync -> scoring, no VAD gate.
+
+        Split out of :meth:`_run_model` so :meth:`warm_up` can push a
+        synthetic window through the whole path without Silero rejecting it.
+        Device faults (``RuntimeError``) propagate: the supervisor owns
+        recovery.
+        """
+        torch = self._torch
         features = self._processor(
             audio, sampling_rate=SAMPLE_RATE, return_tensors="pt"
         ).input_features.to(self._torch_device, dtype=self._dtype)
 
+        with torch.inference_mode():
+            # Run the encoder ONCE and hand it to both generation and the
+            # scoring pass — the encoder is the expensive half, so this makes
+            # avg_logprob nearly free instead of doubling the work.
+            encoder_outputs = self._model.model.encoder(features)
+            outputs = self._model.generate(
+                encoder_outputs=encoder_outputs, **self._generate_kwargs()
+            )
+            # Accelerator asserts are asynchronous: force them to surface HERE,
+            # attributed to the window that caused them, instead of inside a
+            # later window's (or the scoring pass's) first synchronizing op.
+            self._sync_device()
+            sequence = outputs["sequences"][0]
+            avg_logprob = self._avg_logprob(encoder_outputs, sequence)
+
+        return self._to_raw_segments(outputs, audio, speech_spans, avg_logprob)
+
+    def _generate_kwargs(self) -> dict[str, Any]:
+        """The ``generate`` call shape, pinned to greedy single-sequence decoding.
+
+        ``num_beams=1``/``do_sample=False`` are stated explicitly rather than
+        inherited from the checkpoint's generation config: the encoder output
+        is shared with the scoring pass, and any beam/sample expansion would
+        hand that pass a batch dimension it does not expect.
+        """
         generate_kwargs: dict[str, Any] = {
-            "max_new_tokens": self.MAX_NEW_TOKENS,
+            "max_new_tokens": self._max_new_tokens,
+            "num_beams": 1,
+            "do_sample": False,
             # Yields per-segment start/end plus tokens. With
             # return_dict_in_generate this implies return_segments=True.
             "return_timestamps": True,
@@ -357,19 +443,108 @@ class TorchWhisperTranscriber(BaseTranscriber):
             generate_kwargs["task"] = "transcribe"
             if self._language is not None:
                 generate_kwargs["language"] = self._language
+        return generate_kwargs
 
-        with torch.inference_mode():
-            # Run the encoder ONCE and hand it to both generation and the
-            # scoring pass — the encoder is the expensive half, so this makes
-            # avg_logprob nearly free instead of doubling the work.
-            encoder_outputs = self._model.model.encoder(features)
-            outputs = self._model.generate(
-                encoder_outputs=encoder_outputs, **generate_kwargs
+    def _sync_device(self) -> None:
+        """Block until queued accelerator kernels finish (no-op on CPU)."""
+        torch = self._torch
+        if torch is None or self._torch_device not in self.ACCELERATOR_DEVICES:
+            return
+        backend = getattr(torch, self._torch_device, None)
+        if backend is not None:
+            backend.synchronize()
+
+    @staticmethod
+    def _configure_generation(generation_config: Any, config: Any) -> None:
+        """Retire the checkpoint's legacy ``forced_decoder_ids``.
+
+        Whisper checkpoints still ship ``forced_decoder_ids`` (for English
+        checkpoints: ``[[1, <|notimestamps|>]]``), which contradicts the
+        ``return_timestamps=True`` we always request. transformers 5.x only
+        tolerates the pair through a deprecated branch that logs on every
+        call. Clearing both copies (``generate`` falls back from the
+        generation config to the model config) puts generation on the
+        maintained path, and makes the decoder's init tokens match
+        :meth:`_build_prefix_token_ids` exactly.
+        """
+        for holder in (generation_config, config):
+            if holder is None:
+                continue
+            if getattr(holder, "forced_decoder_ids", None) is not None:
+                holder.forced_decoder_ids = None
+
+    @classmethod
+    def _resolve_max_new_tokens(
+        cls, max_target_positions: int | None, prefix_len: int, cap: int
+    ) -> int:
+        """``cap`` bounded so prefix + bookkeeping + new tokens fit the decoder.
+
+        The decoder's position table has ``max_target_positions`` rows; an
+        index past it is exactly the kind of out-of-bounds gather an
+        accelerator reports asynchronously. With the stock 448 positions and
+        a 128-token cap this is a no-op guard; it only bites if the prefix
+        grows or a checkpoint ships a smaller table.
+        """
+        if max_target_positions is None:
+            return cap
+        headroom = (
+            int(max_target_positions) - prefix_len - cls.GENERATION_TOKEN_HEADROOM
+        )
+        return max(1, min(cap, headroom))
+
+    def warm_up(self, budget_s: float | None = None) -> None:
+        """Push one synthetic window through encoder+generate+scoring, twice.
+
+        The first pass on an accelerator pays the SYCL/CUDA kernel
+        compilation (measured: ~5 s on an Intel Arc iGPU with a warm kernel
+        cache, longer cold) — inside a live session that alone stalls the STT
+        loop past the ring buffer's high watermark. The second pass is the
+        steady-state number worth logging; it is compared against
+        ``budget_s`` (the STT hop) so a too-slow configuration is called out
+        at startup rather than discovered as overflow warnings.
+
+        Runs on the STT executor thread (via the supervisor). Bypasses the
+        Silero gate by declaring the whole window as speech: low-level noise
+        would otherwise be classified as silence and skip the encoder.
+
+        Raises:
+            RuntimeError: if the model is not loaded, or on a device fault.
+        """
+        if not self.is_loaded:
+            raise RuntimeError("warm_up() called before load()")
+        rng = np.random.default_rng(0)
+        sample_count = int(self.WARM_UP_SECONDS * SAMPLE_RATE)
+        audio = (rng.standard_normal(sample_count) * 0.01).astype(np.float32)
+        # Silero's ONNX session has a first-call cost of its own; pay it now.
+        self._speech_spans(audio)
+        full_coverage = [(0, sample_count)]
+        timings: list[float] = []
+        for _ in range(2):
+            started = time.perf_counter()
+            self._infer(audio, full_coverage)
+            timings.append(time.perf_counter() - started)
+        logger.info(
+            "torch STT warm-up on %s: pass 1 %.1fs, pass 2 %.1fs (%.0fs window)",
+            self._torch_device,
+            timings[0],
+            timings[1],
+            self.WARM_UP_SECONDS,
+        )
+        if budget_s is not None and timings[1] > budget_s:
+            logger.warning(
+                "steady-state STT takes %.1fs per %.0fs window on %s, more than "
+                "the %.1fs hop budget: transcription will fall behind live audio "
+                "(pick a smaller WHISPER_MODEL or a faster WHISPER_DEVICE)",
+                timings[1],
+                self.WARM_UP_SECONDS,
+                self._torch_device,
+                budget_s,
             )
-            sequence = outputs["sequences"][0]
-            avg_logprob = self._avg_logprob(encoder_outputs, sequence)
 
-        return self._to_raw_segments(outputs, audio, speech_spans, avg_logprob)
+    def fall_back_to_cpu(self) -> None:
+        """CPU reload in fp32 (fp16 is emulated, and slower, on CPUs)."""
+        self._compute_type = "float32"
+        super().fall_back_to_cpu()
 
     def _to_raw_segments(
         self,
@@ -387,15 +562,11 @@ class TorchWhisperTranscriber(BaseTranscriber):
         pieces: list[tuple[str, float, float]] = []
         for segment in raw_segments:
             text = tokenizer.decode(segment["tokens"], skip_special_tokens=True)
-            pieces.append(
-                (text, float(segment["start"]), float(segment["end"]))
-            )
+            pieces.append((text, float(segment["start"]), float(segment["end"])))
         if not pieces:
             # No timestamped segments (e.g. generation hit the token cap
             # before emitting one): fall back to the whole window.
-            text = tokenizer.decode(
-                outputs["sequences"][0], skip_special_tokens=True
-            )
+            text = tokenizer.decode(outputs["sequences"][0], skip_special_tokens=True)
             pieces = [(text, 0.0, window_seconds)]
 
         segments: list[RawSegment] = []
@@ -519,9 +690,17 @@ class TorchWhisperTranscriber(BaseTranscriber):
         transformers keeps the prefix, the first token matches and nothing is
         prepended.
 
-        On failure it returns 0.0 (a "confident" value that lets the segment
-        through) and warns once: the filter fails OPEN rather than silently
-        discarding good speech.
+        On a transformers API drift it returns 0.0 (a "confident" value that
+        lets the segment through) and warns once: the filter fails OPEN
+        rather than silently discarding good speech. Device faults
+        (``RuntimeError``) are NOT swallowed — they propagate to the STT
+        supervisor, because after one of them the accelerator is unusable.
+
+        Token ids are bounds-checked against the vocabulary BEFORE they are
+        used as embedding or gather indices: an id past the table is the
+        exact shape of an accelerator's asynchronous "index out of bounds"
+        assert, which would otherwise poison the device instead of costing
+        one score.
         """
         torch = self._torch
         try:
@@ -536,11 +715,22 @@ class TorchWhisperTranscriber(BaseTranscriber):
                 sequence = torch.cat([prefix_tensor, sequence])
             decoder_input = sequence[:-1].unsqueeze(0)
             targets = sequence[1:]
+            vocab_size = getattr(
+                getattr(self._model, "config", None), "vocab_size", None
+            )
+            if not self._token_ids_in_range(sequence, vocab_size):
+                return 0.0
             output = self._model(
                 encoder_outputs=encoder_outputs, decoder_input_ids=decoder_input
             )
-            logprobs = torch.log_softmax(output.logits.float(), dim=-1)
-            token_logprobs = logprobs[0, torch.arange(targets.shape[0]), targets]
+            logits = output.logits.float()
+            if not self._token_ids_in_range(targets, int(logits.shape[-1])):
+                return 0.0
+            logprobs = torch.log_softmax(logits, dim=-1)[0]
+            # Gather along the vocabulary axis with an index tensor that lives
+            # on the model device — never a CPU-side ``arange`` mixed into an
+            # accelerator index kernel.
+            token_logprobs = torch.gather(logprobs, 1, targets.unsqueeze(1)).squeeze(1)
             # Average over the generated tokens only, never the forced prefix.
             token_logprobs = token_logprobs[-scored_count:]
             finite = token_logprobs[torch.isfinite(token_logprobs)]
@@ -548,10 +738,32 @@ class TorchWhisperTranscriber(BaseTranscriber):
                 self._warn_missing_logprob()
                 return 0.0
             return float(finite.mean().item())
-        except Exception as exc:  # pragma: no cover - transformers drift
+        except (AttributeError, TypeError, ValueError, IndexError, KeyError) as exc:
+            # transformers drift (output shapes, attribute names): fail open.
             logger.debug("computing avg_logprob failed: %s", exc)
             self._warn_missing_logprob()
             return 0.0
+
+    @staticmethod
+    def _token_ids_in_range(token_ids: Any, vocab_size: int | None) -> bool:
+        """False (with a WARNING) when any id falls outside ``[0, vocab_size)``.
+
+        ``vocab_size=None`` (unknown) is treated as in range.
+        """
+        if vocab_size is None or token_ids.numel() == 0:
+            return True
+        lowest = int(token_ids.min().item())
+        highest = int(token_ids.max().item())
+        if lowest < 0 or highest >= int(vocab_size):
+            logger.warning(
+                "skipping avg_logprob: generated token id out of range "
+                "(min=%d, max=%d, vocab_size=%d); the segment passes unscored",
+                lowest,
+                highest,
+                int(vocab_size),
+            )
+            return False
+        return True
 
     def _warn_missing_logprob(self) -> None:
         if not self._warned_missing_scores:

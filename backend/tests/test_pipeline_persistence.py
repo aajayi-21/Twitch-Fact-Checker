@@ -8,6 +8,8 @@ lands in the server's ``finally`` AFTER the client observes the close.
 
 import sqlite3
 import time
+
+import pytest
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from typing import Any, Callable
@@ -133,7 +135,7 @@ class TestSessionPersistence:
         assert session_row[2] == "Reacting to news!"
         assert session_row[3] == 1  # one real gate call (final flush pass)
         assert session_row[4] == 1  # one verify attempt
-        assert session_row[5] == 0.005
+        assert session_row[5] == 0.007
         assert session_row[6] > 0  # speech seconds accumulated
 
         outcomes = dict(rows(db_path, "SELECT text, outcome FROM claims"))
@@ -156,7 +158,7 @@ class TestSessionPersistence:
         ]
         health = client.get("/healthz").json()
         assert health["checks_today"] == 1
-        assert health["est_cost_today_usd"] == 0.005
+        assert health["est_cost_today_usd"] == 0.007
 
     def test_verify_failure_records_outcome_and_session_survives(
         self,
@@ -247,3 +249,44 @@ class TestQueueDroppedOutcome:
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
             await db.close()
+
+
+class TestPeriodicStatsFlush:
+    def test_running_counters_flush_while_the_session_is_live(
+        self,
+        fake_genai_client: FakeGenAIClient,
+        fake_transcriber: FakeTranscriber,
+    ) -> None:
+        """Crash insurance: counters land BEFORE the session ends, with
+        ``ended_at`` still NULL; the end write then stamps ``ended_at``."""
+        from tests.conftest import open_test_client
+
+        settings = make_test_settings(session_stats_flush_s=0.2)
+        with open_test_client(settings, fake_genai_client, fake_transcriber) as client:
+            with client.websocket_connect("/ws/audio") as session:
+                session.send_json(make_hello())
+                assert session.receive_json()["type"] == "ready"
+                for _ in range(8):  # 2.0 s of audio
+                    session.send_bytes(pcm_silence(0.25))
+                wait_until(
+                    lambda: rows(
+                        settings.db_path,
+                        "SELECT audio_seconds FROM sessions"
+                        " WHERE ended_at IS NULL AND audio_seconds > 0",
+                    )
+                    != []
+                )
+                session.send_json({"type": "stop"})
+                collect_frames_until_close(session)
+            wait_until(
+                lambda: rows(
+                    settings.db_path,
+                    "SELECT audio_seconds FROM sessions WHERE ended_at IS NOT NULL",
+                )
+                != []
+            )
+            (final,) = rows(
+                settings.db_path,
+                "SELECT audio_seconds FROM sessions WHERE ended_at IS NOT NULL",
+            )
+            assert final[0] == pytest.approx(2.0)

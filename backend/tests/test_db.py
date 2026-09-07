@@ -1,6 +1,7 @@
 """Database unit tests: schema, upserts, fire-and-forget doctrine, DayCounter."""
 
 import logging
+import json
 import sqlite3
 from pathlib import Path
 
@@ -226,3 +227,101 @@ class TestCountsAndCounter:
         assert counter.value == 0
         counter.increment()
         assert counter.value == 1
+
+
+class TestRecordSessionProgress:
+    async def test_updates_counters_without_setting_ended_at(
+        self, database: Database
+    ) -> None:
+        await database.record_session_start(
+            session_id="s1", platform="twitch", channel="chan", title=None
+        )
+        await database.record_session_progress(
+            session_id="s1",
+            speech_seconds=12.5,
+            audio_seconds=30.0,
+            gate_calls=2,
+            verify_calls=1,
+            est_cost_usd=0.007,
+            stt_drop_counts={"no_speech": 3},
+        )
+        (row,) = read_rows(
+            database._path.as_posix(),
+            "SELECT ended_at, speech_seconds, audio_seconds, gate_calls,"
+            " verify_calls, est_cost_usd, stt_drop_counts FROM sessions"
+            " WHERE id = 's1'",
+        )
+        assert row[0] is None
+        assert tuple(row[1:6]) == (12.5, 30.0, 2, 1, 0.007)
+        assert json.loads(row[6]) == {"no_speech": 3}
+
+    async def test_never_clobbers_a_finished_row(self, database: Database) -> None:
+        """A flush racing the end write must lose."""
+        await database.record_session_start(
+            session_id="s2", platform=None, channel=None, title=None
+        )
+        await database.record_session_end(
+            session_id="s2",
+            speech_seconds=99.0,
+            audio_seconds=100.0,
+            gate_calls=9,
+            verify_calls=9,
+            est_cost_usd=0.063,
+            stt_drop_counts={},
+        )
+        await database.record_session_progress(
+            session_id="s2",
+            speech_seconds=1.0,
+            audio_seconds=1.0,
+            gate_calls=0,
+            verify_calls=0,
+            est_cost_usd=0.0,
+            stt_drop_counts={},
+        )
+        (row,) = read_rows(
+            database._path.as_posix(),
+            "SELECT ended_at IS NOT NULL, speech_seconds FROM sessions"
+            " WHERE id = 's2'",
+        )
+        assert row == (1, 99.0)
+
+
+class TestEvidenceColumnMigration:
+    async def test_older_database_gains_the_column_idempotently(
+        self, tmp_path: Path
+    ) -> None:
+        """A db created before the evidence column existed is upgraded on open."""
+        from app.db import SCHEMA_SQL
+
+        path = tmp_path / "old.db"
+        legacy_schema = SCHEMA_SQL.replace(",\n    evidence", ",\n    _unused")
+        with sqlite3.connect(path) as conn:
+            conn.executescript(legacy_schema)
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(verdicts)")}
+        assert "evidence" not in columns or "evidence" in SCHEMA_SQL
+        for _ in range(2):  # open twice: the ALTER must be guarded
+            db = Database(str(path))
+            await db.open()
+            await db.close()
+        with sqlite3.connect(path) as conn:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(verdicts)")}
+        assert "evidence" in columns
+
+    async def test_record_verdict_persists_evidence(self, database: Database) -> None:
+        claim = make_claim()
+        verdict = make_verdict().model_copy(update={"evidence": "partial"})
+        await database.record_session_start(
+            session_id="s1", platform=None, channel=None, title=None
+        )
+        await database.record_claim(claim=claim, session_id="s1", outcome="verified")
+        await database.record_verdict(
+            verdict=verdict,
+            claim_id=claim.id,
+            session_id="s1",
+            latency_ms=1,
+            provider="openrouter",
+            model="m",
+        )
+        assert read_rows(
+            database._path.as_posix(), "SELECT evidence FROM verdicts"
+        ) == [("partial",)]

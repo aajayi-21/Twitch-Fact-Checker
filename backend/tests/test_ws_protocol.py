@@ -92,6 +92,17 @@ class TestHealthz:
             "status": "ok",
             "server_version": "0.1.0",
             "whisper_model": "fake-whisper.en",
+            "stt": {
+                "state": "ok",
+                "backend": "fake",
+                "model": "fake-whisper.en",
+                "device": "cpu",
+                "degraded_from": None,
+                "consecutive_failures": 0,
+                "failure_threshold": 3,
+                "last_error": None,
+                "cpu_fallback": True,
+            },
             "configured": True,
             "llm_provider": "gemini",
             "gate_provider": "gemini",
@@ -100,6 +111,8 @@ class TestHealthz:
             "verify_model": "fake-verify-model",
             "checks_today": 0,
             "est_cost_today_usd": 0.0,
+            # Gemini fixtures: no OpenRouter stage is active.
+            "openrouter": None,
         }
 
 
@@ -850,6 +863,42 @@ class TestAudioToVerdict:
                 _frames, close_code = collect_frames_until_close(session)
                 assert close_code == 1000
 
+    def test_overflow_log_and_frame_are_throttled_together(
+        self,
+        fake_genai_client: FakeGenAIClient,
+        fake_transcriber: FakeTranscriber,
+        caplog,
+    ) -> None:
+        """Overflow arrives per 250 ms frame; the report must not.
+
+        With a 1.0 s / 0.5 s ring, 12 frames overflow three times within
+        milliseconds — one WARNING (carrying the cumulative seconds) and one
+        client frame, not three of each.
+        """
+        settings = make_test_settings(
+            audio_high_watermark_s=1.0,
+            audio_low_watermark_s=0.5,
+            stt_window_s=50.0,
+            stt_hop_s=50.0,
+        )
+        with caplog.at_level("WARNING", logger="app.pipeline"):
+            with open_test_client(
+                settings, fake_genai_client, fake_transcriber
+            ) as client:
+                with client.websocket_connect("/ws/audio") as session:
+                    session.send_json(make_hello())
+                    assert session.receive_json()["type"] == "ready"
+                    for _ in range(12):
+                        session.send_bytes(pcm_silence(0.25))
+                    session.send_json({"type": "stop"})
+                    frames, close_code = collect_frames_until_close(session)
+        assert close_code == 1000
+        overloads = [f for f in frames if f.get("code") == "stt_overload"]
+        assert len(overloads) == 1
+        warnings = [r for r in caplog.records if "audio buffer overflow" in r.message]
+        assert len(warnings) == 1
+        assert "event(s)" in warnings[0].message
+
 
 class TestSttWindowOverlap:
     def test_stt_waits_for_full_window_and_consumes_only_hop(
@@ -1072,3 +1121,99 @@ class TestQuotaCooldownFrames:
         assert "Gemini" not in cooldown_frames[0]["message"]
         assert not any(frame["type"] == "verdict" for frame in frames)
         assert fake_genai_client.interaction_calls == []
+
+
+# --------------------------------------------------------------------------- #
+# STT supervisor: CPU fallback and unrecoverable engine (app/stt_supervisor.py)
+# --------------------------------------------------------------------------- #
+
+
+class TestSttFailure:
+    def _stream(self, session: Any, seconds: float) -> None:
+        for _ in range(int(seconds / 0.25)):
+            session.send_bytes(pcm_silence(0.25))
+
+    def test_three_failed_windows_degrade_to_cpu_and_the_session_survives(
+        self,
+        client,
+        fake_genai_client: FakeGenAIClient,
+        fake_transcriber: FakeTranscriber,
+    ) -> None:
+        fake_transcriber.fail_next = 3
+        fake_transcriber._device = "xpu"
+        fake_transcriber.segments_script.append([SEVEN_WORD_SEGMENT])
+        with client.websocket_connect("/ws/audio") as session:
+            session.send_json(make_hello())
+            assert session.receive_json()["type"] == "ready"
+            # Test windows are 1.0 s / 0.5 s hop: 4 s of audio is ~7 windows,
+            # the first three of which fail.
+            self._stream(session, 4.0)
+            wait_until_sync(lambda: fake_transcriber.fall_back_calls == 1)
+            wait_until_sync(lambda: len(fake_transcriber.calls) >= 4)
+            session.send_json({"type": "stop"})
+            frames, close_code = collect_frames_until_close(session)
+
+        assert close_code == 1000
+        degraded = [f for f in frames if f.get("code") == "stt_degraded"]
+        assert len(degraded) == 1
+        assert degraded[0]["fatal"] is False
+        assert "CPU" in degraded[0]["message"]
+        # Captions kept flowing on the recovered engine.
+        assert any(f["type"] == "transcript" for f in frames)
+        health = client.get("/healthz").json()
+        assert health["status"] == "degraded"
+        assert health["stt"]["state"] == "degraded"
+        assert health["stt"]["device"] == "cpu"
+        assert health["stt"]["degraded_from"] == "xpu"
+
+    def test_unrecoverable_engine_ends_the_session_and_rejects_new_ones(
+        self,
+        client,
+        fake_genai_client: FakeGenAIClient,
+        fake_transcriber: FakeTranscriber,
+    ) -> None:
+        fake_transcriber.fail_next = 3
+        fake_transcriber.fallback_error = RuntimeError("cpu load failed")
+        with client.websocket_connect("/ws/audio") as session:
+            session.send_json(make_hello())
+            assert session.receive_json()["type"] == "ready"
+            self._stream(session, 4.0)
+            frames, close_code = collect_frames_until_close(session)
+
+        assert close_code == 1011
+        (fatal,) = [f for f in frames if f["type"] == "error"]
+        assert fatal["code"] == "stt_failure"
+        assert fatal["fatal"] is True
+        assert "restart the backend" in fatal["message"]
+        assert client.get("/healthz").json()["status"] == "unhealthy"
+
+        # The engine is process-wide: a fresh Start gets the same answer.
+        with client.websocket_connect("/ws/audio") as session:
+            session.send_json(make_hello())
+            rejection = session.receive_json()
+            assert rejection["code"] == "stt_failure"
+            assert rejection["fatal"] is True
+            _frames, close_code = collect_frames_until_close(session)
+        assert close_code == 1011
+
+
+class TestDebugSttFault:
+    def test_injects_failures_into_the_supervisor(self, client) -> None:
+        response = client.post("/debug/stt/fail", json={"windows": 2})
+        assert response.status_code == 200
+        body = response.json()
+        assert body["injected"] == 2
+        assert body["stt"]["state"] == "ok"
+        assert client.app.state.stt_supervisor.inject_failures == 2
+
+    def test_window_count_is_validated(self, client) -> None:
+        assert client.post("/debug/stt/fail", json={"windows": 0}).status_code == 422
+
+    def test_hidden_when_debug_endpoints_are_off(
+        self,
+        fake_genai_client: FakeGenAIClient,
+        fake_transcriber: FakeTranscriber,
+    ) -> None:
+        settings = make_test_settings(debug_endpoints=False)
+        with open_test_client(settings, fake_genai_client, fake_transcriber) as client:
+            assert client.post("/debug/stt/fail", json={}).status_code == 404

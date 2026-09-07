@@ -468,3 +468,242 @@ class TestLanguageReachesBothBackends:
         """ "openai/whisper-small.en" — the ".en" is on the last path segment."""
         transcriber = FasterWhisperTranscriber("openai/whisper-small.en")
         assert transcriber._language == "en"
+
+
+# --------------------------------------------------------------------------- #
+# Hardening against asynchronous accelerator faults
+# --------------------------------------------------------------------------- #
+
+
+def _english_transcriber(prefix: list[int] | None = None) -> Any:
+    transcriber = TorchWhisperTranscriber(
+        "openai/whisper-tiny.en", device="cpu", compute_type="float32"
+    )
+    transcriber._prefix_token_ids = prefix if prefix is not None else [50257]
+    transcriber._is_multilingual = False
+    return transcriber
+
+
+class TestAvgLogprobHardening:
+    """The scoring pass must never be the thing that poisons the device."""
+
+    def test_gather_matches_advanced_indexing(self) -> None:
+        torch = pytest.importorskip("torch")
+        transcriber = _english_transcriber(prefix=[])
+        transcriber._torch = torch
+        generator = torch.Generator().manual_seed(7)
+        logits = torch.randn(1, 4, 9, generator=generator)
+        transcriber._model = lambda **kwargs: SimpleNamespace(logits=logits)
+        sequence = torch.tensor([2, 5, 8, 0, 3])
+        expected = torch.log_softmax(logits.float(), dim=-1)[
+            0, torch.arange(4), sequence[1:]
+        ].mean()
+        assert transcriber._avg_logprob(None, sequence) == pytest.approx(
+            float(expected), abs=1e-6
+        )
+
+    def test_out_of_range_target_skips_scoring_and_warns(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        torch = pytest.importorskip("torch")
+        transcriber = _english_transcriber(prefix=[])
+        transcriber._torch = torch
+        transcriber._model = lambda **kwargs: SimpleNamespace(
+            logits=torch.zeros(1, 2, 6)
+        )
+        with caplog.at_level("WARNING", logger="app.stt_torch"):
+            result = transcriber._avg_logprob(None, torch.tensor([1, 2, 9]))
+        assert result == 0.0
+        assert any("token id out of range" in r.message for r in caplog.records)
+
+    def test_vocab_size_check_runs_before_the_decoder_forward(self) -> None:
+        """An id past the embedding table must never reach the embedding."""
+        torch = pytest.importorskip("torch")
+        transcriber = _english_transcriber(prefix=[])
+        transcriber._torch = torch
+        forwards: list[Any] = []
+
+        class Model:
+            config = SimpleNamespace(vocab_size=6)
+
+            def __call__(self, **kwargs: Any) -> Any:
+                forwards.append(kwargs)
+                return SimpleNamespace(logits=torch.zeros(1, 2, 6))
+
+        transcriber._model = Model()
+        assert transcriber._avg_logprob(None, torch.tensor([1, 6, 2])) == 0.0
+        assert forwards == []
+
+    def test_device_fault_propagates(self) -> None:
+        """RuntimeError = a device fault: the supervisor must see it."""
+        torch = pytest.importorskip("torch")
+        transcriber = _english_transcriber(prefix=[])
+        transcriber._torch = torch
+
+        def faulting(**kwargs: Any) -> Any:
+            raise RuntimeError("Native API failed. Native API returns: 20")
+
+        transcriber._model = faulting
+        with pytest.raises(RuntimeError, match="Native API"):
+            transcriber._avg_logprob(None, torch.tensor([1, 2, 3]))
+
+    def test_transformers_drift_still_fails_open(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        torch = pytest.importorskip("torch")
+        transcriber = _english_transcriber(prefix=[])
+        transcriber._torch = torch
+        transcriber._model = lambda **kwargs: SimpleNamespace(no_logits=True)
+        with caplog.at_level("WARNING", logger="app.stt_torch"):
+            assert transcriber._avg_logprob(None, torch.tensor([1, 2, 3])) == 0.0
+        assert any("avg_logprob is pinned to 0.0" in r.message for r in caplog.records)
+
+
+class TestGenerationConfig:
+    def test_forced_decoder_ids_are_cleared_on_both_configs(self) -> None:
+        generation_config = SimpleNamespace(forced_decoder_ids=[[1, 50362]])
+        config = SimpleNamespace(forced_decoder_ids=[[1, 50362]])
+        TorchWhisperTranscriber._configure_generation(generation_config, config)
+        assert generation_config.forced_decoder_ids is None
+        assert config.forced_decoder_ids is None
+
+    def test_missing_or_none_holders_are_tolerated(self) -> None:
+        TorchWhisperTranscriber._configure_generation(SimpleNamespace(), None)
+
+    def test_generate_kwargs_pin_greedy_single_sequence(self) -> None:
+        transcriber = _english_transcriber()
+        kwargs = transcriber._generate_kwargs()
+        assert kwargs["num_beams"] == 1
+        assert kwargs["do_sample"] is False
+        assert kwargs["return_timestamps"] is True
+        assert kwargs["return_dict_in_generate"] is True
+        assert kwargs["max_new_tokens"] == transcriber.MAX_NEW_TOKENS
+        assert "task" not in kwargs and "language" not in kwargs
+
+    def test_generate_kwargs_multilingual_adds_task_and_language(self) -> None:
+        transcriber = _english_transcriber()
+        transcriber._is_multilingual = True
+        transcriber._language = "es"
+        kwargs = transcriber._generate_kwargs()
+        assert kwargs["task"] == "transcribe"
+        assert kwargs["language"] == "es"
+
+    @pytest.mark.parametrize(
+        ("positions", "prefix_len", "cap", "expected"),
+        [
+            (448, 1, 128, 128),  # stock Whisper: the cap stands
+            (448, 3, 128, 128),
+            (130, 3, 128, 123),  # small table: 130 - 3 - 4
+            (None, 3, 128, 128),  # unknown table: trust the cap
+            (5, 3, 128, 1),  # never below one token
+        ],
+    )
+    def test_resolve_max_new_tokens(
+        self, positions: int | None, prefix_len: int, cap: int, expected: int
+    ) -> None:
+        assert (
+            TorchWhisperTranscriber._resolve_max_new_tokens(positions, prefix_len, cap)
+            == expected
+        )
+
+
+class TestSyncPoint:
+    @pytest.mark.parametrize("device", ["xpu", "cuda"])
+    def test_synchronizes_on_accelerators(self, device: str) -> None:
+        calls: list[str] = []
+        torch = fake_torch(cuda=True, xpu=True)
+        torch.xpu.synchronize = lambda: calls.append("xpu")
+        torch.cuda.synchronize = lambda: calls.append("cuda")
+        transcriber = _english_transcriber()
+        transcriber._torch = torch
+        transcriber._torch_device = device
+        transcriber._sync_device()
+        assert calls == [device]
+
+    def test_cpu_does_not_synchronize(self) -> None:
+        torch = fake_torch()
+        torch.cuda.synchronize = lambda: pytest.fail("must not sync on cpu")
+        transcriber = _english_transcriber()
+        transcriber._torch = torch
+        transcriber._torch_device = "cpu"
+        transcriber._sync_device()
+
+
+class TestWarmUp:
+    def test_requires_a_loaded_model(self) -> None:
+        with pytest.raises(RuntimeError, match="load"):
+            _english_transcriber().warm_up()
+
+    def test_bypasses_vad_and_runs_two_passes(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        transcriber = _english_transcriber()
+        transcriber._model = object()
+        transcriber._torch_device = "xpu"
+        vad_calls: list[int] = []
+        infer_calls: list[tuple[int, Any]] = []
+        monkeypatch.setattr(
+            transcriber, "_speech_spans", lambda audio: vad_calls.append(len(audio))
+        )
+        monkeypatch.setattr(
+            transcriber,
+            "_infer",
+            lambda audio, spans: infer_calls.append((len(audio), spans)) or [],
+        )
+        with caplog.at_level("INFO", logger="app.stt_torch"):
+            transcriber.warm_up(3.5)
+        samples = int(transcriber.WARM_UP_SECONDS * 16000)
+        assert vad_calls == [samples]
+        # Full-coverage spans: Silero would classify the noise as silence
+        # and the real _run_model would skip the encoder.
+        assert infer_calls == [(samples, [(0, samples)])] * 2
+        assert any("warm-up on xpu: pass 1" in r.message for r in caplog.records)
+        assert not any(r.levelname == "WARNING" for r in caplog.records)
+
+    def test_slow_steady_state_is_called_out(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        import app.stt_torch as stt_torch
+
+        transcriber = _english_transcriber()
+        transcriber._model = object()
+        monkeypatch.setattr(transcriber, "_speech_spans", lambda audio: None)
+        monkeypatch.setattr(transcriber, "_infer", lambda audio, spans: [])
+        ticks = iter([0.0, 5.0, 5.0, 9.2])
+        monkeypatch.setattr(
+            stt_torch, "time", SimpleNamespace(perf_counter=lambda: next(ticks))
+        )
+        with caplog.at_level("WARNING", logger="app.stt_torch"):
+            transcriber.warm_up(3.5)
+        assert any(
+            "exceeds the hop" not in r.message
+            and "more than the 3.5s hop budget" in r.message
+            for r in caplog.records
+        )
+
+
+class TestTorchCpuFallback:
+    def test_fallback_pins_fp32_and_reloads_on_cpu(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        transcriber = TorchWhisperTranscriber(
+            "openai/whisper-small.en", device="xpu", compute_type="float16"
+        )
+        transcriber._torch = fake_torch(xpu=True)
+        transcriber._torch.xpu.empty_cache = lambda: None
+        transcriber._torch_device = "xpu"
+        transcriber._model = object()
+        loads: list[tuple[str, str]] = []
+
+        def fake_load() -> None:
+            loads.append((transcriber.device, transcriber._compute_type))
+            transcriber._torch_device = "cpu"
+            transcriber._dtype = "torch.float32"
+            transcriber._model = object()
+
+        monkeypatch.setattr(transcriber, "load", fake_load)
+        transcriber.fall_back_to_cpu()
+        assert loads == [("cpu", "float32")]
+        assert transcriber.degraded_from == "xpu"
+        assert transcriber.effective_device == "cpu"
+        assert transcriber.describe().endswith("[degraded from xpu]")

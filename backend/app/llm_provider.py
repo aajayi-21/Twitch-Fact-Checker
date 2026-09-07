@@ -84,6 +84,7 @@ def _openrouter_spec() -> ProviderSpec:
             verify_model=s.openrouter_verify_model,
             cooldown=cooldown,
             web_max_results=s.openrouter_web_max_results,
+            web_engine=s.openrouter_web_engine,
             verify_timeout_s=s.verify_timeout_s,
             reasoning_effort=s.openrouter_reasoning_effort_or_none,
         ),

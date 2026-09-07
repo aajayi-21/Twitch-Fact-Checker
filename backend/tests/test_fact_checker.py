@@ -431,6 +431,76 @@ class TestInvariants:
         assert len(payload.explanation) == MAX_EXPLANATION_CHARS
         assert payload.explanation.endswith("…")
 
+    @pytest.mark.parametrize("evidence", ["partial", "none"])
+    def test_weak_evidence_downgrades_even_with_citations(self, evidence: str) -> None:
+        """Five topically-adjacent results are not confirmation."""
+        payload = FactChecker._enforce_invariants(
+            VerdictPayload(label="TRUE", explanation="Related.", evidence=evidence),
+            [Source(url="https://example.com")],
+        )
+        assert payload.label == "UNVERIFIED"
+        assert payload.evidence == evidence
+        assert payload.explanation == (
+            "Related. Retrieved sources did not directly address this claim."
+        )
+
+    def test_weak_evidence_note_not_duplicated(self) -> None:
+        payload = FactChecker._enforce_invariants(
+            VerdictPayload(
+                label="FALSE",
+                explanation="No. Retrieved sources did not directly address this claim.",
+                evidence="none",
+            ),
+            [Source(url="https://example.com")],
+        )
+        assert payload.explanation.count("did not directly address") == 1
+
+    def test_strong_or_absent_evidence_leaves_the_label(self) -> None:
+        for evidence in ("strong", None):
+            payload = FactChecker._enforce_invariants(
+                VerdictPayload(
+                    label="FALSE", explanation="Refuted.", evidence=evidence
+                ),
+                [Source(url="https://example.com")],
+            )
+            assert payload.label == "FALSE"
+            assert payload.evidence == evidence
+
+    def test_unverified_with_weak_evidence_gets_no_note(self) -> None:
+        payload = FactChecker._enforce_invariants(
+            VerdictPayload(label="UNVERIFIED", explanation="Unclear.", evidence="none"),
+            [Source(url="https://example.com")],
+        )
+        assert payload.explanation == "Unclear."
+
+
+class TestLabelExplanationParsing:
+    def test_two_line_format_has_no_evidence(self) -> None:
+        payload = FactChecker._parse_label_explanation(
+            "LABEL: TRUE\nEXPLANATION: Confirmed by two sources."
+        )
+        assert payload is not None
+        assert payload.label == "TRUE"
+        assert payload.evidence is None
+        assert payload.explanation == "Confirmed by two sources."
+
+    def test_three_line_format_parses_evidence(self) -> None:
+        payload = FactChecker._parse_label_explanation(
+            "LABEL: **MISLEADING**\nEVIDENCE: partial\nEXPLANATION: Kernel of truth."
+        )
+        assert payload is not None
+        assert payload.label == "MISLEADING"
+        assert payload.evidence == "partial"
+        assert payload.explanation == "Kernel of truth."
+
+    def test_evidence_after_explanation_is_trimmed_off(self) -> None:
+        payload = FactChecker._parse_label_explanation(
+            "LABEL: FALSE\nEXPLANATION: The number is wrong.\nEVIDENCE: strong"
+        )
+        assert payload is not None
+        assert payload.explanation == "The number is wrong."
+        assert payload.evidence == "strong"
+
     async def test_downgrade_applies_end_to_end(
         self, checker: FactChecker, fake_genai_client: FakeGenAIClient
     ) -> None:

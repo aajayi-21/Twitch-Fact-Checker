@@ -385,3 +385,75 @@ class TestDropCounts:
         segments = transcriber.transcribe_window(AUDIO, 0.0, 0.0, state)
         assert [segment.text for segment in segments] == ["a real sentence spoken here"]
         assert state.drop_counts == {"blacklist": 1, "no_speech": 1}
+
+
+# --------------------------------------------------------------------------- #
+# Supervisor hooks on the base transcriber (warm_up / fall_back_to_cpu)
+# --------------------------------------------------------------------------- #
+
+
+class TestEngineHooks:
+    """The resilience hooks the STT supervisor drives (app/stt_supervisor.py)."""
+
+    def test_base_warm_up_is_a_noop(self) -> None:
+        """ctranslate2 has no JIT: the default hook must not touch the model."""
+        transcriber, fake_model = make_transcriber()
+        transcriber.warm_up(3.5)
+        assert fake_model.calls == []
+
+    def test_fall_back_reloads_on_cpu_and_reports_degraded_from(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        transcriber = Transcriber("distil-small.en", device="cuda")
+        loads: list[str] = []
+
+        def fake_load() -> None:
+            loads.append(transcriber.device)
+            transcriber._model = FakeWhisperModel()
+
+        monkeypatch.setattr(transcriber, "load", fake_load)
+        transcriber.fall_back_to_cpu()
+        assert loads == ["cpu"]
+        assert transcriber.device == "cpu"
+        assert transcriber.degraded_from == "cuda"
+        assert transcriber.is_loaded
+        assert transcriber.describe().endswith("[degraded from cuda]")
+
+    def test_fall_back_when_already_on_cpu_has_no_degraded_from(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        transcriber, _ = make_transcriber()
+        monkeypatch.setattr(transcriber, "load", lambda: None)
+        transcriber.fall_back_to_cpu()
+        assert transcriber.degraded_from is None
+        assert "degraded" not in transcriber.describe()
+
+    def test_unload_failure_does_not_abort_the_fallback(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Freeing memory on a poisoned GPU context can itself raise."""
+        transcriber = Transcriber("distil-small.en", device="cuda")
+
+        def broken_unload() -> None:
+            raise RuntimeError("Native API failed")
+
+        monkeypatch.setattr(transcriber, "unload", broken_unload)
+        monkeypatch.setattr(transcriber, "load", lambda: None)
+        with caplog.at_level("WARNING", logger="app.transcriber"):
+            transcriber.fall_back_to_cpu()
+        assert transcriber.device == "cpu"
+        assert any(
+            "unloading the broken cuda engine failed" in r.message
+            for r in caplog.records
+        )
+
+    def test_load_failure_propagates(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The supervisor decides what a failed CPU load means; never mask it."""
+        transcriber = Transcriber("distil-small.en", device="cuda")
+
+        def broken_load() -> None:
+            raise RuntimeError("no such model")
+
+        monkeypatch.setattr(transcriber, "load", broken_load)
+        with pytest.raises(RuntimeError, match="no such model"):
+            transcriber.fall_back_to_cpu()

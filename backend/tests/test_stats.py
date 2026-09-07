@@ -104,7 +104,7 @@ class TestSummary:
         assert totals["sessions"] == 3
         assert totals["claims"] == 7
         assert totals["verify_calls"] == 4  # verified + verify_failed
-        assert totals["est_cost_usd"] == pytest.approx(4 * 0.005)
+        assert totals["est_cost_usd"] == pytest.approx(4 * 0.007)
         assert totals["labels"] == {"FALSE": 1, "TRUE": 1, "UNVERIFIED": 1}
         assert totals["funnel"] == {
             "verified": 3,
@@ -181,3 +181,16 @@ class TestDashboard:
         response = seeded_client.get("/dashboard")
         assert response.status_code == 200
         assert response.headers["content-type"].startswith("text/html")
+
+
+class TestVerifyModes:
+    def test_summary_reports_fallback_rate_per_model(
+        self, seeded_client: TestClient
+    ) -> None:
+        summary = seeded_client.get("/stats/summary").json()
+        modes = {row["model"]: row for row in summary["verify_modes"]}
+        assert modes, "seeded verdicts must appear per model"
+        for row in modes.values():
+            assert set(row) == {"model", "n", "fallback_n", "fallback_rate"}
+            assert 0.0 <= row["fallback_rate"] <= 1.0
+            assert row["fallback_n"] <= row["n"]

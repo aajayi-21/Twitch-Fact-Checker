@@ -9,9 +9,10 @@ with a web-search-grounded LLM call, and pushes
 **TRUE / FALSE / MISLEADING / UNVERIFIED** verdicts (with sources) back to a
 Shadow-DOM overlay rendered over the player.
 
-The LLM layer is provider-switchable: **OpenRouter** (default — free model + the `web`
-search plugin) or **Gemini** (requires a paid-tier key for search grounding). Pick the
-provider and paste your key on the extension's options page — no file editing needed.
+The LLM layer runs on **OpenRouter** (the primary provider: one key, any model, the
+`web` search plugin for grounding); **Gemini** is an optional secondary provider
+(requires a paid-tier key for search grounding). Pick the provider and paste your key
+on the extension's options page — no file editing needed.
 
 ## Quickstart
 
@@ -39,11 +40,11 @@ provider and paste your key on the extension's options page — no file editing 
    deliberately carries both browsers' keys so there is no build step.
 
 3. **Connect your AI provider**: click the extension's toolbar icon → **Open
-   settings** → paste your **OpenRouter** key (https://openrouter.ai/keys,
-   recommended — free models) or **Gemini** key
-   (https://aistudio.google.com/apikey, requires a paid-tier key for search
-   grounding) → **Save & verify**. The key is validated live against the provider
-   and stored only in `backend/.env` on your machine.
+   settings** → paste your **OpenRouter** key (https://openrouter.ai/keys —
+   the primary provider; hold a few dollars of credit for web search) or,
+   optionally, a **Gemini** key (https://aistudio.google.com/apikey, requires a
+   paid-tier key for search grounding) → **Save & verify**. The key is validated
+   live against the provider and stored only in `backend/.env` on your machine.
 
 That's it — open a stream on a supported site, click the toolbar icon, and press
 **Start**. See [Usage](#usage) for details.
@@ -201,11 +202,43 @@ Notes worth knowing:
   silently inactive.
 - Because uv hardlinks from a shared cache (`~/.cache/uv`), a PyTorch you
   already installed for another uv project costs no extra disk here.
-- **First inference on an accelerator is slow** — SYCL/CUDA kernels JIT-compile
-  on first use. Measured on an Intel Arc 140V (Lunar Lake), 11 s of speech,
-  steady state after warm-up: `whisper-small.en` runs **16.6× realtime on XPU vs
-  2.0× on CPU**, and `tiny.en` 51× vs 16×. The first window after startup takes
-  several seconds regardless; that is warm-up, not a hang.
+- **Warm-up runs at startup, not in your first session.** SYCL/CUDA kernels
+  JIT-compile on first use (~5 s on an Intel Arc 140V with a warm kernel cache,
+  longer cold) — inside a live session that alone stalled the STT loop past
+  the ring buffer's high watermark and dropped audio. The backend now pushes
+  one synthetic window through the whole inference path twice before it
+  listens, and logs both timings: `torch STT warm-up on xpu: pass 1 5.4s,
+  pass 2 0.9s`. Pass 2 is your steady state; if it exceeds the 3.5 s hop
+  budget you get a WARNING naming the fix (smaller model or faster device).
+  Measured on the same Arc 140V: `whisper-small.en` takes ~0.9 s per 4 s
+  window (3.7× realtime) after warm-up, ~2 s on the CPU. Set
+  `STT_WARM_UP=false` to skip it.
+- **A broken GPU no longer takes the session down with it.** Accelerator
+  kernels report indexing faults *asynchronously* (Intel XPU:
+  `IndexKernelUtils.h ... vectorized gather kernel index out of bounds`), and
+  once one fires the device context is poisoned — every later window fails.
+  `app/stt_supervisor.py` counts consecutive failed windows; at
+  `STT_FAILURE_THRESHOLD` (3) it reloads the same model on the **CPU in
+  fp32**, once, and sessions continue. The client gets one non-fatal
+  `stt_degraded` notice ("switched to CPU — captions may lag"), `/healthz`
+  reports `status: "degraded"` with the details under `stt`, and the log
+  says `STT recovered on the CPU: ... [degraded from xpu]`. If the CPU reload
+  fails too (or `STT_CPU_FALLBACK=false`), the session ends with a fatal
+  `stt_failure` frame, new connections are refused with the same code, and
+  `/healthz` says `unhealthy` until you restart. Rehearse the whole path
+  without breaking anything: `curl -X POST 127.0.0.1:8710/debug/stt/fail
+  -H 'content-type: application/json' -d '{"windows":3}'` while a capture
+  is running.
+- The torch path also synchronizes the device right after `generate`, so a
+  fault is attributed to the window that caused it; bounds-checks token ids
+  before they index anything; and pins greedy decoding and the modern
+  (non-`forced_decoder_ids`) generation config that transformers 5.x
+  maintains.
+- **`torch`/`transformers` are pinned** (`torch>=2.13,<2.14`,
+  `transformers>=5.15,<6` in pyproject's `gpu` extra). The GPU install runs
+  outside `uv.lock`, so these upper bounds are the only thing stopping the
+  next major from arriving silently; `install_stt_gpu.sh` reads them from
+  pyproject and prints the versions it installed.
 
 ## Analytics & dashboard
 
@@ -316,45 +349,68 @@ have been without it — the no-citations ⇒ UNVERIFIED rule is unchanged.
 
 ## LLM provider, models, costs
 
-**Default: OpenRouter.** Both pipeline stages (claim gate + verification) run on
-`google/gemma-4-26b-a4b-it:free` — chosen by a live pipeline eval (2026-07-16) where it
-went 4/4 with zero errors: claim extracted, opinion rejected, and both known-answer
-verdicts correct with 5 web sources each in strict JSON mode. No expiration date.
-Change models via `OPENROUTER_GATE_MODEL` / `OPENROUTER_VERIFY_MODEL` in `.env`.
-Documented alternates (full rationale in `.env.example`):
+**Primary provider: OpenRouter.** Both pipeline stages (claim gate + verification)
+default to `inception/mercury-2.5-preview`: cheap ($0.04/M input tokens) and fast
+enough for the ~300 gate calls an hour, its endpoint publishes `temperature`,
+`structured_outputs` and `reasoning` support (so strict JSON works on the first
+call), and it produced zero fallback verdicts in production. Change models via
+`OPENROUTER_GATE_MODEL` / `OPENROUTER_VERIFY_MODEL` in `.env` or the options page.
 
-- **`openai/gpt-oss-120b` (paid) — the recommended upgrade** once the account holds
-  credits: 4/4 on the live eval, verification ~7 s flat (vs 5–18 s variable on the free
-  default), no daily request cap, and ~$0.02–0.05 of tokens per streaming hour on top of
-  the ~$0.10/hr web-search fees.
-- `openai/gpt-oss-20b:free` — fastest gate call (3.5 s) and accurate verification, but
-  produced an empty completion on opinion-only input during the eval.
-- `nvidia/nemotron-3-super-120b-a12b:free` — good quality when reachable, but its free
-  endpoint returned upstream 429s on half the eval calls — too flaky for the gate cadence.
-- `tencent/hy3:free` — technically excellent fit but **its free variant expires 2026-07-21**.
-- `nvidia/nemotron-3-ultra-550b-a55b:free` — not recommended (no structured outputs on
-  the free endpoint, slow high-effort reasoning by default, worst measured uptime).
+**Capability-aware requests.** At boot and on every Apply the backend reads each
+active model's `supported_parameters` from OpenRouter's public catalogue
+(`GET /api/v1/models`, keyless) and builds requests from it: `temperature` and
+`reasoning` are only sent to models that list them, strict `json_schema` mode is only
+attempted when a model lists `structured_outputs` (a model with plain
+`response_format` support gets one grounded `json_object` call instead), and the
+verdict is never silently degraded. This matters because every strict request also
+carries `provider.require_parameters: true`, so a parameter the model's endpoints
+reject fails the whole call — OpenAI's GPT-5.x endpoints, for instance, accept no
+`temperature`, and before this lookup existed every one of their verdicts took the
+2–3-call text fallback chain without anyone noticing. `/healthz` reports the lookup
+under `openrouter.capabilities` (`"source": "catalogue"` or `"assumed"` when
+openrouter.ai was unreachable) and the per-model verify modes so far
+(`strict` / `json_object` / `fallback`); `/stats/summary` adds a persisted
+`verify_modes` table with each model's fallback rate.
 
-**Choosing specific models.** Each stage's OpenRouter model is a slug you can
-set from the options page (Gate model slug / Verify model slug) or in `.env`
-(`OPENROUTER_GATE_MODEL` / `OPENROUTER_VERIFY_MODEL`). Slugs are validated
-against OpenRouter's live catalogue on Apply, so a typo is rejected immediately
-rather than surfacing as a runtime failure mid-stream — and a model works the
-day it launches. Note that a paid model and its `:free` variant are distinct
-slugs; the error message points that out when you hit it. Browse the catalogue
-at <https://openrouter.ai/models>.
+**How verification is grounded.** Verification sends a `system` message with the
+instructions and a `user` message containing only the claim: OpenRouter's `web`
+plugin runs a search on the user message before the model runs, so anything else
+there would pollute the query. Results come back as `url_citation` annotations —
+the only place sources ever come from. The model also rates `evidence`
+(`strong` / `partial` / `none`, how directly the results address *this* claim) and
+anything but `strong` is downgraded to UNVERIFIED: a search always returns five
+results, so the source count alone cannot tell confirmation from adjacency.
+`OPENROUTER_WEB_ENGINE` picks the engine: `exa` (default; works for every model,
+$0.007/request, `OPENROUTER_WEB_MAX_RESULTS=5` results), `native` (the model
+provider's own search — pricier, and fails on models without one), or `auto`.
 
-**Switching to Gemini:** pick Gemini on the extension's options page and paste your
-key (or manually set `LLM_PROVIDER=gemini` and `GEMINI_API_KEY` in `.env`; models:
-`GEMINI_GATE_MODEL` / `GEMINI_VERIFY_MODEL`). Search grounding requires a paid-tier
-Gemini key, which is why OpenRouter is the default.
+**Choosing specific models.** Each stage's OpenRouter model is a slug you can set
+from the options page (Gate model slug / Verify model slug) or in `.env`. Slugs are
+validated against OpenRouter's live catalogue on Apply, so a typo is rejected
+immediately rather than surfacing as a runtime failure mid-stream — and a model works
+the day it launches. A paid model and its `:free` variant are distinct slugs (the
+error message points that out). Documented alternates:
+
+- `openai/gpt-5.6-luna` — a stronger verifier ($0.20/M input); no `temperature`
+  support, handled automatically by the capability lookup.
+- `google/gemini-3.8-flash` — strong on current events, Google-native web search
+  available via `OPENROUTER_WEB_ENGINE=native` ($0.014/call); $0.75/M input.
+- `google/gemma-4-26b-a4b-it:free` — $0 tokens, but its endpoint has no
+  `structured_outputs` (runs in `json_object` mode) and the free tier's daily
+  request cap dies within minutes at the gate's cadence.
+
+Browse the catalogue at <https://openrouter.ai/models>.
+
+**Gemini (optional secondary provider):** pick Gemini on the extension's options
+page and paste your key (or set `LLM_PROVIDER=gemini` and `GEMINI_API_KEY` in
+`.env`; models: `GEMINI_GATE_MODEL` / `GEMINI_VERIFY_MODEL`). Gemini searches with
+its own Google Search tool, which requires a paid-tier key — one reason OpenRouter
+is the primary provider.
 
 **Per-stage providers & Ollama (local gate).** The two pipeline stages can run on
-different providers: the claim gate makes ~300 cheap ungrounded calls/hour (this is
-what burns OpenRouter's free-tier daily cap), while verification makes 5–20
-grounded calls/hour. Routing the gate to a local **Ollama** model eliminates ~95%
-of hosted API calls with hard grammar-constrained JSON output — the recommended
-setup for anyone with a GPU:
+different providers: the claim gate makes ~300 cheap ungrounded calls/hour, while
+verification makes 5–20 grounded calls/hour. Routing the gate to a local **Ollama**
+model eliminates ~95% of hosted API calls with hard grammar-constrained JSON output:
 
 ```bash
 ollama pull gemma3:4b          # gate model (OLLAMA_GATE_MODEL)
@@ -372,17 +428,32 @@ gate pass times out.
 
 **Costs & limits (OpenRouter):**
 
-- Inference on `:free` models costs $0, but **web search is billed to your credit
-  balance even on `:free` models** — roughly $0.005 per fact-check (Exa engine, up to
-  10 results). A $0-credit account gets 402 errors on verification, so hold a small
-  credit balance.
+- Web search is billed to your credit balance — $0.007 per fact-check on Exa — **even
+  on `:free` models**. A $0-credit account gets 402 errors on verification, so hold a
+  small credit balance. With the mercury default, tokens add roughly $0.03 per
+  streaming hour on top.
 - Free-variant rate limits: **20 requests/min**, and **50 requests/day** with under $10
   in lifetime credit purchases vs **1,000/day** once you have bought $10+. The gate
-  alone makes ~5 calls/min while a stream runs, so the 50/day cap dies in minutes —
-  **a one-time $10 top-up is the practical minimum** (the credits themselves barely
-  deplete: only web searches consume them).
+  alone makes ~5 calls/min while a stream runs, so a `:free` gate model dies within
+  minutes — a paid gate model or a one-time $10 top-up is the practical minimum.
 - At the app's throttled rate (gate every 12 s, verifications capped by `VERIFY_RPM=8`
-  and deduped), expect pennies per multi-hour stream.
+  and deduped), expect well under a dollar per multi-hour stream.
+
+**Checking verdict quality.** `backend/scripts/eval_verify.py` replays the claims
+stored in `fact_checker.db` through the configured verifier and prints label,
+evidence and fallback histograms plus latency — it spends credits, so it insists on
+`--yes-spend-credits`. `POST /debug/text` runs the gate → verify path on raw text.
+
+**On the transcription model.** `openai/whisper-small.en` stays the torch default on
+an integrated Intel GPU: after the startup warm-up it runs ~0.9 s per 4 s window, and
+the larger "fast" variants (`whisper-large-v3-turbo`, `distil-large-v3`) keep the full
+32-layer large encoder, which is what the 3.5 s hop budget cannot afford on an iGPU.
+An audio-native or hosted speech model on OpenRouter (e.g. `microsoft/mai-transcribe-2`
+at ~$0.10 per audio-hour, or an audio-input LLM) would remove the GPU dependency, but
+OpenRouter accepts whole clips only (a request per window), the audio would leave the
+machine, and the hallucination filters would lose the `avg_logprob`/`no_speech_prob`
+signals they key on. It is the natural opt-in `STT_BACKEND=openrouter` follow-up for
+the hosted tier, not a replacement for local Whisper today.
 
 ## Usage
 

@@ -189,8 +189,25 @@ class Database:
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.executescript(SCHEMA_SQL)
+        self._migrate(conn)
         conn.commit()
         self._conn = conn
+
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        """Additive, idempotent upgrades for databases created by older schemas.
+
+        ``CREATE TABLE IF NOT EXISTS`` never touches an existing table, so
+        columns added later need an explicit guarded ``ALTER``.
+        """
+        verdict_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(verdicts)")
+        }
+        if "evidence" not in verdict_columns:
+            # The verify model's own rating of how directly the sources
+            # addressed the claim (strong/partial/none; NULL for providers
+            # and fallbacks that do not produce it).
+            conn.execute("ALTER TABLE verdicts ADD COLUMN evidence TEXT")
 
     async def close(self) -> None:
         """Flush queued work (executor drains), close the connection."""
@@ -225,9 +242,7 @@ class Database:
     async def _swallow(self, fn: Callable[..., Any], *args: Any) -> None:
         """Fire-and-forget executor hop: log-never-raise (pipeline doctrine)."""
         try:
-            await asyncio.get_running_loop().run_in_executor(
-                self._executor, fn, *args
-            )
+            await asyncio.get_running_loop().run_in_executor(self._executor, fn, *args)
         except Exception:
             logger.warning("db write failed in %s", fn.__name__, exc_info=True)
 
@@ -273,6 +288,47 @@ class Database:
                 " est_cost_usd = ?, stt_drop_counts = ? WHERE id = ?",
                 (
                     utc_now_iso(),
+                    speech_seconds,
+                    audio_seconds,
+                    gate_calls,
+                    verify_calls,
+                    est_cost_usd,
+                    json.dumps(stt_drop_counts),
+                    session_id,
+                ),
+            )
+            conn.commit()
+
+        await self._swallow(_write)
+
+    async def record_session_progress(
+        self,
+        *,
+        session_id: str,
+        speech_seconds: float,
+        audio_seconds: float,
+        gate_calls: int,
+        verify_calls: int,
+        est_cost_usd: float,
+        stt_drop_counts: dict[str, int],
+    ) -> None:
+        """Periodic flush of a LIVE session's running counters.
+
+        Same columns as :meth:`record_session_end` but ``ended_at`` stays
+        NULL — the dashboard derives "finished" and watch time from it — and
+        a flush that races the end write can never clobber a finished row
+        (``AND ended_at IS NULL``). Exists so a crash mid-session does not
+        lose the whole session's numbers, which used to be written at end
+        only.
+        """
+
+        def _write() -> None:
+            conn = self._require_conn()
+            conn.execute(
+                "UPDATE sessions SET speech_seconds = ?, audio_seconds = ?,"
+                " gate_calls = ?, verify_calls = ?, est_cost_usd = ?,"
+                " stt_drop_counts = ? WHERE id = ? AND ended_at IS NULL",
+                (
                     speech_seconds,
                     audio_seconds,
                     gate_calls,
@@ -352,7 +408,8 @@ class Database:
             conn.execute(
                 "INSERT OR REPLACE INTO verdicts (id, claim_id, session_id,"
                 " label, explanation, checked_at, used_fallback, latency_ms,"
-                " provider, model) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " provider, model, evidence)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     verdict.id,
                     claim_id,
@@ -364,6 +421,7 @@ class Database:
                     latency_ms,
                     provider,
                     model,
+                    verdict.evidence,
                 ),
             )
             conn.executemany(
@@ -526,7 +584,28 @@ class Database:
                     "funnel": funnel,
                 }
 
-            return {"totals": block(None), "today": block(today)}
+            # Per-model strict-vs-fallback split, persisted, survives restarts.
+            # This is the number that would have exposed the production
+            # fallback storm (70/70 verdicts on one model via the text chain).
+            verify_modes = [
+                {
+                    "model": row["model"],
+                    "n": row["n"],
+                    "fallback_n": row["fallback_n"],
+                    "fallback_rate": (
+                        round(row["fallback_n"] / row["n"], 3) if row["n"] else 0.0
+                    ),
+                }
+                for row in conn.execute(
+                    "SELECT model, COUNT(*) AS n, COALESCE(SUM(used_fallback), 0)"
+                    " AS fallback_n FROM verdicts GROUP BY model ORDER BY n DESC"
+                )
+            ]
+            return {
+                "totals": block(None),
+                "today": block(today),
+                "verify_modes": verify_modes,
+            }
 
         return await self._run(_read)
 
@@ -585,8 +664,7 @@ class Database:
             for entry in channels.values():
                 labels: dict[str, int] = entry.pop("labels")
                 adjudicated_n = sum(
-                    labels.get(label, 0)
-                    for label in ("TRUE", "FALSE", "MISLEADING")
+                    labels.get(label, 0) for label in ("TRUE", "FALSE", "MISLEADING")
                 )
                 total_verdicts = adjudicated_n + labels.get("UNVERIFIED", 0)
                 watch_hours = entry["watch_seconds"] / 3600.0
@@ -601,9 +679,7 @@ class Database:
                         else None
                     ),
                     "misleading_pct": (
-                        round(
-                            100.0 * labels.get("MISLEADING", 0) / adjudicated_n, 1
-                        )
+                        round(100.0 * labels.get("MISLEADING", 0) / adjudicated_n, 1)
                         if adjudicated_n
                         else None
                     ),
@@ -643,8 +719,7 @@ class Database:
             claims = [
                 dict(row)
                 for row in conn.execute(
-                    "SELECT * FROM claims WHERE session_id = ?"
-                    " ORDER BY gated_at",
+                    "SELECT * FROM claims WHERE session_id = ?" " ORDER BY gated_at",
                     (session_id,),
                 )
             ]

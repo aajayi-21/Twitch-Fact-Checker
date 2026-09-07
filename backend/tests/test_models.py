@@ -18,6 +18,7 @@ from app.models import (
     TranscriptSegment,
     Verdict,
     VerdictFrame,
+    VerdictPayload,
     new_verdict_id,
     resolve_enabled_topics,
     utc_now_iso,
@@ -211,6 +212,38 @@ class TestVerdict:
         assert frame["sources"] == [{"url": "https://example.com/a", "title": "A"}]
 
 
+class TestEvidence:
+    def test_payload_without_evidence_still_validates(self) -> None:
+        payload = VerdictPayload(label="TRUE", explanation="ok")
+        assert payload.evidence is None
+
+    @pytest.mark.parametrize("evidence", ["strong", "partial", "none"])
+    def test_known_levels_accepted(self, evidence: str) -> None:
+        assert VerdictPayload(label="TRUE", explanation="ok", evidence=evidence).evidence == evidence  # type: ignore[arg-type]
+
+    def test_unknown_level_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            VerdictPayload(label="TRUE", explanation="ok", evidence="huge")  # type: ignore[arg-type]
+
+    def test_evidence_never_reaches_the_wire_frame(self) -> None:
+        verdict = Verdict(
+            claim="c", label="TRUE", explanation="e", sources=[], evidence="strong"
+        )
+        frame = VerdictFrame.from_verdict(verdict).model_dump()
+        assert "evidence" not in frame
+        assert set(frame) == {
+            "type",
+            "id",
+            "claim",
+            "topic",
+            "label",
+            "explanation",
+            "sources",
+            "checked_at",
+            "used_fallback",
+        }
+
+
 class TestServerFrames:
     def test_ready_frame_shape(self) -> None:
         frame = ReadyFrame(server_version="0.1.0", model="distil-small.en")
@@ -258,6 +291,17 @@ class TestServerFrames:
     def test_error_frame_rejects_unknown_code(self) -> None:
         with pytest.raises(ValidationError):
             ErrorFrame(code="mystery", message="boom")
+
+    @pytest.mark.parametrize(
+        ("code", "fatal"), [("stt_degraded", False), ("stt_failure", True)]
+    )
+    def test_stt_supervisor_codes_are_in_the_vocabulary(
+        self, code: str, fatal: bool
+    ) -> None:
+        """The breaker's two frames (app/stt_supervisor.py) must be sendable."""
+        frame = ErrorFrame(code=code, message="engine", fatal=fatal)  # type: ignore[arg-type]
+        assert frame.model_dump()["code"] == code
+        assert frame.fatal is fatal
 
 
 class TestTranscriptSegment:

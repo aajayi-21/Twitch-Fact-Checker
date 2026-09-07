@@ -52,6 +52,7 @@ from app.events import EventHub
 from app.fact_checker import FactChecker, QuotaExceededError, VerificationError
 from app.logging_setup import session_id_var
 from app.models import (
+    ErrorCode,
     TOPICS,
     ClientConfig,
     ClientFrameMessage,
@@ -67,6 +68,7 @@ from app.models import (
 )
 from app.rate_limit import QuotaCooldown, TokenBucket
 from app.sessions import ChannelKey, channel_key
+from app.stt_supervisor import SttEngineFailed, SttSupervisor, SttWindowFailed
 from app.transcriber import AudioRingBuffer, SessionTextState, Transcriber
 
 logger = logging.getLogger(__name__)
@@ -89,6 +91,14 @@ QUEUE_POLL_S = 0.25
 OVERLOAD_FRAME_INTERVAL_S = 10.0
 FLUSH_MIN_AUDIO_S = 0.5
 CONTRADICTION_QUEUE_MAXSIZE = 8
+
+# Copy for the STT supervisor's two client-facing outcomes (app/stt_supervisor.py).
+STT_DEGRADED_MESSAGE = (
+    "Transcription GPU failed; switched to CPU — captions may lag behind."
+)
+STT_FAILURE_MESSAGE = (
+    "Transcription engine failed and could not be recovered; restart the backend."
+)
 
 # --------------------------------------------------------------------------- #
 # Vision (report §5): frame ring + visual-cue gating
@@ -196,11 +206,25 @@ class SessionPipeline:
         verify_counter: DayCounter | None = None,
         contradiction_detector: ContradictionDetector | None = None,
         event_hub: EventHub | None = None,
+        stt_supervisor: SttSupervisor | None = None,
     ) -> None:
         self._websocket = websocket
         self._settings = settings
         self._transcriber = transcriber
         self._stt_executor = stt_executor
+        # Circuit breaker around the shared engine (app/stt_supervisor.py):
+        # process-wide in the real app (app.state.stt_supervisor); direct
+        # unit-test construction gets a private one from the same settings.
+        self._stt = stt_supervisor or SttSupervisor(
+            transcriber,
+            stt_executor,
+            failure_threshold=settings.stt_failure_threshold,
+            cpu_fallback=settings.stt_cpu_fallback,
+        )
+        # Degradations already announced to THIS client. Seeded from the
+        # supervisor so a session that starts on an already-degraded engine
+        # is not told about an event that predates it (/healthz shows it).
+        self._notified_degrade_events = self._stt.degrade_events
         self._gate = claim_gate
         self._checker = fact_checker
         self._bucket = verify_bucket
@@ -258,6 +282,9 @@ class SessionPipeline:
         self._client_disconnected = False
         self._last_emitted_end = 0.0
         self._last_overload_frame_at = float("-inf")
+        # Overflow accumulators between throttled reports (_handle_audio).
+        self._overflow_dropped_s = 0.0
+        self._overflow_events = 0
         # Per-session STT dedupe memory: owned here (not on the shared
         # Transcriber) so a preempted session's still-running executor job
         # can never pollute the next session's overlap/suffix filters.
@@ -369,17 +396,37 @@ class SessionPipeline:
             # paths; app.db swallows write failures, so this can only lose
             # the row (with a warning), never mask the real outcome.
             if self._db is not None:
-                await self._db.record_session_end(
-                    session_id=self._session_id,
-                    speech_seconds=self._speech_seconds,
-                    audio_seconds=self._audio_seconds,
-                    gate_calls=self._gate.calls_made,
-                    verify_calls=self._verify_calls,
-                    est_cost_usd=round(
-                        self._verify_calls * self._settings.cost_per_verify_usd, 4
-                    ),
-                    stt_drop_counts=self._text_state.drop_counts,
-                )
+                await self._db.record_session_end(**self._session_counters())
+
+    def _session_counters(self) -> dict[str, Any]:
+        """The analytics ``sessions`` row's running counters (end + flush)."""
+        return {
+            "session_id": self._session_id,
+            "speech_seconds": self._speech_seconds,
+            "audio_seconds": self._audio_seconds,
+            "gate_calls": self._gate.calls_made,
+            "verify_calls": self._verify_calls,
+            "est_cost_usd": round(
+                self._verify_calls * self._settings.cost_per_verify_usd, 4
+            ),
+            # Copied: the STT executor thread mutates the live dict.
+            "stt_drop_counts": dict(self._text_state.drop_counts),
+        }
+
+    async def _stats_flush_loop(self) -> None:
+        """Persist the running counters every SESSION_STATS_FLUSH_S.
+
+        Crash insurance: the counters used to be written at session end
+        only, so a backend that died mid-stream left a row with zeros next
+        to a full set of verdicts.
+        """
+        assert self._db is not None
+        interval_s = self._settings.session_stats_flush_s
+        while not self._stop_requested.is_set():
+            await self._sleep_or_stop(interval_s)
+            if self._stop_requested.is_set():
+                return
+            await self._db.record_session_progress(**self._session_counters())
 
     def _log_session_summary(self, elapsed_s: float) -> None:
         """One end-of-session line with the whole funnel.
@@ -413,6 +460,7 @@ class SessionPipeline:
     async def _run_phases(self) -> None:
         """The pre-analytics body of :meth:`run` (live phase, then flush)."""
         fatal_error = False
+        stt_failed = False
         try:
             async with asyncio.TaskGroup() as task_group:
                 task_group.create_task(self._recv_loop(), name="recv")
@@ -424,13 +472,24 @@ class SessionPipeline:
                     task_group.create_task(
                         self._contradiction_loop(), name="contradiction"
                     )
+                if self._db is not None:
+                    task_group.create_task(self._stats_flush_loop(), name="stats")
         except* WebSocketDisconnect:
             self._client_disconnected = True
             logger.info("client disconnected mid-session")
+        except* SttEngineFailed as group:
+            for exc in group.exceptions:
+                logger.error("STT engine failed; ending session: %s", exc)
+            stt_failed = True
         except* Exception as group:
             for exc in group.exceptions:
                 logger.error("session task failed", exc_info=exc)
             fatal_error = True
+        if stt_failed and not self._client_disconnected:
+            # The task group has exited, so the send loop is dead and a direct
+            # send is safe (same temporal-exclusivity argument as the flush).
+            await self._send_fatal_and_close("stt_failure", STT_FAILURE_MESSAGE)
+            return
         if fatal_error:
             await self._close_quietly(code=1011)
             return
@@ -644,22 +703,38 @@ class SessionPipeline:
             return
         if dropped_s <= 0.0:
             return
-        logger.warning(
-            "audio buffer overflow: dropped %.2fs (STT falling behind)", dropped_s
-        )
+        # Overflow arrives per 250 ms frame (up to 4x/s while STT is stalled),
+        # so both the log line and the client frame are throttled to one per
+        # OVERLOAD_FRAME_INTERVAL_S, carrying the seconds dropped since the
+        # last report. The first event reports immediately.
+        self._overflow_dropped_s += dropped_s
+        self._overflow_events += 1
         now = time.monotonic()
-        if now - self._last_overload_frame_at >= OVERLOAD_FRAME_INTERVAL_S:
-            self._last_overload_frame_at = now
-            self._enqueue_or_drop(
-                ErrorFrame(
-                    code="stt_overload",
-                    message=(
-                        "Transcription is falling behind; dropped "
-                        f"{dropped_s:.1f}s of audio."
-                    ),
-                    fatal=False,
-                )
+        if now - self._last_overload_frame_at < OVERLOAD_FRAME_INTERVAL_S:
+            return
+        self._last_overload_frame_at = now
+        dropped_total = self._overflow_dropped_s
+        events = self._overflow_events
+        self._overflow_dropped_s = 0.0
+        self._overflow_events = 0
+        logger.warning(
+            "audio buffer overflow: dropped %.2fs in %d event(s) — STT falling "
+            "behind (pending=%.1fs, engine=%s)",
+            dropped_total,
+            events,
+            self._ring.pending_seconds,
+            self._transcriber.describe(),
+        )
+        self._enqueue_or_drop(
+            ErrorFrame(
+                code="stt_overload",
+                message=(
+                    "Transcription is falling behind; dropped "
+                    f"{dropped_total:.1f}s of audio."
+                ),
+                fatal=False,
             )
+        )
 
     def _handle_text_frame(self, raw: str) -> None:
         """Mid-session control frames: config updates and graceful stop."""
@@ -731,22 +806,23 @@ class SessionPipeline:
         window_start_s: float,
         emit: FrameEmitter,
     ) -> None:
-        """Executor-run STT for one window; route segments to gate + client."""
+        """Supervised STT for one window; route segments to gate + client.
+
+        A lost window (:class:`SttWindowFailed`) costs this window's audio
+        only; the supervisor has already logged the traceback and may have
+        just reloaded the engine on the CPU, which is announced to the
+        client once. :class:`SttEngineFailed` propagates so
+        :meth:`_run_phases` ends the session with a fatal frame.
+        """
         try:
-            segments = await loop.run_in_executor(
-                self._stt_executor,
-                self._transcriber.transcribe_window,
-                audio,
-                window_start_s,
-                self._last_emitted_end,
-                self._text_state,
+            segments = await self._stt.run_window(
+                audio, window_start_s, self._last_emitted_end, self._text_state
             )
-        except Exception:
-            logger.exception(
-                "transcription window failed; dropping %.1fs of audio",
-                len(audio) / 16000,
-            )
+        except SttWindowFailed as exc:
+            logger.info("dropping %.1fs of audio: %s", len(audio) / 16000, exc)
+            await self._announce_degradation(emit)
             return
+        await self._announce_degradation(emit)
         if segments and logger.isEnabledFor(logging.DEBUG):
             logger.debug(
                 "stt +%d segment(s): %s",
@@ -763,6 +839,23 @@ class SessionPipeline:
                         text=segment.text, start=segment.start, end=segment.end
                     )
                 )
+
+    async def _announce_degradation(self, emit: FrameEmitter) -> None:
+        """Tell the client ONCE that the engine fell back to the CPU."""
+        if self._stt.degrade_events <= self._notified_degrade_events:
+            return
+        self._notified_degrade_events = self._stt.degrade_events
+        await emit(
+            ErrorFrame(code="stt_degraded", message=STT_DEGRADED_MESSAGE, fatal=False)
+        )
+
+    async def _send_fatal_and_close(self, code: ErrorCode, message: str) -> None:
+        """Fatal error frame + 1011 close, once the send loop has exited."""
+        try:
+            await self._send_direct(ErrorFrame(code=code, message=message, fatal=True))
+        except Exception as exc:
+            logger.debug("could not deliver the %s frame: %s", code, exc)
+        await self._close_quietly(code=1011)
 
     async def _filter_claims(
         self, claims: list[GateClaim], emit: FrameEmitter

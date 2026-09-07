@@ -22,10 +22,16 @@ from app.events import EventHub
 from app.feedback import router as feedback_router
 from app.llm_provider import LLMRuntime, build_llm_runtime, close_llm_runtime
 from app.logging_setup import banner, configure_logging
+from app.llm_openrouter import verify_mode_snapshot
+from app.openrouter_catalogue import (
+    lookup_model_capabilities,
+    prime_openrouter_capabilities,
+)
 from app.rate_limit import QuotaCooldown, TokenBucket
 from app.sessions import SessionRegistry
 from app.setup import router as setup_router
 from app.stats import router as stats_router
+from app.stt_supervisor import SttSupervisor
 from app.transcriber import create_transcriber
 from app.ws import router as ws_router
 
@@ -35,6 +41,16 @@ logger = logging.getLogger(__name__)
 _CORS_ORIGIN_REGEX = (
     r"^(chrome-extension://[a-z]{32}|https?://(localhost|127\.0\.0\.1)(:\d+)?)$"
 )
+
+
+def _active_openrouter_models(settings: Settings) -> set[str]:
+    """The OpenRouter slugs actually routed to a pipeline stage."""
+    models: set[str] = set()
+    if settings.resolved_gate_provider == "openrouter":
+        models.add(settings.openrouter_gate_model)
+    if settings.resolved_verify_provider == "openrouter":
+        models.add(settings.openrouter_verify_model)
+    return models
 
 
 @asynccontextmanager
@@ -69,6 +85,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.quota_cooldown = cooldown
     app.state.verify_bucket = TokenBucket(rate_per_min=settings.verify_rpm, burst=2)
     app.state.llm_runtime = build_llm_runtime(settings, cooldown)
+    # Which parameters the active OpenRouter models accept (temperature,
+    # reasoning, strict JSON): looked up from the public catalogue so the
+    # transport never sends a parameter the model's endpoints reject. Best
+    # effort — offline, it warns once and the runtime latches take over.
+    if settings.is_configured:
+        await prime_openrouter_capabilities(_active_openrouter_models(settings))
     # Live /ws/audio sessions + the preemption rule. On app.state rather than a
     # module global so every consumer reaches it through its own app handle
     # (and so registry state is per-app, hence per-test).
@@ -98,6 +120,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.transcriber = transcriber
     stt_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="stt")
     app.state.stt_executor = stt_executor
+    # Circuit breaker + CPU fallback around the shared engine, and the
+    # startup warm-up (accelerator kernel compilation belongs here, not in
+    # the first live window). A GPU that faults during warm-up starts the
+    # server degraded on the CPU; only a failed CPU load aborts startup.
+    stt_supervisor = SttSupervisor(
+        transcriber,
+        stt_executor,
+        failure_threshold=settings.stt_failure_threshold,
+        cpu_fallback=settings.stt_cpu_fallback,
+    )
+    if settings.stt_warm_up:
+        await stt_supervisor.warm_up(settings.stt_hop_s)
+    app.state.stt_supervisor = stt_supervisor
 
     configured = app.state.llm_runtime.configured
     rows: list[tuple[str, str]] = [
@@ -152,9 +187,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # unload below frees the model out from under it (on a GPU that means
         # releasing device memory mid-kernel). The wait is bounded by a single
         # ~4 s window, and runs off the event loop so shutdown stays async.
-        await asyncio.to_thread(
-            stt_executor.shutdown, wait=True, cancel_futures=True
-        )
+        await asyncio.to_thread(stt_executor.shutdown, wait=True, cancel_futures=True)
         # Release the speech model AFTER its executor is down, so no job is
         # mid-inference. Matters most on GPUs, where the weights would
         # otherwise hold VRAM for the whole process lifetime.
@@ -215,11 +248,15 @@ def create_app() -> FastAPI:
         settings: Settings = request.app.state.settings
         runtime: LLMRuntime = request.app.state.llm_runtime
         counter: DayCounter = request.app.state.verify_counter
+        stt: SttSupervisor = request.app.state.stt_supervisor
         configured = runtime.configured
         return {
-            "status": "ok",
+            # ok | degraded (speech engine fell back to the CPU) | unhealthy
+            # (speech engine unrecoverable; restart). Details under "stt".
+            "status": stt.status_word,
             "server_version": SERVER_VERSION,
             "whisper_model": settings.whisper_model,
+            "stt": stt.snapshot(),
             "configured": configured,
             "llm_provider": runtime.settings.llm_provider if configured else None,
             "gate_provider": (
@@ -236,9 +273,28 @@ def create_app() -> FastAPI:
             "est_cost_today_usd": round(
                 counter.value * settings.cost_per_verify_usd, 4
             ),
+            # Which parameters each active OpenRouter model accepts (from the
+            # public catalogue, or "assumed" when it was unreachable) and how
+            # verifications have been produced so far (strict / json_object /
+            # fallback per model). None unless an OpenRouter stage is active.
+            "openrouter": (
+                _openrouter_health(runtime.settings) if configured else None
+            ),
         }
 
     return app
+
+
+def _openrouter_health(settings: Settings) -> dict[str, Any] | None:
+    models = _active_openrouter_models(settings)
+    if not models:
+        return None
+    return {
+        "capabilities": {
+            slug: lookup_model_capabilities(slug).as_dict() for slug in sorted(models)
+        },
+        "verify_modes": verify_mode_snapshot(),
+    }
 
 
 app = create_app()

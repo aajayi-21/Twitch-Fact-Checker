@@ -201,7 +201,9 @@ class BaseTranscriber(ABC):
     """Engine-agnostic filter stack shared by every STT backend.
 
     Subclasses implement exactly two things — :meth:`load` (bring the engine
-    up, loudly) and :meth:`_run_model` (audio in, raw segments out). Every
+    up, loudly) and :meth:`_run_model` (audio in, raw segments out) — and may
+    override two resilience hooks, :meth:`warm_up` and
+    :meth:`fall_back_to_cpu`, that the STT supervisor drives. Every
     hallucination filter, the overlap trimming, and the per-session dedupe
     memory live here so both backends behave identically on the parts that
     took tuning.
@@ -272,6 +274,9 @@ class BaseTranscriber(ABC):
             else ("en" if self._looks_english_only(model_name) else None)
         )
         self._model: Any | None = None
+        # Set by fall_back_to_cpu(): the accelerator this engine was moved
+        # off after it broke mid-run (surfaced in describe() and /healthz).
+        self._degraded_from: str | None = None
 
     @staticmethod
     def _looks_english_only(model_name: str) -> bool:
@@ -311,6 +316,42 @@ class BaseTranscriber(ABC):
         """Release engine resources (GPU memory). Default: nothing to do."""
         self._model = None
 
+    def warm_up(self, budget_s: float | None = None) -> None:
+        """Run the inference path once so first-call costs are paid at startup.
+
+        Default: nothing to do. Engines whose accelerator kernels are
+        compiled lazily (the torch backend on XPU/CUDA: several seconds of
+        SYCL/CUDA JIT on the first window) override this; ctranslate2 has no
+        JIT and its first-call setup is well under one window, so
+        faster-whisper keeps the no-op. ``budget_s`` is the STT hop: a
+        steady-state pass slower than that is worth a warning.
+        """
+
+    def fall_back_to_cpu(self) -> None:
+        """Reload this engine on the CPU after its accelerator broke.
+
+        Called by :class:`app.stt_supervisor.SttSupervisor` on the STT
+        executor thread once consecutive windows have failed. ``unload`` is
+        best-effort — freeing memory on a poisoned GPU context can itself
+        raise — but ``load`` must fail loudly, exactly as at startup: the
+        supervisor turns that into an unrecoverable engine failure.
+
+        Raises:
+            RuntimeError: if the CPU load fails.
+        """
+        previous = self._device
+        try:
+            self.unload()
+        except Exception as exc:
+            logger.warning(
+                "unloading the broken %s engine failed (%s); loading on cpu anyway",
+                previous,
+                exc,
+            )
+        self._device = "cpu"
+        self._degraded_from = previous if previous != "cpu" else None
+        self.load()
+
     # ------------------------------------------------------------------ #
     # Shared surface
     # ------------------------------------------------------------------ #
@@ -324,7 +365,14 @@ class BaseTranscriber(ABC):
         return (
             f"{self.BACKEND_NAME}:{self._model_name} "
             f"(device={self._device}, compute_type={self._compute_type})"
+            f"{self._degraded_suffix()}"
         )
+
+    def _degraded_suffix(self) -> str:
+        """`` [degraded from xpu]`` after a CPU fallback, else empty."""
+        if self._degraded_from is None:
+            return ""
+        return f" [degraded from {self._degraded_from}]"
 
     @property
     def backend_name(self) -> str:
@@ -333,6 +381,11 @@ class BaseTranscriber(ABC):
     @property
     def device(self) -> str:
         return self._device
+
+    @property
+    def degraded_from(self) -> str | None:
+        """The accelerator this engine fell back from, or ``None``."""
+        return self._degraded_from
 
     @property
     def model_name(self) -> str:

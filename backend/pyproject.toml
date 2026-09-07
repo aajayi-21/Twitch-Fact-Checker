@@ -44,9 +44,15 @@ dependencies = [
 # detection (`--torch-backend=auto`) to pick the right wheel index — a lock
 # file cannot encode "whatever accelerator this machine has".
 [project.optional-dependencies]
+#
+# Upper bounds, unlike the base list: install_stt_gpu.sh installs this extra
+# OUTSIDE the lock (uv pip, accelerator index), so the lock cannot pin it and
+# a bare floor would let the next major of torch/transformers arrive silently
+# on the one code path (app/stt_torch.py) that tracks their generate()
+# internals. Bump deliberately after validating on real hardware.
 gpu = [
-    "torch>=2.6",
-    "transformers>=4.44",
+    "torch>=2.13,<2.14",
+    "transformers>=5.15,<6",
     "accelerate>=1.0",
 ]
 # The ingest CLI's OPTIONAL niceties. streamlink/ffmpeg are shelled out to as

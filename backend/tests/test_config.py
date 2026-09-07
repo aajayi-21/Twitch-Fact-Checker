@@ -156,3 +156,34 @@ class TestPerStageResolution:
             _env_file=None,
         )
         settings.require_llm_api_key()  # must not raise: ollama is keyless
+
+
+class TestSttResilienceSettings:
+    """Defaults and bounds for the STT supervisor knobs (app/stt_supervisor.py)."""
+
+    def test_defaults(self) -> None:
+        settings = Settings(_env_file=None)
+        assert settings.stt_warm_up is True
+        assert settings.stt_failure_threshold == 3
+        assert settings.stt_cpu_fallback is True
+        assert settings.session_stats_flush_s == 60.0
+
+    def test_env_overrides_parse(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("STT_WARM_UP", "false")
+        monkeypatch.setenv("STT_FAILURE_THRESHOLD", "5")
+        monkeypatch.setenv("STT_CPU_FALLBACK", "false")
+        monkeypatch.setenv("SESSION_STATS_FLUSH_S", "15")
+        settings = Settings(_env_file=None)
+        assert settings.stt_warm_up is False
+        assert settings.stt_failure_threshold == 5
+        assert settings.stt_cpu_fallback is False
+        assert settings.session_stats_flush_s == 15.0
+
+    @pytest.mark.parametrize("threshold", [0, -1])
+    def test_threshold_below_one_is_rejected(self, threshold: int) -> None:
+        with pytest.raises(ValueError):
+            Settings(stt_failure_threshold=threshold, _env_file=None)
+
+    def test_flush_interval_must_be_positive(self) -> None:
+        with pytest.raises(ValueError):
+            Settings(session_stats_flush_s=0, _env_file=None)

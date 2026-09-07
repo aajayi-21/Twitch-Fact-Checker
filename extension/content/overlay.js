@@ -80,6 +80,8 @@ class FactCheckOverlay {
     quota_cooldown: "Fact-checks paused: API quota is cooling down",
     rate_limited: "Fact-checks throttled: rate limit reached",
     stt_overload: "Transcription is falling behind — some audio was dropped",
+    stt_degraded: "Transcription GPU failed — switched to CPU (captions may lag)",
+    stt_failure: "transcription engine failed — restart the backend",
     llm_failure: "A fact-check failed — that claim was skipped",
   });
 

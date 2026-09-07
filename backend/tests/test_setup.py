@@ -18,11 +18,12 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from app import setup as setup_api
-from app.config import Settings, resolve_env_file
+from app.config import DEFAULT_OPENROUTER_GATE_MODEL, Settings, resolve_env_file
 from app.llm_provider import LLMRuntime
 from app.main import create_app
 from app.models import TranscriptSegment
 from app.rate_limit import QuotaCooldown
+from app.openrouter_catalogue import ModelCapabilities, OpenRouterCatalogue
 from app.setup import (
     CreditsInfo,
     ProviderKeyRejected,
@@ -213,7 +214,10 @@ class TestUnconfiguredSurface:
     ) -> None:
         response = unconfigured_client.get("/healthz")
         assert response.status_code == 200
-        assert response.json() == {
+        body = response.json()
+        # The speech-engine block is covered exactly in test_ws_protocol.
+        assert body.pop("stt")["state"] == "ok"
+        assert body == {
             "status": "ok",
             "server_version": "0.1.0",
             "whisper_model": "fake-whisper.en",
@@ -225,6 +229,7 @@ class TestUnconfiguredSurface:
             "verify_model": None,
             "checks_today": 0,
             "est_cost_today_usd": 0.0,
+            "openrouter": None,
         }
 
     def test_setup_status_reports_unconfigured_stages(
@@ -249,8 +254,8 @@ class TestUnconfiguredSurface:
                     "configured": False,
                     "key_hint": None,
                     "credits": None,
-                    "gate_model": "google/gemma-4-26b-a4b-it:free",
-                    "verify_model": "google/gemma-4-26b-a4b-it:free",
+                    "gate_model": DEFAULT_OPENROUTER_GATE_MODEL,
+                    "verify_model": DEFAULT_OPENROUTER_GATE_MODEL,
                 },
                 "gemini": {"configured": False, "key_hint": None},
                 "ollama": {
@@ -397,8 +402,8 @@ class TestCredentialsSuccess:
                     "configured": True,
                     "key_hint": "…alue",
                     "credits": None,
-                    "gate_model": "google/gemma-4-26b-a4b-it:free",
-                    "verify_model": "google/gemma-4-26b-a4b-it:free",
+                    "gate_model": DEFAULT_OPENROUTER_GATE_MODEL,
+                    "verify_model": DEFAULT_OPENROUTER_GATE_MODEL,
                 },
                 "gemini": {"configured": True, "key_hint": "…abcd"},
                 "ollama": {
@@ -466,7 +471,7 @@ class TestCredentialsSuccess:
         assert body["configured"] is True
         assert body["gate"] == {
             "provider": "openrouter",
-            "model": "google/gemma-4-26b-a4b-it:free",
+            "model": DEFAULT_OPENROUTER_GATE_MODEL,
             "configured": True,
         }
         assert body["verify"]["provider"] == "openrouter"
@@ -1035,25 +1040,72 @@ class TestSetupStages:
 # --------------------------------------------------------------------------- #
 
 CATALOGUE = {
+    DEFAULT_OPENROUTER_GATE_MODEL,
     "google/gemma-4-26b-a4b-it:free",
     "openai/gpt-oss-120b",
     "openai/gpt-oss-20b:free",
 }
 
 
-def _catalogue_ok(monkeypatch: pytest.MonkeyPatch, calls: list[int]) -> None:
-    async def fetch() -> set[str]:
-        calls.append(1)
-        return set(CATALOGUE)
+# Per-model supported_parameters as the live catalogue publishes them. The
+# free gemma endpoint has response_format but NOT structured_outputs; the
+# gpt-oss models list everything the transport sends.
+CATALOGUE_PARAMETERS: dict[str, list[str]] = {
+    DEFAULT_OPENROUTER_GATE_MODEL: [
+        "max_tokens",
+        "temperature",
+        "response_format",
+        "structured_outputs",
+        "reasoning",
+    ],
+    "google/gemma-4-26b-a4b-it:free": [
+        "max_tokens",
+        "temperature",
+        "response_format",
+        "reasoning",
+    ],
+    "openai/gpt-oss-120b": [
+        "max_tokens",
+        "temperature",
+        "response_format",
+        "structured_outputs",
+        "reasoning",
+    ],
+    "openai/gpt-oss-20b:free": [
+        "max_tokens",
+        "temperature",
+        "response_format",
+        "structured_outputs",
+        "reasoning",
+    ],
+}
 
-    monkeypatch.setattr(setup_api, "fetch_openrouter_model_slugs", fetch)
+
+def make_catalogue(
+    parameters: dict[str, list[str]] | None = None,
+) -> OpenRouterCatalogue:
+    parameters = CATALOGUE_PARAMETERS if parameters is None else parameters
+    return OpenRouterCatalogue(
+        models={
+            slug: ModelCapabilities(supported_parameters=frozenset(names))
+            for slug, names in parameters.items()
+        }
+    )
+
+
+def _catalogue_ok(monkeypatch: pytest.MonkeyPatch, calls: list[int]) -> None:
+    async def fetch() -> OpenRouterCatalogue:
+        calls.append(1)
+        return make_catalogue()
+
+    monkeypatch.setattr(setup_api, "fetch_openrouter_catalogue", fetch)
 
 
 def _catalogue_down(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fetch() -> set[str]:
+    async def fetch() -> OpenRouterCatalogue:
         raise ProviderUnreachable("openrouter is down")
 
-    monkeypatch.setattr(setup_api, "fetch_openrouter_model_slugs", fetch)
+    monkeypatch.setattr(setup_api, "fetch_openrouter_catalogue", fetch)
 
 
 class TestOpenRouterModelSlugs:
@@ -1078,8 +1130,8 @@ class TestOpenRouterModelSlugs:
         the stored OpenRouter slugs to prefill regardless of routing."""
         body = configured_client.get("/setup/status").json()
         openrouter = body["providers"]["openrouter"]
-        assert openrouter["gate_model"] == "google/gemma-4-26b-a4b-it:free"
-        assert openrouter["verify_model"] == "google/gemma-4-26b-a4b-it:free"
+        assert openrouter["gate_model"] == DEFAULT_OPENROUTER_GATE_MODEL
+        assert openrouter["verify_model"] == DEFAULT_OPENROUTER_GATE_MODEL
 
     def test_valid_slugs_persist_and_hot_swap(
         self,
@@ -1181,7 +1233,7 @@ class TestOpenRouterModelSlugs:
         assert response.status_code == 200
         assert calls == []
         assert response.json()["providers"]["openrouter"]["gate_model"] == (
-            "google/gemma-4-26b-a4b-it:free"
+            DEFAULT_OPENROUTER_GATE_MODEL
         )
 
     def test_model_change_resets_capability_latches(
@@ -1233,8 +1285,8 @@ class TestOpenRouterModelSlugs:
             json={
                 "gate_provider": "openrouter",
                 "verify_provider": "openrouter",
-                "gate_model": "google/gemma-4-26b-a4b-it:free",
-                "verify_model": "google/gemma-4-26b-a4b-it:free",
+                "gate_model": DEFAULT_OPENROUTER_GATE_MODEL,
+                "verify_model": DEFAULT_OPENROUTER_GATE_MODEL,
             },
         )
         assert response.status_code == 200
@@ -1326,7 +1378,7 @@ class TestStageSlugsOnlyValidateWhatChanged:
         calls: list[int] = []
         _catalogue_ok(monkeypatch, calls)
         _install_fake_runtime_builder(monkeypatch, FakeGenAIClient())
-        stored = "google/gemma-4-26b-a4b-it:free"
+        stored = DEFAULT_OPENROUTER_GATE_MODEL
         response = configured_client.post(
             "/setup/stages",
             json={
@@ -1345,7 +1397,7 @@ class TestStageSlugsOnlyValidateWhatChanged:
         """Moving a stage to Ollama must not require openrouter.ai."""
         _catalogue_down(monkeypatch)
         _install_fake_runtime_builder(monkeypatch, FakeGenAIClient())
-        stored = "google/gemma-4-26b-a4b-it:free"
+        stored = DEFAULT_OPENROUTER_GATE_MODEL
         response = configured_client.post(
             "/setup/stages",
             json={
@@ -1366,7 +1418,7 @@ class TestStageSlugsOnlyValidateWhatChanged:
         calls: list[int] = []
         _catalogue_ok(monkeypatch, calls)
         _install_fake_runtime_builder(monkeypatch, FakeGenAIClient())
-        stored = "google/gemma-4-26b-a4b-it:free"
+        stored = DEFAULT_OPENROUTER_GATE_MODEL
         response = configured_client.post(
             "/setup/stages",
             json={

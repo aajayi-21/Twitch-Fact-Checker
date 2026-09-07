@@ -15,7 +15,7 @@ The following architecture is a recommendation that should be used as inspiratio
 
 ### Backend: Python API (`/backend`)
 *   **Core:** Python 3.11+, FastAPI (for high-performance, asynchronous REST/WebSocket endpoints).
-*   **LLM Integration:** Google GenAI SDK (Gemini Pro/Flash with Google Search Tool enabled). Or another model
+*   **LLM Integration:** OpenRouter is the primary provider (OpenAI SDK against the OpenRouter API, the `web` plugin for search grounding, capability-aware strict JSON via the public model catalogue). Google GenAI SDK (Gemini + Google Search tool) is the optional secondary provider.
 *   **Logic Pipeline:** 
     1. Receive transcribed text buffer.
     2. Determine if the buffer contains a factual claim worth checking.
