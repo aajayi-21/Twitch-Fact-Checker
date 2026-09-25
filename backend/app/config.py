@@ -211,11 +211,18 @@ class Settings(BaseSettings):
     # Speech-to-text engine:
     #   "faster-whisper" (default) — ctranslate2; CPU and CUDA only, fastest
     #     on CPU, and the model name is a ctranslate2 name ("distil-small.en").
-    #   "torch" — transformers + PyTorch; the ONLY way to reach Intel XPU or
+    #   "torch" — Whisper via transformers + PyTorch; reaches Intel XPU and
     #     AMD ROCm, and the model name is a Hugging Face repo id
     #     ("openai/whisper-small.en"). Install it with
     #     scripts/install_stt_gpu.sh.
-    stt_backend: Literal["faster-whisper", "torch"] = "faster-whisper"
+    #   "parakeet" — NVIDIA Parakeet TDT via transformers + PyTorch (same
+    #     install); markedly more accurate than whisper-small.en and cheap on
+    #     variable-length VAD clips. Model: PARAKEET_MODEL. Device/dtype come
+    #     from WHISPER_DEVICE / WHISPER_COMPUTE_TYPE.
+    stt_backend: Literal["faster-whisper", "torch", "parakeet"] = "faster-whisper"
+    # Hugging Face repo id for STT_BACKEND=parakeet. v3 is the Parakeet with
+    # official transformers weights (25 European languages, auto-detected).
+    parakeet_model: str = "nvidia/parakeet-tdt-0.6b-v3"
 
     whisper_model: str = "distil-small.en"
     # cpu | cuda | rocm | xpu | auto. "rocm" is an alias for PyTorch's HIP
@@ -231,6 +238,13 @@ class Settings(BaseSettings):
     # (".en" / "…-en" names) pin "en", everything else auto-detects. Set it
     # explicitly for a multilingual model on a known-language stream.
     whisper_language: str = ""
+
+    @property
+    def stt_model_name(self) -> str:
+        """The active STT engine's model id (healthz / ready frame / logs)."""
+        if self.stt_backend == "parakeet":
+            return self.parakeet_model
+        return self.whisper_model
 
     @property
     def whisper_language_or_none(self) -> str | None:

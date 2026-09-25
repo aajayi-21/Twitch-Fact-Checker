@@ -94,6 +94,7 @@ class TestHealthz:
             "status": "ok",
             "server_version": "0.1.0",
             "whisper_model": "fake-whisper.en",
+            "stt_segmentation": "window",
             "stt": {
                 "state": "ok",
                 "backend": "fake",

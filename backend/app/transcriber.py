@@ -615,7 +615,7 @@ Transcriber = FasterWhisperTranscriber
 
 #: STT_BACKEND value -> loader. Torch is imported lazily inside the factory
 #: so the default install never needs it (mirrors llm_provider's registry).
-_STT_BACKENDS: tuple[str, ...] = ("faster-whisper", "torch")
+_STT_BACKENDS: tuple[str, ...] = ("faster-whisper", "torch", "parakeet")
 
 
 def create_transcriber(settings: "Settings") -> BaseTranscriber:
@@ -640,6 +640,21 @@ def create_transcriber(settings: "Settings") -> BaseTranscriber:
             device=settings.whisper_device,
             compute_type=settings.whisper_compute_type,
             language=settings.whisper_language_or_none,
+        )
+    if backend == "parakeet":
+        from app.stt_parakeet import ParakeetTranscriber
+
+        return ParakeetTranscriber(
+            model_name=settings.parakeet_model,
+            device=settings.whisper_device,
+            compute_type=settings.whisper_compute_type,
+            language=settings.whisper_language_or_none,
+            # The longest input the engine will see: warm-up compiles for it.
+            warm_up_seconds=(
+                settings.stt_vad_max_segment_s
+                if settings.resolved_stt_segmentation == "vad"
+                else settings.stt_window_s
+            ),
         )
     raise ValueError(
         f"unknown STT_BACKEND {backend!r}; expected one of {list(_STT_BACKENDS)}"

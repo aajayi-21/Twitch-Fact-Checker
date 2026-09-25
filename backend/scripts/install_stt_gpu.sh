@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Install the GPU speech-to-text backend (torch + transformers) into this
-# project's uv environment, picking the right PyTorch wheel for your hardware.
+# Install the GPU speech-to-text backends (torch + transformers, plus librosa
+# for Parakeet) into this project's uv environment, picking the right PyTorch
+# wheel for your hardware. Serves STT_BACKEND=parakeet and STT_BACKEND=torch.
 #
 #   ./scripts/install_stt_gpu.sh          # auto-detect (cuda / rocm / xpu / cpu)
 #   ./scripts/install_stt_gpu.sh xpu      # force Intel Arc / Core Ultra iGPU
@@ -96,6 +97,7 @@ echo "Installed:"
 uv run --no-sync python - "$BACKEND" <<'PY'
 import sys
 
+import librosa
 import torch
 import transformers
 
@@ -106,6 +108,7 @@ xpu_ok = getattr(getattr(torch, "xpu", None), "is_available", lambda: False)()
 
 print(f"  torch        {torch.__version__}")
 print(f"  transformers {transformers.__version__}")
+print(f"  librosa      {librosa.__version__}")
 print(f"  cuda avail   {cuda_ok}")
 if hip:
     print(f"  rocm/hip     {hip}")
@@ -129,7 +132,10 @@ if requested not in {"cpu", "auto"} and not (cuda_ok or xpu_ok):
 PY
 
 echo
-echo "Now set the backend in backend/.env:"
-echo "    STT_BACKEND=torch"
+echo "Now set the backend in backend/.env — Parakeet (recommended):"
+echo "    STT_BACKEND=parakeet         # nvidia/parakeet-tdt-0.6b-v3, VAD segmentation"
 echo "    WHISPER_DEVICE=auto          # or cuda / rocm / xpu / cpu"
+echo "or Whisper via transformers:"
+echo "    STT_BACKEND=torch"
+echo "    WHISPER_DEVICE=auto"
 echo "    WHISPER_MODEL=openai/whisper-small.en   # a Hugging Face repo id"

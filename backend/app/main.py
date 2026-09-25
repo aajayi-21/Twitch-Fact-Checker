@@ -250,7 +250,10 @@ def create_app() -> FastAPI:
             # (speech engine unrecoverable; restart). Details under "stt".
             "status": stt.status_word,
             "server_version": SERVER_VERSION,
-            "whisper_model": settings.whisper_model,
+            # Key kept for existing clients; it names the ACTIVE STT model
+            # (a Parakeet repo id under STT_BACKEND=parakeet).
+            "whisper_model": settings.stt_model_name,
+            "stt_segmentation": settings.resolved_stt_segmentation,
             "stt": stt.snapshot(),
             "configured": configured,
             "llm_provider": runtime.settings.llm_provider if configured else None,
