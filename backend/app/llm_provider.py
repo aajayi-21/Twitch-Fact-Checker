@@ -64,21 +64,37 @@ class ProviderSpec:
 
 
 def _openrouter_spec() -> ProviderSpec:
+    from app.llm_jev import JevClaimGate
     from app.llm_openrouter import (
         OpenRouterClaimGate,
         OpenRouterFactChecker,
         create_openrouter_client,
     )
 
-    return ProviderSpec(
-        make_client=lambda s: create_openrouter_client(s.openrouter_api_key),
-        make_gate=lambda s, client: OpenRouterClaimGate(
+    def make_gate(s: Settings, client: Any) -> ClaimGate:
+        extractor = OpenRouterClaimGate(
             client=client,
-            model=s.openrouter_gate_model,
+            model=(
+                s.openrouter_extraction_model if s.uses_jev else s.openrouter_gate_model
+            ),
             gate_interval_s=s.gate_interval_s,
             gate_timeout_s=s.gate_timeout_s,
             reasoning_effort=s.openrouter_reasoning_effort_or_none,
-        ),
+        )
+        if not s.uses_jev:
+            return extractor
+        return JevClaimGate(
+            client=client,
+            model=s.openrouter_gate_model,
+            extractor=extractor,
+            min_check_probability=s.jev_min_check_probability,
+            gate_interval_s=s.gate_interval_s,
+            gate_timeout_s=s.gate_timeout_s,
+        )
+
+    return ProviderSpec(
+        make_client=lambda s: create_openrouter_client(s.openrouter_api_key),
+        make_gate=make_gate,
         make_checker=lambda s, client, cooldown: OpenRouterFactChecker(
             client=client,
             verify_model=s.openrouter_verify_model,

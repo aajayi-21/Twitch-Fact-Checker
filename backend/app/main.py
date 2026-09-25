@@ -44,13 +44,8 @@ _CORS_ORIGIN_REGEX = (
 
 
 def _active_openrouter_models(settings: Settings) -> set[str]:
-    """The OpenRouter slugs actually routed to a pipeline stage."""
-    models: set[str] = set()
-    if settings.resolved_gate_provider == "openrouter":
-        models.add(settings.openrouter_gate_model)
-    if settings.resolved_verify_provider == "openrouter":
-        models.add(settings.openrouter_verify_model)
-    return models
+    """Active generative slugs; Jev does not use chat capabilities."""
+    return settings.active_openrouter_chat_models
 
 
 @asynccontextmanager
@@ -294,6 +289,16 @@ def _openrouter_health(settings: Settings) -> dict[str, Any] | None:
             slug: lookup_model_capabilities(slug).as_dict() for slug in sorted(models)
         },
         "verify_modes": verify_mode_snapshot(),
+        "decision_gate": (
+            {
+                "model": settings.openrouter_gate_model,
+                "extraction_model": settings.openrouter_extraction_model,
+                "min_check_probability": settings.jev_min_check_probability,
+                "api": "decisions",
+            }
+            if settings.uses_jev
+            else None
+        ),
     }
 
 

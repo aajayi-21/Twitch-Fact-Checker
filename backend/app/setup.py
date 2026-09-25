@@ -37,7 +37,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from app.config import Settings, resolve_env_file
+from app.config import JEV_MODELS, Settings, is_jev_model, resolve_env_file
 from app.llm_openrouter import reset_openrouter_capability_latches
 from app.llm_provider import LLMRuntime, build_llm_runtime, close_llm_runtime
 from app.openrouter_catalogue import (  # noqa: F401 — re-exported for callers/tests
@@ -61,6 +61,7 @@ OPENROUTER_CREDITS_URL = "https://openrouter.ai/api/v1/credits"
 #: SetupStagesRequest field -> the .env key that persists it.
 _MODEL_ENV_KEYS = {
     "gate_model": "OPENROUTER_GATE_MODEL",
+    "extraction_model": "OPENROUTER_EXTRACTION_MODEL",
     "verify_model": "OPENROUTER_VERIFY_MODEL",
 }
 
@@ -107,7 +108,7 @@ class OpenRouterStatus(BaseModel):
     """``key_hint`` is the ONLY key material that ever leaves the backend:
     an ellipsis plus the last four characters. ``credits`` is best-effort.
 
-    ``gate_model``/``verify_model`` are the stored OpenRouter slugs, reported
+    The three model fields are the stored OpenRouter slugs, reported
     even when OpenRouter is not the active provider for that stage.
     ``StageStatus.model`` shows only the ACTIVE provider's model, so without
     these the options page could never prefill (or dirty-check) a slug for a
@@ -118,6 +119,7 @@ class OpenRouterStatus(BaseModel):
     key_hint: str | None
     credits: CreditsInfo | None
     gate_model: str
+    extraction_model: str
     verify_model: str
 
 
@@ -166,8 +168,9 @@ class SetupCredentialsRequest(BaseModel):
 class SetupStagesRequest(BaseModel):
     """Body for POST /setup/stages — per-stage provider routing and models.
 
-    ``gate_model``/``verify_model`` are OpenRouter slugs (e.g.
-    ``"openai/gpt-oss-120b"``). Empty means "leave the stored slug alone",
+    ``gate_model``, ``extraction_model``, and ``verify_model`` are OpenRouter
+    slugs. The extraction model rewrites Jev-approved batches and judges
+    contradictions. Empty means "leave the stored slug alone",
     which keeps this endpoint backward-compatible with clients that send only
     the two provider fields.
     """
@@ -175,6 +178,7 @@ class SetupStagesRequest(BaseModel):
     gate_provider: str = ""
     verify_provider: str = ""
     gate_model: str = ""
+    extraction_model: str = ""
     verify_model: str = ""
 
 
@@ -489,6 +493,7 @@ async def _build_status(settings: Settings) -> SetupStatusResponse:
                 key_hint=_key_hint(settings, "openrouter"),
                 credits=credits,
                 gate_model=settings.openrouter_gate_model,
+                extraction_model=settings.openrouter_extraction_model,
                 verify_model=settings.openrouter_verify_model,
             ),
             gemini=GeminiStatus(
@@ -637,7 +642,7 @@ async def submit_credentials(
     if provider == "openrouter":
         # Best-effort: an unreachable catalogue only costs a warning.
         await prime_openrouter_capabilities(
-            {new_settings.openrouter_gate_model, new_settings.openrouter_verify_model}
+            new_settings.active_openrouter_chat_models
         )
     await _swap_runtime(request, new_settings)
     return await _build_status(new_settings)
@@ -649,8 +654,9 @@ async def submit_stages(
 ) -> SetupStatusResponse:
     """Route each pipeline stage to a provider and model; persist + hot-swap.
 
-    ``gate_model``/``verify_model`` are OpenRouter slugs, validated against
-    the live catalogue; empty leaves the stored slug untouched.
+    Generative model slugs are validated against the live catalogue; supported
+    Jev IDs are gate-only and use the Decisions API. Empty model fields leave
+    stored slugs untouched.
 
     Responses: 400 unknown provider (or ollama for verify — local verify is
     not supported) or an unknown model slug, 409 when a chosen provider is
@@ -708,24 +714,36 @@ async def submit_stages(
     # together so a two-model change still costs one catalogue fetch.
     stored_models = {
         "gate_model": current.openrouter_gate_model,
+        "extraction_model": current.openrouter_extraction_model,
         "verify_model": current.openrouter_verify_model,
     }
     requested_models = {
-        "gate_model": body.gate_model.strip() or stored_models["gate_model"],
-        "verify_model": body.verify_model.strip() or stored_models["verify_model"],
+        field: getattr(body, field).strip() or stored
+        for field, stored in stored_models.items()
     }
     changed_models = {
         field: slug
         for field, slug in requested_models.items()
         if slug != stored_models[field]
     }
+    # Decisions models are absent from the chat catalogue. Allow documented
+    # Jev IDs only in the gate slot; never route them to chat completions.
+    for field, slug in requested_models.items():
+        if is_jev_model(slug) and (field != "gate_model" or slug not in JEV_MODELS):
+            raise HTTPException(
+                status_code=400,
+                detail=f"{field}: use a supported Jev ID for gate decisions only",
+            )
+    changed_chat_models = {
+        field: slug for field, slug in changed_models.items() if not is_jev_model(slug)
+    }
     catalogue: OpenRouterCatalogue | None = None
-    if changed_models:
+    if changed_chat_models:
         try:
             catalogue = await fetch_openrouter_catalogue()
         except ProviderUnreachable as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
-        for field, slug in changed_models.items():
+        for field, slug in changed_chat_models.items():
             try:
                 await validate_openrouter_model(slug, catalogue.slugs)
             except ModelSlugRejected as exc:
@@ -755,6 +773,7 @@ async def submit_stages(
         gate_provider=gate_provider,
         verify_provider=verify_provider,
         openrouter_gate_model=requested_models["gate_model"],
+        openrouter_extraction_model=requested_models["extraction_model"],
         openrouter_verify_model=requested_models["verify_model"],
     )
     if changed_models:
@@ -764,8 +783,9 @@ async def submit_stages(
         reset_openrouter_capability_latches()
         # Same fetch that validated the slugs also tells the transport which
         # parameters each new model accepts — zero extra requests.
-        await prime_openrouter_capabilities(
-            requested_models.values(), catalogue=catalogue
-        )
+        if catalogue is not None:
+            await prime_openrouter_capabilities(
+                new_settings.active_openrouter_chat_models, catalogue=catalogue
+            )
     await _swap_runtime(request, new_settings)
     return await _build_status(new_settings)

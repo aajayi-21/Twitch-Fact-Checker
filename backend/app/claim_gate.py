@@ -1,16 +1,16 @@
 """Interval-throttled claim extraction ("the gate") — provider-neutral core.
 
-The gate batches transcript text and sends *one* ungrounded structured call
-per interval instead of one per chunk — claim detection needs no web search,
-so it runs on the cheap gate model with temperature 0.
+The gate batches transcript text for one logical pass per interval instead
+of per chunk. The default Jev gate screens the batch with a typed decision,
+then rewrites approved batches through a generative extractor. Other gates
+extract directly. Neither path needs web search.
 
 This module owns everything that is independent of the LLM provider:
 transcript buffering, the interval/min-words throttle, the context tail used
 for pronoun resolution, and the drain-before-call crash-safety dance. The
 actual LLM transport is a single abstract method, :meth:`ClaimGate._extract`,
-implemented by :class:`app.llm_gemini.GeminiClaimGate` and
-:class:`app.llm_openrouter.OpenRouterClaimGate` so SDK drift stays local to
-those modules.
+implemented by the Jev, OpenRouter, Gemini, and local adapters so SDK drift
+stays local to those modules.
 """
 
 import logging
@@ -140,7 +140,8 @@ class ClaimGate(ABC):
         self._context_words: list[str] = []
         # -inf so the very first run only waits for MIN_NEW_WORDS.
         self._last_run_at = float("-inf")
-        # Actual LLM gate calls made (the empty-buffer short-circuit in
+        # Logical gate passes made (Jev + extraction counts as one; the
+        # empty-buffer short-circuit in
         # run() does NOT count). Session-scoped for free — the gate is
         # built fresh per session; the pipeline reads it at session end.
         self.calls_made = 0
@@ -182,7 +183,7 @@ class ClaimGate(ABC):
         return await self.extract_claims(context, new_text)
 
     async def extract_claims(self, context: str, new_text: str) -> list[GateClaim]:
-        """One structured gate call over ``CONTEXT`` + ``NEW TRANSCRIPT``.
+        """One gate pass over ``CONTEXT`` + ``NEW TRANSCRIPT``.
 
         Shared by :meth:`run` and the ``/debug/text`` path (which gates raw
         text without touching the session buffer). Raises :class:`GateError`

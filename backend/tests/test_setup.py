@@ -18,7 +18,13 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from app import setup as setup_api
-from app.config import DEFAULT_OPENROUTER_GATE_MODEL, Settings, resolve_env_file
+from app.config import (
+    DEFAULT_OPENROUTER_GATE_MODEL,
+    DEFAULT_OPENROUTER_EXTRACTION_MODEL,
+    DEFAULT_OPENROUTER_VERIFY_MODEL,
+    Settings,
+    resolve_env_file,
+)
 from app.llm_provider import LLMRuntime
 from app.main import create_app
 from app.models import TranscriptSegment
@@ -255,7 +261,8 @@ class TestUnconfiguredSurface:
                     "key_hint": None,
                     "credits": None,
                     "gate_model": DEFAULT_OPENROUTER_GATE_MODEL,
-                    "verify_model": DEFAULT_OPENROUTER_GATE_MODEL,
+                    "extraction_model": DEFAULT_OPENROUTER_EXTRACTION_MODEL,
+                    "verify_model": DEFAULT_OPENROUTER_VERIFY_MODEL,
                 },
                 "gemini": {"configured": False, "key_hint": None},
                 "ollama": {
@@ -403,7 +410,8 @@ class TestCredentialsSuccess:
                     "key_hint": "…alue",
                     "credits": None,
                     "gate_model": DEFAULT_OPENROUTER_GATE_MODEL,
-                    "verify_model": DEFAULT_OPENROUTER_GATE_MODEL,
+                    "extraction_model": DEFAULT_OPENROUTER_EXTRACTION_MODEL,
+                    "verify_model": DEFAULT_OPENROUTER_VERIFY_MODEL,
                 },
                 "gemini": {"configured": True, "key_hint": "…abcd"},
                 "ollama": {
@@ -1040,7 +1048,7 @@ class TestSetupStages:
 # --------------------------------------------------------------------------- #
 
 CATALOGUE = {
-    DEFAULT_OPENROUTER_GATE_MODEL,
+    DEFAULT_OPENROUTER_VERIFY_MODEL,
     "google/gemma-4-26b-a4b-it:free",
     "openai/gpt-oss-120b",
     "openai/gpt-oss-20b:free",
@@ -1051,7 +1059,7 @@ CATALOGUE = {
 # free gemma endpoint has response_format but NOT structured_outputs; the
 # gpt-oss models list everything the transport sends.
 CATALOGUE_PARAMETERS: dict[str, list[str]] = {
-    DEFAULT_OPENROUTER_GATE_MODEL: [
+    DEFAULT_OPENROUTER_VERIFY_MODEL: [
         "max_tokens",
         "temperature",
         "response_format",
@@ -1131,7 +1139,88 @@ class TestOpenRouterModelSlugs:
         body = configured_client.get("/setup/status").json()
         openrouter = body["providers"]["openrouter"]
         assert openrouter["gate_model"] == DEFAULT_OPENROUTER_GATE_MODEL
-        assert openrouter["verify_model"] == DEFAULT_OPENROUTER_GATE_MODEL
+        assert openrouter["verify_model"] == DEFAULT_OPENROUTER_VERIFY_MODEL
+        assert openrouter["extraction_model"] == DEFAULT_OPENROUTER_EXTRACTION_MODEL
+
+    def test_jev_alias_is_accepted_without_chat_catalogue(
+        self, configured_client, monkeypatch
+    ) -> None:
+        current = configured_client.app.state.llm_runtime.settings
+        current.openrouter_gate_model = "inception/mercury-2.5-preview"
+        _catalogue_down(monkeypatch)
+        _install_fake_runtime_builder(monkeypatch, FakeGenAIClient())
+        response = configured_client.post(
+            "/setup/stages",
+            json={
+                "gate_provider": "openrouter",
+                "verify_provider": "gemini",
+                "gate_model": DEFAULT_OPENROUTER_GATE_MODEL,
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["gate"]["model"] == DEFAULT_OPENROUTER_GATE_MODEL
+
+    @pytest.mark.parametrize("field", ["extraction_model", "verify_model"])
+    def test_jev_rejected_for_generative_roles_without_persisting(
+        self, configured_client, stages_env_file, field
+    ) -> None:
+        before = stages_env_file.read_text()
+        response = configured_client.post(
+            "/setup/stages",
+            json={
+                "gate_provider": "openrouter",
+                "verify_provider": "openrouter",
+                field: DEFAULT_OPENROUTER_GATE_MODEL,
+            },
+        )
+        assert response.status_code == 400
+        assert "gate decisions only" in response.json()["detail"]
+        assert stages_env_file.read_text() == before
+
+    def test_extraction_model_validates_persists_and_hot_swaps(
+        self, configured_client, stages_env_file, monkeypatch
+    ) -> None:
+        calls = []
+        _catalogue_ok(monkeypatch, calls)
+        _install_fake_runtime_builder(monkeypatch, FakeGenAIClient())
+        response = configured_client.post(
+            "/setup/stages",
+            json={
+                "gate_provider": "openrouter",
+                "verify_provider": "openrouter",
+                "extraction_model": "openai/gpt-oss-120b",
+            },
+        )
+        assert response.status_code == 200
+        assert (
+            response.json()["providers"]["openrouter"]["extraction_model"]
+            == "openai/gpt-oss-120b"
+        )
+        assert (
+            configured_client.app.state.llm_runtime.settings.openrouter_extraction_model
+            == "openai/gpt-oss-120b"
+        )
+        assert (
+            "OPENROUTER_EXTRACTION_MODEL=openai/gpt-oss-120b"
+            in stages_env_file.read_text()
+        )
+        assert calls == [1]
+
+    def test_unknown_extraction_model_is_rejected(
+        self, configured_client, stages_env_file, monkeypatch
+    ) -> None:
+        _catalogue_ok(monkeypatch, [])
+        before = stages_env_file.read_text()
+        response = configured_client.post(
+            "/setup/stages",
+            json={
+                "gate_provider": "openrouter",
+                "verify_provider": "openrouter",
+                "extraction_model": "acme/unknown",
+            },
+        )
+        assert response.status_code == 400
+        assert stages_env_file.read_text() == before
 
     def test_valid_slugs_persist_and_hot_swap(
         self,
@@ -1286,7 +1375,7 @@ class TestOpenRouterModelSlugs:
                 "gate_provider": "openrouter",
                 "verify_provider": "openrouter",
                 "gate_model": DEFAULT_OPENROUTER_GATE_MODEL,
-                "verify_model": DEFAULT_OPENROUTER_GATE_MODEL,
+                "verify_model": DEFAULT_OPENROUTER_VERIFY_MODEL,
             },
         )
         assert response.status_code == 200
@@ -1385,7 +1474,7 @@ class TestStageSlugsOnlyValidateWhatChanged:
                 "gate_provider": "openrouter",
                 "verify_provider": "gemini",
                 "gate_model": stored,
-                "verify_model": stored,
+                "verify_model": DEFAULT_OPENROUTER_VERIFY_MODEL,
             },
         )
         assert response.status_code == 200
@@ -1404,7 +1493,7 @@ class TestStageSlugsOnlyValidateWhatChanged:
                 "gate_provider": "openrouter",
                 "verify_provider": "gemini",
                 "gate_model": stored,
-                "verify_model": stored,
+                "verify_model": DEFAULT_OPENROUTER_VERIFY_MODEL,
             },
         )
         assert response.status_code == 200
@@ -1425,7 +1514,7 @@ class TestStageSlugsOnlyValidateWhatChanged:
                 "gate_provider": "openrouter",
                 "verify_provider": "openrouter",
                 "gate_model": "openai/gpt-oss-20b:free",
-                "verify_model": stored,
+                "verify_model": DEFAULT_OPENROUTER_VERIFY_MODEL,
             },
         )
         assert response.status_code == 200
