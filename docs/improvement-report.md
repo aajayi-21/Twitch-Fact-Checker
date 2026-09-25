@@ -114,6 +114,17 @@ Risk: this is a rewrite of the *most-tested* part of the backend (`test_transcri
 windowed path.** That also gives you an A/B harness for measuring the accuracy claim
 rather than asserting it.
 
+> **ADDRESSED (2026-09-24, `feat/parakeet-vad-jev-prescreen`).**
+> `STT_SEGMENTATION=auto|window|vad` (`app/segmenter.py`): Silero utterance
+> cuts with a 10 s cap (below the ring's 12 s high watermark rather than
+> 15 s), sample-exact ring positions, and the overlap trim / suffix dedupe
+> switched off for non-overlapping clips instead of deleted — the windowed
+> path is unchanged and still the default for the Whisper engines. `auto`
+> picks VAD for the new Parakeet backend, where it pays most: Parakeet has no
+> 30 s padding, so variable-length clips are cheap. On the synthetic fixture,
+> Parakeet with VAD scored 7.1 % WER against 21.3 % for the same model on
+> 4 s windows.
+
 **Tier 3 — speech-vs-music discrimination (measure before you build).**
 
 The tempting move is a small audio classifier (YAMNet-class, ~4 MB) in front of Whisper.
@@ -591,6 +602,14 @@ entirely content farms or fan wikis) fits the existing structure exactly and is 
 > labelled verdict rated below `strong`. Production showed the citation count alone
 > carried no signal: Exa always returned five results, so the no-sources rule never
 > fired in 90 verdicts. The domain tier list remains a follow-up.
+>
+> **MEASURED (2026-09-24, `feat/parakeet-vad-jev-prescreen`).** The tier list
+> moved to `app/source_quality.py` and is now measured over every labelled
+> verdict (dashboard card, `/stats/summary`, `scripts/report_source_tiers.py`)
+> without being enforced. An "A/B source required" rule would downgrade 33 of
+> 111 labelled production verdicts, but most of those cite reputable domains
+> the list simply does not know yet (academic publishers, DW, France 24), so
+> the next step is extending the list, not enforcing it.
 
 **6.6 — The extension has zero tests.** ~2,900 lines of JS. The pure-logic parts —
 `getEnabledTopicSlugs`, the settings merge, `encodeInt16Le`, the reconnect backoff — are

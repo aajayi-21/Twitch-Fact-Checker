@@ -3,9 +3,9 @@
 A Chrome extension (Manifest V3, named **"Live Stream Fact-Checker"**) plus a local
 Python backend that fact-checks a live stream in real time. Supported sites: **Twitch,
 YouTube (watch pages and live), Kick, and Rumble**. The extension captures the tab's
-audio and streams it to a local FastAPI server, which transcribes it with
-`faster-whisper`, screens transcript batches with Jev, extracts verifiable claims
-from approved batches, verifies them with a web-search-grounded LLM, and pushes
+audio and streams it to a local FastAPI server, which transcribes it (with
+`faster-whisper`, or NVIDIA Parakeet on a GPU), extracts verifiable claims with an
+LLM "claim gate", verifies them with a web-search-grounded LLM call, and pushes
 **TRUE / FALSE / MISLEADING / UNVERIFIED** verdicts (with sources) back to a
 Shadow-DOM overlay rendered over the player.
 
@@ -61,7 +61,7 @@ Chrome (extension)                              Local backend (127.0.0.1:8710)
 │ offscreen document              │           ┌───────────────────────────────┐
 │   tabCapture → AudioContext     │  16 kHz   │ FastAPI  /ws/audio            │
 │   → lowpass ×2 → worklet        │  PCM over │  ring buffer → faster-whisper │
-│   → Int16 PCM ─────────────────────WebSocket──→ Jev → claim extraction    │
+│   → Int16 PCM ─────────────────────WebSocket──→ claim gate (LLM, ungrounded)│
 │   ← JSON verdict frames ────────────────────←─ grounded verify (LLM + web  │
 │   │                             │           │     search) → verdict        │
 │ content script (supported sites)│           │  POST /debug/text (test path)│
@@ -151,14 +151,42 @@ startup — expect a one-time delay. On slow machines, set `WHISPER_MODEL=base` 
 
 ## Speech-to-text backends (CPU, CUDA, ROCm, XPU)
 
-Two engines, one filter stack — `STT_BACKEND` picks which:
+Three engines, one filter stack — `STT_BACKEND` picks which:
 
-| | `faster-whisper` (default) | `torch` |
-|---|---|---|
-| Devices | cpu, cuda | cpu, **cuda**, **rocm**, **xpu** |
-| Model name | ctranslate2 (`distil-small.en`) | HF repo id (`openai/whisper-small.en`) |
-| Speed | fastest on CPU (int8) | needed for Intel/AMD GPUs |
-| Install | included | `./backend/scripts/install_stt_gpu.sh` |
+| | `faster-whisper` (default) | `torch` | `parakeet` (recommended with a GPU) |
+|---|---|---|---|
+| Model | Whisper, ctranslate2 name (`distil-small.en`) | Whisper, HF repo id (`openai/whisper-small.en`) | `nvidia/parakeet-tdt-0.6b-v3` (`PARAKEET_MODEL`) |
+| Devices | cpu, cuda | cpu, **cuda**, **rocm**, **xpu** | cpu, **cuda**, **rocm**, **xpu** |
+| Cutting | 4 s windows | 4 s windows | VAD utterances |
+| Install | included | `./backend/scripts/install_stt_gpu.sh` | same script |
+
+**Parakeet** (NVIDIA's FastConformer-TDT, via transformers) is markedly more
+accurate than the small Whisper checkpoints (Open ASR Leaderboard average WER
+~6.8 vs ~9.2 for `whisper-small.en`; ~11.4 vs ~17.9 on noisy AMI meetings), and it
+encodes only the audio it is given, where Whisper pads every input to 30 s. v3 is
+the Parakeet with official transformers weights (v2 ships only a NeMo `.nemo`); it
+auto-detects 25 European languages. On the synthetic fixture
+(`scripts/compare_stt.py`, 42.7 s):
+
+| Engine (Intel Arc 140V iGPU unless noted) | WER | STT calls | p50 per call | compute / audio |
+|---|---|---|---|---|
+| `parakeet` + VAD, xpu fp16 | **7.1 %** | 5 | 424 ms | **0.06×** |
+| `parakeet` + 4 s windows | 21.3 % | 13 | 284 ms | 0.08× |
+| `torch` `whisper-small.en` + windows | 23.6 % | 13 | 761 ms | 0.23× |
+| `faster-whisper` `distil-small.en`, CPU int8 | 24.4 % | 13 | 1828 ms | 0.56× |
+
+Most of the windowed engines' errors are words chopped at window boundaries, which
+is what VAD segmentation removes. Pure noise, tones and silence make Parakeet emit
+no tokens at all (no "thanks for watching" hallucinations).
+
+**Segmentation (`STT_SEGMENTATION=auto|window|vad`).** `window` transcribes a fixed
+`STT_WINDOW_S` (4.0 s) every `STT_HOP_S` (3.5 s) and trims the overlap. `vad` cuts at
+utterance boundaries instead: Silero VAD finds speech, and a clip is transcribed once
+its speech has ended (`STT_VAD_MIN_SILENCE_MS`, 500 ms of silence) or reaches
+`STT_VAD_MAX_SEGMENT_S` (10 s; must stay ≥ 1 s under `AUDIO_HIGH_WATERMARK_S`).
+Silence and music cost no STT call, sentences are not chopped mid-clause, and the
+session summary logs `vad skipped=Ns`. `auto` (default) means `vad` for Parakeet and
+`window` for the Whisper engines, whose windowed path is unchanged.
 
 For an Intel Arc / Core Ultra iGPU, an AMD Radeon, or an NVIDIA card:
 
@@ -170,13 +198,29 @@ cd backend
 
 It uses uv's `--torch-backend`, which inspects the machine and fetches from the
 matching PyTorch index — a lock file cannot encode "whatever GPU this machine
-has". Then in `backend/.env`:
+has" — and also installs `librosa` (Parakeet's mel filterbank). Then in
+`backend/.env`:
 
 ```ini
-STT_BACKEND=torch
-WHISPER_DEVICE=auto                   # or cuda / rocm / xpu / cpu
-WHISPER_MODEL=openai/whisper-small.en
+STT_BACKEND=parakeet                  # or: torch (Whisper via transformers)
+WHISPER_DEVICE=auto                   # or cuda / rocm / xpu / cpu (both engines)
+# WHISPER_MODEL=openai/whisper-small.en   (STT_BACKEND=torch only)
 ```
+
+The first start downloads the model (Parakeet v3: ~2.5 GB). To check an engine on
+your hardware before switching, and to compare engines on the same audio:
+
+```bash
+cd backend
+uv run --no-sync python scripts/spike_parakeet.py              # raw load/speed check
+uv run --no-sync python scripts/compare_stt.py --backend parakeet --device auto
+uv run --no-sync python scripts/compare_stt.py --backend torch \
+    --model openai/whisper-small.en --device auto --segmentation window
+```
+
+`compare_stt.py` replays a 16 kHz mono WAV exactly as a live session would (same
+cutting, same filters) and reports latency, real-time factor, drop counts and — with
+`--reference transcript.txt`, or automatically for the synthetic fixture — WER.
 
 Notes worth knowing:
 
@@ -234,6 +278,13 @@ Notes worth knowing:
   before they index anything; and pins greedy decoding and the modern
   (non-`forced_decoder_ids`) generation config that transformers 5.x
   maintains.
+- **Parakeet specifics.** transformers' Parakeet `generate` discards per-step
+  scores, so a logits processor records each greedy token's log-probability for
+  `avg_logprob` (floor `-0.6`, calibrated on speech under noise: clean speech
+  scores -0.01..-0.07, unintelligible speech below -0.7); it fails open if it
+  ever disagrees with the output. Inputs are padded (attention-masked, so the
+  transcript is unchanged) to 1 s buckets, and warm-up compiles every bucket
+  size up front, so live clips never pay a first-shape kernel compile.
 - **`torch`/`transformers` are pinned** (`torch>=2.13,<2.14`,
   `transformers>=5.15,<6` in pyproject's `gpu` extra). The GPU install runs
   outside `uv.lock`, so these upper bounds are the only thing stopping the
@@ -251,6 +302,21 @@ cards (rates only appear at ≥30 adjudicated verdicts — below that there is n
 honest signal), and a recent-sessions table with per-session detail. The popup
 shows a live "Checks today: N · ~$X.XX" readout. Raw JSON: `GET /stats/summary`,
 `/stats/channels`, `/stats/sessions`. Delete the `.db` file to reset everything.
+
+**Source quality (measured, not enforced).** The dashboard's "Best source tier" card
+and `/stats/summary`'s `source_tiers` block rate each TRUE/FALSE/MISLEADING
+verdict's citations with the tier list in `backend/app/source_quality.py` (A
+primary/official, B major outlet/fact-checker, C other or unrecognized, D
+user-generated) and show how many an "at least one A/B source" rule would
+downgrade to UNVERIFIED. Nothing is downgraded — unrecognized domains are C by
+default, so extend the list before deciding. `scripts/report_source_tiers.py` prints
+the label × tier table, the unrecognized domains ranked by how many downgrades
+promoting each would avoid, and every at-risk verdict for review.
+
+**Gate passes.** Every session gate pass is recorded in `gate_passes` (word count,
+latency, claims found, errors, and the Jev pre-screen's answer when it is on); claims
+link back through `claims.gate_pass_id`. The batch text itself is stored only while
+the Jev pre-screen is on (shadow or screen), for calibration.
 
 ## Streamer mode (separate product: bot + OBS overlay)
 
@@ -349,40 +415,48 @@ have been without it — the no-citations ⇒ UNVERIFIED rule is unchanged.
 
 ## LLM provider, models, costs
 
-**Primary provider: OpenRouter.** The default gate is `~typesafe/jev-latest`:
-transcript → Jev decision → claim extraction → filters → web-grounded verification.
-Jev uses the [Decisions API](https://openrouter.ai/docs/api/api-reference/alphadecisions/submit-a-decisions-questions-and-answers-request),
-with `{context, new_transcript, current_date}` as its state. The context is the
-previously processed 40-word tail; only assertions completed in the fresh text
-qualify. Its `needs_fact_check` Noul answer is the probability that a checkable
-assertion exists, **not the probability that a statement is true**.
+**Primary provider: OpenRouter.** Both pipeline stages (claim gate + verification)
+default to `inception/mercury-2.5-preview`: cheap ($0.04/M input tokens) and fast
+enough for the ~300 gate calls an hour, its endpoint publishes `temperature`,
+`structured_outputs` and `reasoning` support (so strict JSON works on the first
+call), and it produced zero fallback verdicts in production. Change models via
+`OPENROUTER_GATE_MODEL` / `OPENROUTER_VERIFY_MODEL` in `.env` or the options page.
 
-`JEV_MIN_CHECK_PROBABILITY=0.35` is the initial, permissive cutoff: uncertain
-batches can reach extraction, while clear negatives skip both extraction and
-search. This cutoff is a starting policy, not an empirically calibrated optimum.
-Jev cannot write claim text. Approved batches go to
-`OPENROUTER_EXTRACTION_MODEL=inception/mercury-2.5-preview`, which resolves
-references, extracts individual claims, and assigns topics and check-worthiness.
-Existing sensitivity, topic, and duplicate filters still run before web search.
-`OPENROUTER_VERIFY_MODEL` also defaults to `inception/mercury-2.5-preview`.
-Contradiction judgments use the extraction model and only see retained claims.
+**Optional Jev pre-screen (`JEV_MODE=off|shadow|screen`).** [Jev](https://openrouter.ai/blog/insights/what-is-jev/)
+(TypeSafe, via OpenRouter's alpha Decisions API) answers one typed question per gate
+batch: the probability that the fresh transcript completes a checkable factual
+assertion — **not** the probability that anything is true. It cannot write claim
+text, so it can only sit in front of the gate model:
 
-`GATE_TIMEOUT_S=15` covers the entire Jev + extraction pass. A Jev timeout,
-API error, or malformed answer drops the batch and logs the failure; it does
-not fall back to the generative gate. Logs include probability, route, resolved
-Jev version, and stage latency. `/healthz` exposes the decision/extraction setup
-under `openrouter.decision_gate`. Gate-call analytics still count logical batch
-passes rather than individual HTTP requests.
+- `off` (default) — no Jev calls.
+- `shadow` — Jev runs alongside every normal gate pass and its answer is only
+  recorded (`gate_passes`); claims are exactly what the gate alone produces. Costs
+  one Decisions request per pass (~$0.00002; about half a cent an hour).
+- `screen` — Jev runs first and a batch below `JEV_MIN_CHECK_PROBABILITY` (0.35,
+  uncalibrated) skips claim extraction. Any Jev timeout (`JEV_TIMEOUT_S`, 3 s),
+  API error or malformed answer **fails open**: extraction runs as if Jev were off.
 
-Set the models in `.env` or the options page. An explicitly configured older
-gate model keeps using the generative gate; choose `~typesafe/jev-latest` to
-switch an existing installation. Gemini and Ollama gate options remain available.
-To evaluate Jev against labeled synthetic transcript examples, explicitly run
-`cd backend && uv run python scripts/eval_jev.py --yes-spend-credits`.
-This spends credits on decisions only; normal tests remain offline.
+Screen mode can only lower recall (a filter in series never finds a claim the gate
+would miss) and never lowers the request count, and with a $0.04/M gate model it
+saves about a cent an hour — it pays off only in front of an expensive gate model.
+So calibrate before screening: run `shadow` for a few streams, then
+
+```bash
+cd backend && uv run python scripts/report_jev_calibration.py
+```
+
+prints, for each threshold, the share of batches screen mode would skip and exactly
+which claims and verdicts (FALSE/MISLEADING first) it would have thrown away.
+`JEV_MODEL` must be a pinned release (`typesafe/jev-1.13`, or its dated canonical
+slug) — the floating `~typesafe/jev-latest` would drift under a threshold
+calibrated for one release; the release that actually answered is logged and
+stored. The mode is selectable on the options page; model, threshold and timeout
+are `.env`-only. `/healthz` reports the pre-screen under `openrouter.decision_gate`.
+A paid smoke test of the wire contract on synthetic cases:
+`uv run python scripts/eval_jev.py --yes-spend-credits`.
 
 **Capability-aware requests.** At boot and on every Apply the backend reads each
-active generative model's `supported_parameters` from OpenRouter's public catalogue
+active model's `supported_parameters` from OpenRouter's public catalogue
 (`GET /api/v1/models`, keyless) and builds requests from it: `temperature` and
 `reasoning` are only sent to models that list them, strict `json_schema` mode is only
 attempted when a model lists `structured_outputs` (a model with plain
@@ -410,9 +484,7 @@ $0.007/request, `OPENROUTER_WEB_MAX_RESULTS=5` results), `native` (the model
 provider's own search — pricier, and fails on models without one), or `auto`.
 
 **Choosing specific models.** Each stage's OpenRouter model is a slug you can set
-from the options page (Gate / Claim extraction / Verify model) or in `.env`.
-Documented Jev IDs (`~typesafe/jev-latest`, `typesafe/jev-1.13`) are accepted for
-the gate only, independently of the chat catalogue. Generative model slugs are
+from the options page (Gate model slug / Verify model slug) or in `.env`. Slugs are
 validated against OpenRouter's live catalogue on Apply, so a typo is rejected
 immediately rather than surfacing as a runtime failure mid-stream — and a model works
 the day it launches. A paid model and its `:free` variant are distinct slugs (the
@@ -534,7 +606,7 @@ no overlay can render on top of it — verdicts go to the history panel instead.
 All commands from `backend/` with the venv active.
 
 ```bash
-# Unit/integration tests (slow real-Whisper tests are excluded by default
+# Unit/integration tests (slow real-model tests — Whisper, Parakeet — are excluded by default
 # via addopts = "-m 'not slow'"; run them with: pytest -m slow)
 pytest -m "not slow"
 ```
