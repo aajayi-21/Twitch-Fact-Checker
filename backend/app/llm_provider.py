@@ -24,6 +24,7 @@ for a keyed stage provider) holds a runtime whose clients/gate/checker are
 ``None``.
 """
 
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -32,6 +33,8 @@ from app.claim_gate import ClaimGate
 from app.config import Settings
 from app.fact_checker import FactChecker
 from app.rate_limit import QuotaCooldown
+
+logger = logging.getLogger(__name__)
 
 
 async def close_llm_client(client: Any) -> None:
@@ -64,7 +67,7 @@ class ProviderSpec:
 
 
 def _openrouter_spec() -> ProviderSpec:
-    from app.llm_jev import JevClaimGate
+    from app.llm_jev import JevScreenedGate
     from app.llm_openrouter import (
         OpenRouterClaimGate,
         OpenRouterFactChecker,
@@ -72,22 +75,23 @@ def _openrouter_spec() -> ProviderSpec:
     )
 
     def make_gate(s: Settings, client: Any) -> ClaimGate:
-        extractor = OpenRouterClaimGate(
+        gate = OpenRouterClaimGate(
             client=client,
-            model=(
-                s.openrouter_extraction_model if s.uses_jev else s.openrouter_gate_model
-            ),
+            model=s.openrouter_gate_model,
             gate_interval_s=s.gate_interval_s,
             gate_timeout_s=s.gate_timeout_s,
             reasoning_effort=s.openrouter_reasoning_effort_or_none,
         )
-        if not s.uses_jev:
-            return extractor
-        return JevClaimGate(
+        if s.jev_active_mode == "off":
+            return gate
+        # The optional Jev pre-screen rides the same OpenRouter client.
+        return JevScreenedGate(
             client=client,
-            model=s.openrouter_gate_model,
-            extractor=extractor,
+            model=s.jev_model,
+            extractor=gate,
+            mode=s.jev_active_mode,
             min_check_probability=s.jev_min_check_probability,
+            jev_timeout_s=s.jev_timeout_s,
             gate_interval_s=s.gate_interval_s,
             gate_timeout_s=s.gate_timeout_s,
         )
@@ -218,6 +222,13 @@ def build_llm_runtime(settings: Settings, cooldown: QuotaCooldown) -> LLMRuntime
     """
     if not settings.is_configured:
         return LLMRuntime(settings=settings)
+    if settings.jev_mode != "off" and settings.jev_active_mode == "off":
+        logger.warning(
+            "JEV_MODE=%s ignored: the Jev pre-screen needs the OpenRouter gate "
+            "(the gate stage runs on %s)",
+            settings.jev_mode,
+            settings.resolved_gate_provider,
+        )
     gate_provider = settings.resolved_gate_provider
     verify_provider = settings.resolved_verify_provider
     gate_client = create_llm_client(settings, gate_provider)

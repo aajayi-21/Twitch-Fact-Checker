@@ -325,3 +325,117 @@ class TestEvidenceColumnMigration:
         assert read_rows(
             database._path.as_posix(), "SELECT evidence FROM verdicts"
         ) == [("partial",)]
+
+
+class TestGatePasses:
+    async def _session(self, database: Database) -> None:
+        await database.record_session_start(
+            session_id="s1", platform=None, channel=None, title=None
+        )
+
+    async def test_jev_pass_keeps_text_and_decision(self, database: Database) -> None:
+        from app.claim_gate import GatePass, ScreenOutcome
+
+        await self._session(database)
+        gate_pass = GatePass(context="earlier words", new_text="the tower is tall")
+        gate_pass.latency_ms = 420
+        gate_pass.claims_count = 1
+        gate_pass.screen = ScreenOutcome(
+            mode="shadow",
+            model="typesafe/jev-1.13",
+            threshold=0.35,
+            route="shadow",
+            probability=0.81,
+            resolved_model="typesafe/jev-1.13-20260917",
+            latency_ms=150,
+        )
+        await database.record_gate_pass(
+            gate_pass=gate_pass,
+            session_id="s1",
+            phase="live",
+            gate_provider="openrouter",
+            gate_model="inception/mercury-2.5-preview",
+        )
+        assert read_rows(
+            database._path.as_posix(),
+            "SELECT phase, context, new_text, word_count, latency_ms, claims_count,"
+            " jev_mode, jev_resolved_model, jev_probability, jev_route"
+            " FROM gate_passes",
+        ) == [
+            (
+                "live",
+                "earlier words",
+                "the tower is tall",
+                4,
+                420,
+                1,
+                "shadow",
+                "typesafe/jev-1.13-20260917",
+                0.81,
+                "shadow",
+            )
+        ]
+
+    async def test_without_jev_only_metadata_is_stored(
+        self, database: Database
+    ) -> None:
+        from app.claim_gate import GatePass
+
+        await self._session(database)
+        gate_pass = GatePass(context="ctx", new_text="some private chatter")
+        gate_pass.error = "gate call failed (503): overloaded"
+        await database.record_gate_pass(
+            gate_pass=gate_pass,
+            session_id="s1",
+            phase="flush",
+            gate_provider="gemini",
+            gate_model="g",
+        )
+        assert read_rows(
+            database._path.as_posix(),
+            "SELECT context, new_text, word_count, error, jev_mode, jev_route"
+            " FROM gate_passes",
+        ) == [(None, None, 3, "gate call failed (503): overloaded", "off", None)]
+
+    async def test_claim_keeps_its_first_gate_pass_link(
+        self, database: Database
+    ) -> None:
+        await self._session(database)
+        claim = make_claim()
+        await database.record_claim(
+            claim=claim, session_id="s1", outcome="pending", gate_pass_id="p1"
+        )
+        # A later terminal write without (or with another) link keeps "p1".
+        await database.record_claim(claim=claim, session_id="s1", outcome="verified")
+        await database.record_claim(
+            claim=claim, session_id="s1", outcome="verified", gate_pass_id="p2"
+        )
+        assert read_rows(
+            database._path.as_posix(), "SELECT gate_pass_id, outcome FROM claims"
+        ) == [("p1", "verified")]
+
+    async def test_older_database_gains_table_and_link_column(
+        self, tmp_path: Path
+    ) -> None:
+        from app.db import SCHEMA_SQL
+
+        path = tmp_path / "old.db"
+        legacy_schema = SCHEMA_SQL.replace(",\n    gate_pass_id     TEXT", "")
+        assert "gate_pass_id" not in legacy_schema
+        with sqlite3.connect(path) as conn:
+            conn.executescript(legacy_schema)
+            conn.execute("DROP TABLE gate_passes")
+        for _ in range(2):  # open twice: the ALTER must be guarded
+            db = Database(str(path))
+            await db.open()
+            await db.close()
+        with sqlite3.connect(path) as conn:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(claims)")}
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+        assert "gate_pass_id" in columns
+        assert "gate_passes" in tables

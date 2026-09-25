@@ -35,7 +35,7 @@ import logging
 import re
 import time
 from collections import deque
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, NamedTuple
 
@@ -248,6 +248,10 @@ class SessionPipeline:
         self._verify_calls = 0
         # Funnel tally for the end-of-session log line.
         self._claim_outcomes: dict[str, int] = {}
+        # claim id -> the gate_passes row that produced it, so the claim's
+        # funnel row links back to the batch (Jev calibration). Entries are
+        # dropped once the claim reaches a non-pending outcome.
+        self._gate_pass_ids: dict[str, str] = {}
         self._sensitivity: Sensitivity = hello.sensitivity
         # Seeded from hello, updated by config frames; "other" always enabled.
         self._enabled_topics: frozenset[str] = resolve_enabled_topics(
@@ -591,13 +595,18 @@ class SessionPipeline:
             try:
                 claims = await self._gate.run()
             except GateError as exc:
-                logger.warning("gate pass failed (batch dropped): %s", exc)
+                logger.warning(
+                    "gate pass failed (batch dropped): %s%s", exc, self._jev_suffix()
+                )
+                await self._record_gate_pass("live")
                 continue
+            await self._record_gate_pass("live", claims)
             logger.info(
-                "gate pass #%d in %.1fs -> %d claim(s)%s",
+                "gate pass #%d in %.1fs -> %d claim(s)%s%s",
                 self._gate.calls_made,
                 time.monotonic() - gate_started,
                 len(claims),
+                self._jev_suffix(),
                 "".join(
                     f"\n    {claim.check_worthiness:.2f} [{claim.topic}] "
                     f"{claim.claim_text!r}"
@@ -1087,14 +1096,51 @@ class SessionPipeline:
         try:
             claims = await self._gate.run()
         except GateError as exc:
-            logger.warning("final gate pass failed (batch dropped): %s", exc)
+            logger.warning(
+                "final gate pass failed (batch dropped): %s%s", exc, self._jev_suffix()
+            )
+            await self._record_gate_pass("flush")
             return []
-        logger.info("final gate pass -> %d claim(s)", len(claims))
+        await self._record_gate_pass("flush", claims)
+        logger.info("final gate pass -> %d claim(s)%s", len(claims), self._jev_suffix())
         return await self._filter_claims(claims, self._send_direct)
 
     # ------------------------------------------------------------------ #
     # Analytics recording (no-ops when the pipeline has no Database)
     # ------------------------------------------------------------------ #
+
+    def _jev_suffix(self) -> str:
+        """`` [jev skip p=0.12<0.35]``-style note for the last gate pass."""
+        gate_pass = self._gate.last_pass
+        screen = gate_pass.screen if gate_pass is not None else None
+        if screen is None:
+            return ""
+        if screen.probability is None:
+            return f" [jev {screen.route}: {screen.error}]"
+        comparison = ">=" if screen.probability >= screen.threshold else "<"
+        return (
+            f" [jev {screen.route} p={screen.probability:.2f}"
+            f"{comparison}{screen.threshold:.2f}]"
+        )
+
+    async def _record_gate_pass(
+        self, phase: str, claims: Sequence[GateClaim] = ()
+    ) -> None:
+        """Persist the gate's ``last_pass`` and remember its claims' link."""
+        gate_pass = self._gate.last_pass
+        if gate_pass is None:
+            return
+        for claim in claims:
+            self._gate_pass_ids[claim.id] = gate_pass.id
+        if self._db is None:
+            return
+        await self._db.record_gate_pass(
+            gate_pass=gate_pass,
+            session_id=self._session_id,
+            phase=phase,
+            gate_provider=self._settings.resolved_gate_provider,
+            gate_model=self._settings.active_gate_model,
+        )
 
     async def _record_claim(
         self, claim: GateClaim, outcome: str, *, stream_time_s: float | None = None
@@ -1107,6 +1153,9 @@ class SessionPipeline:
         """
         if outcome != "pending":
             self._claim_outcomes[outcome] = self._claim_outcomes.get(outcome, 0) + 1
+            gate_pass_id = self._gate_pass_ids.pop(claim.id, None)
+        else:
+            gate_pass_id = self._gate_pass_ids.get(claim.id)
         if self._db is None:
             return
         await self._db.record_claim(
@@ -1125,6 +1174,7 @@ class SessionPipeline:
             stream_time_s=(
                 self._last_emitted_end if stream_time_s is None else stream_time_s
             ),
+            gate_pass_id=gate_pass_id,
         )
 
     async def _record_verdict(

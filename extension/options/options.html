@@ -146,24 +146,26 @@
               type="text"
               spellcheck="false"
               autocomplete="off"
-              placeholder="e.g. ~typesafe/jev-latest"
+              placeholder="e.g. inception/mercury-2.5-preview"
               aria-label="OpenRouter gate model slug"
             />
           </div>
-          <div class="stage-row stage-model-row" data-provider-scope="extraction" hidden>
-            <label class="stage-label" for="extraction-model-input">
-              Claim extraction model
+          <p class="field-error" id="gate-model-error" hidden></p>
+          <!-- Optional Jev pre-screen (OpenRouter Decisions API). The Jev
+               model and threshold are .env-only (JEV_MODEL,
+               JEV_MIN_CHECK_PROBABILITY). -->
+          <div class="stage-row stage-model-row" data-provider-scope="jev" hidden>
+            <label class="stage-label" for="jev-mode-select">
+              Jev pre-screen
             </label>
-            <input
-              id="extraction-model-input"
-              class="key-input stage-model-input"
-              type="text"
-              spellcheck="false"
-              autocomplete="off"
-              placeholder="e.g. inception/mercury-2.5-preview"
-              aria-label="OpenRouter claim extraction model slug"
-              title="Jev screens the transcript; this model rewrites approved batches into clear claims before web verification."
-            />
+            <select
+              id="jev-mode-select"
+              title="Shadow asks Jev about every batch and only records the answer, for calibration. Screen skips claim extraction for batches Jev rates unlikely to contain a checkable claim; if Jev fails, extraction runs anyway."
+            >
+              <option value="off">Off</option>
+              <option value="shadow">Shadow (log only)</option>
+              <option value="screen">Screen (skip unlikely batches)</option>
+            </select>
           </div>
           <div class="stage-row">
             <label class="stage-label" for="verify-provider-select">

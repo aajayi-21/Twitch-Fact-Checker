@@ -1,28 +1,42 @@
 """Interval-throttled claim extraction ("the gate") — provider-neutral core.
 
-The gate batches transcript text for one logical pass per interval instead
-of per chunk. The default Jev gate screens the batch with a typed decision,
-then rewrites approved batches through a generative extractor. Other gates
-extract directly. Neither path needs web search.
+The gate batches transcript text and sends *one* ungrounded structured call
+per interval instead of one per chunk — claim detection needs no web search,
+so it runs on the cheap gate model with temperature 0.
 
 This module owns everything that is independent of the LLM provider:
 transcript buffering, the interval/min-words throttle, the context tail used
 for pronoun resolution, and the drain-before-call crash-safety dance. The
 actual LLM transport is a single abstract method, :meth:`ClaimGate._extract`,
-implemented by the Jev, OpenRouter, Gemini, and local adapters so SDK drift
-stays local to those modules.
+implemented by :class:`app.llm_gemini.GeminiClaimGate`,
+:class:`app.llm_openrouter.OpenRouterClaimGate` and
+:class:`app.llm_local.LocalClaimGate` so SDK drift stays local to those
+modules. :class:`app.llm_jev.JevScreenedGate` wraps one of them with the
+optional Jev pre-screen through the :meth:`ClaimGate._gate_pass` hook.
+
+Every :meth:`ClaimGate.run` leaves a :class:`GatePass` record on
+``last_pass`` (text, timing, outcome, and the Jev decision when a pre-screen
+ran) which the session pipeline persists to the ``gate_passes`` table.
 """
 
 import logging
 import re
 import time
+import uuid
 from abc import ABC, abstractmethod
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Literal
 
 from pydantic import ValidationError
 
-from app.models import TOPICS, ContradictionJudgement, GateClaim, GateResult, \
-    TranscriptSegment
+from app.models import (
+    TOPICS,
+    ContradictionJudgement,
+    GateClaim,
+    GateResult,
+    TranscriptSegment,
+    utc_now_iso,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +97,48 @@ class GateError(Exception):
     """A gate pass failed (API error, timeout, or unparseable model output)."""
 
 
+#: How a Jev pre-screen decision was used in one gate pass.
+#:   skip      — screen mode, below threshold: extraction did not run.
+#:   extract   — screen mode, at/above threshold: extraction ran.
+#:   fail_open — screen mode, Jev failed: extraction ran anyway.
+#:   shadow    — shadow mode: recorded only, extraction ran regardless.
+#:   cancelled — shadow mode, extraction failed first; Jev was abandoned.
+ScreenRoute = Literal["skip", "extract", "fail_open", "shadow", "cancelled"]
+
+
+@dataclass(frozen=True)
+class ScreenOutcome:
+    """One Jev decision (or its failure) — never contains transcript text."""
+
+    mode: str
+    model: str
+    threshold: float
+    route: ScreenRoute
+    probability: float | None = None
+    #: The release that actually answered (the response's ``model`` field).
+    resolved_model: str | None = None
+    latency_ms: int | None = None
+    error: str | None = None
+
+
+@dataclass
+class GatePass:
+    """What one :meth:`ClaimGate.run` did, for the ``gate_passes`` table."""
+
+    context: str
+    new_text: str
+    id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    started_at: str = field(default_factory=utc_now_iso)
+    latency_ms: int | None = None
+    claims_count: int | None = None
+    error: str | None = None
+    screen: ScreenOutcome | None = None
+
+    @property
+    def word_count(self) -> int:
+        return len(self.new_text.split())
+
+
 def _extract_json_object(raw: str, what: str) -> str:
     """The outermost ``{...}`` in a fence/prose-tolerant response body."""
     if not raw:
@@ -140,11 +196,14 @@ class ClaimGate(ABC):
         self._context_words: list[str] = []
         # -inf so the very first run only waits for MIN_NEW_WORDS.
         self._last_run_at = float("-inf")
-        # Logical gate passes made (Jev + extraction counts as one; the
-        # empty-buffer short-circuit in
-        # run() does NOT count). Session-scoped for free — the gate is
-        # built fresh per session; the pipeline reads it at session end.
+        # Gate passes made (a Jev pre-screen + extraction counts as one; the
+        # empty-buffer short-circuit in run() does NOT count). Session-scoped
+        # for free — the gate is built fresh per session; the pipeline reads
+        # it at session end.
         self.calls_made = 0
+        # The most recent run()'s record (None before the first pass and
+        # after an empty-buffer run). Read by the pipeline right after run().
+        self.last_pass: GatePass | None = None
 
     def add_transcript(self, segment: TranscriptSegment) -> None:
         """Buffer one filtered transcript segment for the next gate pass."""
@@ -174,20 +233,45 @@ class ClaimGate(ABC):
         self._pending_texts = []
         self._pending_word_count = 0
         self._last_run_at = time.monotonic()
+        self.last_pass = None
         if not new_text:
             return []
         self._context_words = (self._context_words + new_text.split())[
             -self.CONTEXT_TAIL_WORDS :
         ]
         self.calls_made += 1
-        return await self.extract_claims(context, new_text)
+        record = GatePass(context=context, new_text=new_text)
+        self.last_pass = record
+        started = time.monotonic()
+        try:
+            claims = await self._gate_pass(context, new_text, record)
+        except GateError as exc:
+            record.error = str(exc)
+            raise
+        finally:
+            record.latency_ms = int((time.monotonic() - started) * 1000)
+        record.claims_count = len(claims)
+        return claims
 
     async def extract_claims(self, context: str, new_text: str) -> list[GateClaim]:
         """One gate pass over ``CONTEXT`` + ``NEW TRANSCRIPT``.
 
         Shared by :meth:`run` and the ``/debug/text`` path (which gates raw
         text without touching the session buffer). Raises :class:`GateError`
-        on API, timeout, or parse failure.
+        on API, timeout, or parse failure. Nothing is recorded on
+        ``last_pass`` (the debug path is not a session gate pass).
+        """
+        return await self._gate_pass(
+            context, new_text, GatePass(context=context, new_text=new_text)
+        )
+
+    async def _gate_pass(
+        self, context: str, new_text: str, record: GatePass
+    ) -> list[GateClaim]:
+        """One pass over the batch; wrappers annotate ``record`` (pre-screen).
+
+        The default is the provider transport alone. Must raise
+        :class:`GateError` for every failure mode, like :meth:`_extract`.
         """
         return await self._extract(context, new_text)
 

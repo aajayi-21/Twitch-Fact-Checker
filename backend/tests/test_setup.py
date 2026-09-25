@@ -19,8 +19,8 @@ from starlette.websockets import WebSocketDisconnect
 
 from app import setup as setup_api
 from app.config import (
+    DEFAULT_JEV_MODEL,
     DEFAULT_OPENROUTER_GATE_MODEL,
-    DEFAULT_OPENROUTER_EXTRACTION_MODEL,
     DEFAULT_OPENROUTER_VERIFY_MODEL,
     Settings,
     resolve_env_file,
@@ -261,8 +261,10 @@ class TestUnconfiguredSurface:
                     "key_hint": None,
                     "credits": None,
                     "gate_model": DEFAULT_OPENROUTER_GATE_MODEL,
-                    "extraction_model": DEFAULT_OPENROUTER_EXTRACTION_MODEL,
                     "verify_model": DEFAULT_OPENROUTER_VERIFY_MODEL,
+                    "jev_mode": "off",
+                    "jev_model": DEFAULT_JEV_MODEL,
+                    "jev_min_check_probability": 0.35,
                 },
                 "gemini": {"configured": False, "key_hint": None},
                 "ollama": {
@@ -410,8 +412,10 @@ class TestCredentialsSuccess:
                     "key_hint": "…alue",
                     "credits": None,
                     "gate_model": DEFAULT_OPENROUTER_GATE_MODEL,
-                    "extraction_model": DEFAULT_OPENROUTER_EXTRACTION_MODEL,
                     "verify_model": DEFAULT_OPENROUTER_VERIFY_MODEL,
+                    "jev_mode": "off",
+                    "jev_model": DEFAULT_JEV_MODEL,
+                    "jev_min_check_probability": 0.35,
                 },
                 "gemini": {"configured": True, "key_hint": "…abcd"},
                 "ollama": {
@@ -1144,13 +1148,33 @@ class TestOpenRouterModelSlugs:
         openrouter = body["providers"]["openrouter"]
         assert openrouter["gate_model"] == DEFAULT_OPENROUTER_GATE_MODEL
         assert openrouter["verify_model"] == DEFAULT_OPENROUTER_VERIFY_MODEL
-        assert openrouter["extraction_model"] == DEFAULT_OPENROUTER_EXTRACTION_MODEL
+        assert openrouter["jev_mode"] == "off"
+        assert openrouter["jev_model"] == DEFAULT_JEV_MODEL
 
-    def test_jev_alias_is_accepted_without_chat_catalogue(
-        self, configured_client, monkeypatch
+    @pytest.mark.parametrize("field", ["gate_model", "verify_model"])
+    @pytest.mark.parametrize("slug", ["~typesafe/jev-latest", "typesafe/jev-1.13"])
+    def test_jev_rejected_in_model_slots_before_the_catalogue(
+        self, configured_client, stages_env_file, monkeypatch, field, slug
     ) -> None:
-        current = configured_client.app.state.llm_runtime.settings
-        current.openrouter_gate_model = "inception/mercury-2.5-preview"
+        calls: list[int] = []
+        _catalogue_ok(monkeypatch, calls)
+        before = stages_env_file.read_text()
+        response = configured_client.post(
+            "/setup/stages",
+            json={
+                "gate_provider": "openrouter",
+                "verify_provider": "openrouter",
+                field: slug,
+            },
+        )
+        assert response.status_code == 400
+        assert "JEV_MODE=shadow" in response.json()["detail"]
+        assert stages_env_file.read_text() == before
+        assert calls == []
+
+    def test_jev_mode_persists_and_hot_swaps_without_the_catalogue(
+        self, configured_client, stages_env_file, monkeypatch
+    ) -> None:
         _catalogue_down(monkeypatch)
         _install_fake_runtime_builder(monkeypatch, FakeGenAIClient())
         response = configured_client.post(
@@ -1158,72 +1182,61 @@ class TestOpenRouterModelSlugs:
             json={
                 "gate_provider": "openrouter",
                 "verify_provider": "gemini",
-                "gate_model": DEFAULT_OPENROUTER_GATE_MODEL,
+                "jev_mode": "shadow",
             },
         )
         assert response.status_code == 200
-        assert response.json()["gate"]["model"] == DEFAULT_OPENROUTER_GATE_MODEL
+        assert response.json()["providers"]["openrouter"]["jev_mode"] == "shadow"
+        runtime_settings = configured_client.app.state.llm_runtime.settings
+        assert runtime_settings.jev_mode == "shadow"
+        assert runtime_settings.jev_active_mode == "shadow"
+        assert "JEV_MODE=shadow" in stages_env_file.read_text()
 
-    @pytest.mark.parametrize("field", ["extraction_model", "verify_model"])
-    def test_jev_rejected_for_generative_roles_without_persisting(
-        self, configured_client, stages_env_file, field
-    ) -> None:
-        before = stages_env_file.read_text()
-        response = configured_client.post(
-            "/setup/stages",
-            json={
-                "gate_provider": "openrouter",
-                "verify_provider": "openrouter",
-                field: DEFAULT_OPENROUTER_GATE_MODEL,
-            },
-        )
-        assert response.status_code == 400
-        assert "gate decisions only" in response.json()["detail"]
-        assert stages_env_file.read_text() == before
-
-    def test_extraction_model_validates_persists_and_hot_swaps(
+    def test_empty_jev_mode_keeps_the_stored_mode_and_writes_nothing(
         self, configured_client, stages_env_file, monkeypatch
     ) -> None:
-        calls = []
-        _catalogue_ok(monkeypatch, calls)
         _install_fake_runtime_builder(monkeypatch, FakeGenAIClient())
         response = configured_client.post(
             "/setup/stages",
-            json={
-                "gate_provider": "openrouter",
-                "verify_provider": "openrouter",
-                "extraction_model": "openai/gpt-oss-120b",
-            },
+            json={"gate_provider": "gemini", "verify_provider": "gemini"},
         )
         assert response.status_code == 200
-        assert (
-            response.json()["providers"]["openrouter"]["extraction_model"]
-            == "openai/gpt-oss-120b"
-        )
-        assert (
-            configured_client.app.state.llm_runtime.settings.openrouter_extraction_model
-            == "openai/gpt-oss-120b"
-        )
-        assert (
-            "OPENROUTER_EXTRACTION_MODEL=openai/gpt-oss-120b"
-            in stages_env_file.read_text()
-        )
-        assert calls == [1]
+        assert "JEV_MODE" not in stages_env_file.read_text()
 
-    def test_unknown_extraction_model_is_rejected(
-        self, configured_client, stages_env_file, monkeypatch
+    def test_unknown_jev_mode_is_rejected(
+        self, configured_client, stages_env_file
     ) -> None:
-        _catalogue_ok(monkeypatch, [])
         before = stages_env_file.read_text()
         response = configured_client.post(
             "/setup/stages",
             json={
                 "gate_provider": "openrouter",
-                "verify_provider": "openrouter",
-                "extraction_model": "acme/unknown",
+                "verify_provider": "gemini",
+                "jev_mode": "always",
             },
         )
         assert response.status_code == 400
+        assert "jev_mode" in response.json()["detail"]
+        assert stages_env_file.read_text() == before
+
+    def test_invalid_resulting_settings_are_400_with_env_untouched(
+        self, configured_client, stages_env_file
+    ) -> None:
+        # A Jev timeout that leaves no room for extraction only becomes
+        # invalid once Jev is switched on: the new Settings must be built
+        # (and rejected) BEFORE anything is written.
+        stages_env_file.write_text(STAGES_ENV + "JEV_TIMEOUT_S=20\n")
+        before = stages_env_file.read_text()
+        response = configured_client.post(
+            "/setup/stages",
+            json={
+                "gate_provider": "openrouter",
+                "verify_provider": "gemini",
+                "jev_mode": "screen",
+            },
+        )
+        assert response.status_code == 400
+        assert "JEV_TIMEOUT_S" in response.json()["detail"]
         assert stages_env_file.read_text() == before
 
     def test_valid_slugs_persist_and_hot_swap(

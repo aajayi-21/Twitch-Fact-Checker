@@ -10,6 +10,7 @@ usable key.
 """
 
 import os
+import re
 from pathlib import Path
 from typing import Any, Literal
 
@@ -25,18 +26,41 @@ SENSITIVITY_THRESHOLDS: dict[str, float] = {"low": 0.75, "medium": 0.55, "high":
 
 _DEFAULT_ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 
-# Jev uses OpenRouter's Decisions API. It cannot generate claim text, so
-# approved batches are rewritten by a separate chat model before verification.
-DEFAULT_OPENROUTER_GATE_MODEL = "~typesafe/jev-latest"
-DEFAULT_OPENROUTER_EXTRACTION_MODEL = "inception/mercury-2.5-preview"
+# OpenRouter is the primary provider; these are the shipped model slugs.
+# inception/mercury-2.5-preview: cheap ($0.04/M input) and fast enough for the
+# ~300 gate calls an hour, lists temperature + structured_outputs + reasoning
+# on its endpoint (so strict JSON mode works first time), and produced zero
+# fallback verdicts in production. Override per stage in .env or the options
+# page; slugs are validated against the live catalogue on Apply.
+DEFAULT_OPENROUTER_GATE_MODEL = "inception/mercury-2.5-preview"
 DEFAULT_OPENROUTER_VERIFY_MODEL = "inception/mercury-2.5-preview"
-JEV_MODELS = frozenset({DEFAULT_OPENROUTER_GATE_MODEL, "typesafe/jev-1.13"})
+
+# Jev (TypeSafe, via OpenRouter's alpha Decisions API) is an optional
+# PRE-SCREEN in front of the gate model, never a gate model itself: it
+# answers typed questions with probabilities and cannot write claim text.
+# Pinned: "~typesafe/jev-latest" floats to new releases, and the screening
+# threshold is calibrated against one release's probabilities.
+DEFAULT_JEV_MODEL = "typesafe/jev-1.13"
+#: Any Jev id, floating alias included — used to keep Jev OUT of chat slots.
+JEV_FAMILY_RE = re.compile(r"^~?typesafe/jev-", re.IGNORECASE)
+#: What JEV_MODEL accepts: a pinned release, optionally with its build date
+#: (the catalogue's canonical slug, e.g. "typesafe/jev-1.13-20260917").
+JEV_PINNED_RE = re.compile(r"^typesafe/jev-\d+\.\d+(-\d{8})?$")
 
 
 def is_jev_model(model: str) -> bool:
-    """Recognize decisions-only models, including future pinned Jev releases."""
-    return model.strip() == DEFAULT_OPENROUTER_GATE_MODEL or model.strip().startswith(
-        "typesafe/jev-"
+    """Whether ``model`` names a Jev decisions model (floating or pinned)."""
+    return bool(JEV_FAMILY_RE.match(model.strip()))
+
+
+def jev_misplaced_message(field: str, slug: str) -> str:
+    """The migration hint for a Jev id found in a chat-model setting."""
+    return (
+        f"{field}={slug!r}: Jev is a decisions model and cannot extract or "
+        "verify claims. It is now an optional pre-screen in front of the gate "
+        "model. Set OPENROUTER_GATE_MODEL to a chat model (e.g. "
+        f"{DEFAULT_OPENROUTER_GATE_MODEL}), delete OPENROUTER_EXTRACTION_MODEL, "
+        "and enable Jev with JEV_MODE=shadow (log only) or JEV_MODE=screen."
     )
 
 
@@ -97,11 +121,28 @@ class Settings(BaseSettings):
 
     openrouter_api_key: str = ""
     openrouter_gate_model: str = DEFAULT_OPENROUTER_GATE_MODEL
-    openrouter_extraction_model: str = DEFAULT_OPENROUTER_EXTRACTION_MODEL
     openrouter_verify_model: str = DEFAULT_OPENROUTER_VERIFY_MODEL
+
+    # Jev pre-screen (app/llm_jev.py). Needs the OpenRouter gate (it rides
+    # the same key/client); ignored, with a warning, for other gate providers.
+    #   off    (default) — no Jev calls.
+    #   shadow — Jev runs ALONGSIDE every normal gate pass and its answer is
+    #            only recorded (gate_passes table) for calibration; claims
+    #            are unaffected. Costs one Decisions request per pass.
+    #   screen — Jev runs FIRST; a batch below the threshold skips claim
+    #            extraction. Any Jev failure fails OPEN (extraction runs).
+    #            Can only lower recall — calibrate in shadow mode first
+    #            (scripts/report_jev_calibration.py).
+    jev_mode: Literal["off", "shadow", "screen"] = "off"
+    jev_model: str = DEFAULT_JEV_MODEL
+    # Probability that a checkable assertion exists — NOT probability of
+    # truth. Uncalibrated starting point.
     jev_min_check_probability: float = Field(
         default=0.35, ge=0.0, le=1.0, allow_inf_nan=False
     )
+    # Deadline for the Jev call alone; must leave room inside GATE_TIMEOUT_S
+    # for extraction in screen mode. Jev typically answers in 0.1-0.5 s.
+    jev_timeout_s: float = Field(default=3.0, gt=0.0, allow_inf_nan=False)
     openrouter_web_max_results: int = 5
     # Web-search engine for the verify call's ``web`` plugin:
     #   exa    (default) — OpenRouter's Exa search, works for EVERY model and
@@ -116,28 +157,39 @@ class Settings(BaseSettings):
     openrouter_reasoning_effort: str = "low"
 
     @model_validator(mode="after")
-    def validate_generative_models(self) -> "Settings":
-        for field in ("openrouter_extraction_model", "openrouter_verify_model"):
-            if is_jev_model(getattr(self, field)):
-                raise ValueError(f"{field}: Jev can only be used for gate decisions")
+    def validate_jev_settings(self) -> "Settings":
+        """Keep Jev out of chat slots and its pre-screen settings coherent."""
+        for field in ("openrouter_gate_model", "openrouter_verify_model"):
+            slug = getattr(self, field)
+            if is_jev_model(slug):
+                raise ValueError(jev_misplaced_message(field.upper(), slug))
+        if not JEV_PINNED_RE.match(self.jev_model.strip()):
+            raise ValueError(
+                f"JEV_MODEL={self.jev_model!r}: use a pinned Jev release such as "
+                f"{DEFAULT_JEV_MODEL!r} (the floating ~typesafe/jev-latest would "
+                "change under a threshold calibrated for one release)"
+            )
+        if self.jev_mode != "off" and self.jev_timeout_s >= self.gate_timeout_s:
+            raise ValueError(
+                f"JEV_TIMEOUT_S ({self.jev_timeout_s:g}) must be below "
+                f"GATE_TIMEOUT_S ({self.gate_timeout_s:g}) so extraction still "
+                "has time after the pre-screen"
+            )
         return self
 
     @property
-    def uses_jev(self) -> bool:
-        return self.resolved_gate_provider == "openrouter" and is_jev_model(
-            self.openrouter_gate_model
-        )
+    def jev_active_mode(self) -> str:
+        """``jev_mode`` when the gate runs on OpenRouter, else ``"off"``."""
+        if self.resolved_gate_provider != "openrouter":
+            return "off"
+        return self.jev_mode
 
     @property
     def active_openrouter_chat_models(self) -> set[str]:
-        """Only generative models belong in the chat capability catalogue."""
+        """OpenRouter chat slugs routed to a stage (Jev is not a chat model)."""
         models: set[str] = set()
         if self.resolved_gate_provider == "openrouter":
-            models.add(
-                self.openrouter_extraction_model
-                if self.uses_jev
-                else self.openrouter_gate_model
-            )
+            models.add(self.openrouter_gate_model)
         if self.resolved_verify_provider == "openrouter":
             models.add(self.openrouter_verify_model)
         return models

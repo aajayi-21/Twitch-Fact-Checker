@@ -6,7 +6,7 @@ import pytest
 from openai import AsyncOpenAI
 
 from app.config import Settings
-from app.llm_jev import JevClaimGate
+from app.llm_jev import JevScreenedGate
 from app.llm_gemini import GeminiClaimGate, GeminiFactChecker
 from app.llm_local import LocalClaimGate
 from app.llm_openrouter import (
@@ -79,8 +79,14 @@ class TestCreateGateAndChecker:
         dummy_client = SimpleNamespace()
         gate = create_claim_gate(settings, dummy_client)
         checker = create_fact_checker(settings, dummy_client, QuotaCooldown())
-        assert isinstance(gate, JevClaimGate)
+        assert isinstance(gate, OpenRouterClaimGate)
         assert isinstance(checker, OpenRouterFactChecker)
+
+    def test_openrouter_gate_with_jev_pre_screen(self) -> None:
+        settings = make_settings("openrouter").model_copy(update={"jev_mode": "shadow"})
+        gate = create_claim_gate(settings, SimpleNamespace())
+        assert isinstance(gate, JevScreenedGate)
+        assert isinstance(gate._extractor, OpenRouterClaimGate)
 
     def test_gemini_classes(self) -> None:
         settings = make_settings("gemini")

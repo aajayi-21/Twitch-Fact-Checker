@@ -13,7 +13,7 @@ import pytest
 
 from app.claim_gate import ClaimGate, GateError
 from app.llm_gemini import GeminiClaimGate
-from app.models import TOPICS, GateResult, TranscriptSegment
+from app.models import TOPICS, GateClaim, GateResult, TranscriptSegment
 from tests.conftest import (
     FakeGenAIClient,
     FakeGenerateContentResponse,
@@ -244,3 +244,55 @@ class TestExtractClaims:
         # omit any non-required property, silently dumping claims into the
         # unfilterable "other" bucket (mirrors the OpenRouter strict schema).
         assert "topic" in gate_claim_schema["required"]
+
+
+class TestLastPassRecord:
+    """ClaimGate.run() leaves a GatePass on last_pass for the pipeline."""
+
+    class _ScriptedGate(ClaimGate):
+        def __init__(self, result: object) -> None:
+            super().__init__(gate_interval_s=0.0)
+            self._result = result
+
+        async def _extract(self, context: str, new_text: str) -> list:
+            if isinstance(self._result, Exception):
+                raise self._result
+            return self._result
+
+        async def judge_contradiction(self, current: str, prior: str):
+            raise NotImplementedError
+
+    @staticmethod
+    def _segment(text: str) -> TranscriptSegment:
+        return TranscriptSegment(
+            text=text, start=0, end=1, avg_logprob=0.0, no_speech_prob=0.0
+        )
+
+    async def test_success_records_text_count_and_latency(self) -> None:
+        claim = GateClaim(claim_text="X is Y.", check_worthiness=0.9, topic="other")
+        gate = self._ScriptedGate([claim])
+        gate.add_transcript(self._segment("x is y"))
+        assert await gate.run() == [claim]
+        record = gate.last_pass
+        assert record.new_text == "x is y"
+        assert record.claims_count == 1
+        assert record.latency_ms is not None
+        assert record.error is None and record.screen is None
+
+    async def test_error_is_recorded_and_reraised(self) -> None:
+        gate = self._ScriptedGate(GateError("boom"))
+        gate.add_transcript(self._segment("x is y"))
+        with pytest.raises(GateError):
+            await gate.run()
+        assert gate.last_pass.error == "boom"
+        assert gate.last_pass.claims_count is None
+
+    async def test_empty_run_and_debug_path_leave_no_record(self) -> None:
+        gate = self._ScriptedGate([])
+        gate.add_transcript(self._segment("x is y"))
+        await gate.run()
+        assert gate.last_pass is not None
+        assert await gate.run() == []  # empty buffer
+        assert gate.last_pass is None
+        await gate.extract_claims("", "debug text")
+        assert gate.last_pass is None

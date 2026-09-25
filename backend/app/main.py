@@ -44,7 +44,7 @@ _CORS_ORIGIN_REGEX = (
 
 
 def _active_openrouter_models(settings: Settings) -> set[str]:
-    """Active generative slugs; Jev does not use chat capabilities."""
+    """The OpenRouter chat slugs actually routed to a pipeline stage."""
     return settings.active_openrouter_chat_models
 
 
@@ -289,16 +289,15 @@ def _openrouter_health(settings: Settings) -> dict[str, Any] | None:
             slug: lookup_model_capabilities(slug).as_dict() for slug in sorted(models)
         },
         "verify_modes": verify_mode_snapshot(),
-        "decision_gate": (
-            {
-                "model": settings.openrouter_gate_model,
-                "extraction_model": settings.openrouter_extraction_model,
-                "min_check_probability": settings.jev_min_check_probability,
-                "api": "decisions",
-            }
-            if settings.uses_jev
-            else None
-        ),
+        # The optional Jev pre-screen (Decisions API, not a chat model).
+        "decision_gate": {
+            "mode": settings.jev_active_mode,
+            "configured_mode": settings.jev_mode,
+            "model": settings.jev_model,
+            "min_check_probability": settings.jev_min_check_probability,
+            "timeout_s": settings.jev_timeout_s,
+            "api": "decisions",
+        },
     }
 
 
