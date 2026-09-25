@@ -106,16 +106,17 @@ class Settings(BaseSettings):
         kwargs.setdefault("_env_file", str(resolve_env_file()))
         super().__init__(**kwargs)
 
-    llm_provider: Literal["openrouter", "gemini"] = "openrouter"
+    # The keyed LLM provider. OpenRouter is the only one; the field is kept so
+    # existing .env files (LLM_PROVIDER=openrouter) stay valid.
+    llm_provider: Literal["openrouter"] = "openrouter"
 
-    # Per-stage provider overrides; "" = follow the legacy ``llm_provider``
-    # switch, so existing single-provider setups are untouched. The verify
-    # Literal deliberately excludes "ollama": local verify has no web-search
-    # grounding, so every verdict would be downgraded to UNVERIFIED — a
-    # hand-edited VERIFY_PROVIDER=ollama fails loudly at boot instead of
-    # half-working.
-    gate_provider: Literal["", "openrouter", "gemini", "ollama"] = ""
-    verify_provider: Literal["", "openrouter", "gemini"] = ""
+    # Per-stage provider overrides; "" = follow ``llm_provider``. The gate
+    # may run on a local Ollama server. The verify Literal deliberately
+    # excludes "ollama": local verify has no web-search grounding, so every
+    # verdict would be downgraded to UNVERIFIED — a hand-edited
+    # VERIFY_PROVIDER=ollama fails loudly at boot instead of half-working.
+    gate_provider: Literal["", "openrouter", "ollama"] = ""
+    verify_provider: Literal["", "openrouter"] = ""
 
     # Ollama (or any OpenAI-compatible local server: LM Studio, vLLM,
     # llama.cpp). The base URL is the OpenAI-compatible root INCLUDING /v1;
@@ -217,10 +218,6 @@ class Settings(BaseSettings):
     def openrouter_gate_reasoning_effort_or_none(self) -> str | None:
         """The gate reasoning effort ("none" = off), empty normalized to None."""
         return self.openrouter_gate_reasoning_effort.strip() or None
-
-    gemini_api_key: str = ""
-    gemini_gate_model: str = "gemini-3.1-flash-lite"
-    gemini_verify_model: str = "gemini-3.5-flash"
 
     # Speech-to-text engine:
     #   "faster-whisper" (default) — ctranslate2; CPU and CUDA only, fastest
@@ -400,7 +397,6 @@ class Settings(BaseSettings):
         """The gate model of the gate stage's provider (logs/healthz/ready)."""
         return {
             "openrouter": self.openrouter_gate_model,
-            "gemini": self.gemini_gate_model,
             "ollama": self.ollama_gate_model,
         }[self.resolved_gate_provider]
 
@@ -409,19 +405,12 @@ class Settings(BaseSettings):
         """The verify model of the verify stage's provider."""
         return {
             "openrouter": self.openrouter_verify_model,
-            "gemini": self.gemini_verify_model,
         }[self.resolved_verify_provider]
 
     @property
     def active_api_key(self) -> str:
-        """The LEGACY provider's API key (may be empty when unconfigured).
-
-        Still keyed off ``llm_provider`` (which can only be a keyed
-        provider); per-stage code paths use :meth:`provider_configured`.
-        """
-        if self.llm_provider == "openrouter":
-            return self.openrouter_api_key
-        return self.gemini_api_key
+        """The OpenRouter API key (may be empty when unconfigured)."""
+        return self.openrouter_api_key
 
     def provider_configured(self, provider: str) -> bool:
         """Whether ``provider`` is usable.
@@ -433,8 +422,6 @@ class Settings(BaseSettings):
         """
         if provider == "openrouter":
             return not self._is_placeholder_key(self.openrouter_api_key)
-        if provider == "gemini":
-            return not self._is_placeholder_key(self.gemini_api_key)
         return provider == "ollama"
 
     @property
@@ -453,8 +440,8 @@ class Settings(BaseSettings):
     def require_llm_api_key(self) -> None:
         """Fail loudly at startup when an ACTIVE stage provider has no key.
 
-        Only the resolved stage providers' keys are required (Ollama needs
-        none): an OpenRouter setup needs no Gemini key and vice versa.
+        Ollama needs no key; the verify stage always runs on OpenRouter, so
+        in practice this checks ``OPENROUTER_API_KEY``.
 
         Raises:
             RuntimeError: if a resolved stage provider's API key is empty,
@@ -463,13 +450,11 @@ class Settings(BaseSettings):
         for provider in {self.resolved_gate_provider, self.resolved_verify_provider}:
             if provider == "openrouter":
                 self.require_openrouter_api_key()
-            elif provider == "gemini":
-                self.require_gemini_api_key()
 
     def require_openrouter_api_key(self) -> None:
         """Fail loudly when ``OPENROUTER_API_KEY`` is missing or a placeholder.
 
-        Same hardening as the Gemini check: a ``.env`` copied verbatim from
+        A ``.env`` copied verbatim from
         ``.env.example`` must fail here too — python-dotenv parses an inline
         comment after an EMPTY value as the value itself, so a ``#``-prefixed
         "key" is a leftover comment, not a real key.
@@ -486,26 +471,6 @@ class Settings(BaseSettings):
                 "costs credits even on :free models, so hold a small credit "
                 "balance. The key is backend-only and must never be shipped "
                 "in the extension."
-            )
-
-    def require_gemini_api_key(self) -> None:
-        """Fail loudly when ``GEMINI_API_KEY`` is missing or a placeholder.
-
-        A ``.env`` copied verbatim from ``.env.example`` must fail here too:
-        python-dotenv parses an inline comment after an EMPTY value as the
-        value itself, so a ``#``-prefixed "key" is a leftover comment, not a
-        real key.
-
-        Raises:
-            RuntimeError: if ``GEMINI_API_KEY`` is empty, whitespace, or a
-                leftover comment rather than a real key.
-        """
-        if self._is_placeholder_key(self.gemini_api_key):
-            raise RuntimeError(
-                "GEMINI_API_KEY is not set. Copy backend/.env.example to "
-                "backend/.env and fill in your Gemini API key "
-                "(https://aistudio.google.com/apikey). The key is backend-only "
-                "and must never be shipped in the extension."
             )
 
     @staticmethod

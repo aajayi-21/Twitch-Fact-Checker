@@ -1,7 +1,7 @@
 """End-to-end protocol tests: /healthz, /debug/text, and /ws/audio with fakes.
 
 Everything runs through the real app (routes, CORS, pipeline, endpoint) with
-the fake Gemini client and fake transcriber installed by the conftest
+the fake OpenRouter client and fake transcriber installed by the conftest
 lifespan — fully offline.
 """
 
@@ -18,20 +18,21 @@ import pytest
 from starlette.websockets import WebSocketDisconnect
 
 from app import ws as ws_module
-from app.llm_gemini import GeminiClaimGate, GeminiFactChecker
+from app.llm_provider import create_claim_gate, create_fact_checker
 from app.models import ClientHello, StatusFrame, TranscriptSegment
 from app.pipeline import SessionPipeline
 from app.rate_limit import QuotaCooldown, TokenBucket
 from app.sessions import SessionRegistry
 from tests.conftest import (
-    FakeGenAIClient,
-    FakeInteractionsError,
+    FakeLLMClient,
     FakeTranscriber,
     make_fake_llm_runtime,
     make_gate_response,
     make_hello,
+    make_openrouter_rate_limit_error,
+    make_openrouter_status_error,
     make_test_settings,
-    make_verdict_interaction,
+    make_verdict_completion,
     energy_spans,
     open_test_client,
     pcm_silence,
@@ -90,7 +91,16 @@ class TestHealthz:
     def test_reports_status_and_models(self, client) -> None:
         response = client.get("/healthz")
         assert response.status_code == 200
-        assert response.json() == {
+        body = response.json()
+        # The OpenRouter block: per-model capabilities for both active stages
+        # (catalogue offline in tests, so "assumed"), plus the Jev pre-screen.
+        openrouter = body["openrouter"]
+        assert set(openrouter["capabilities"]) == {
+            "fake-gate-model",
+            "fake-verify-model",
+        }
+        assert openrouter["decision_gate"]["mode"] == "off"
+        assert body == {
             "status": "ok",
             "server_version": "0.1.0",
             "whisper_model": "fake-whisper.en",
@@ -107,15 +117,14 @@ class TestHealthz:
                 "cpu_fallback": True,
             },
             "configured": True,
-            "llm_provider": "gemini",
-            "gate_provider": "gemini",
-            "verify_provider": "gemini",
+            "llm_provider": "openrouter",
+            "gate_provider": "openrouter",
+            "verify_provider": "openrouter",
             "gate_model": "fake-gate-model",
             "verify_model": "fake-verify-model",
             "checks_today": 0,
             "est_cost_today_usd": 0.0,
-            # Gemini fixtures: no OpenRouter stage is active.
-            "openrouter": None,
+            "openrouter": body["openrouter"],  # detailed in its own test
         }
 
 
@@ -149,36 +158,36 @@ class TestDebugText:
         assert response.status_code == 400
 
     def test_disabled_debug_endpoints_is_404(
-        self, fake_genai_client: FakeGenAIClient, fake_transcriber: FakeTranscriber
+        self, fake_llm_client: FakeLLMClient, fake_transcriber: FakeTranscriber
     ) -> None:
         settings = make_test_settings(debug_endpoints=False)
-        with open_test_client(settings, fake_genai_client, fake_transcriber) as client:
+        with open_test_client(settings, fake_llm_client, fake_transcriber) as client:
             response = client.post("/debug/text", json={"text": "The earth is flat."})
         assert response.status_code == 404
 
     def test_gate_failure_is_502_with_detail(
-        self, client, fake_genai_client: FakeGenAIClient
+        self, client, fake_llm_client: FakeLLMClient
     ) -> None:
-        fake_genai_client.generate_results.append(RuntimeError("gate exploded"))
+        fake_llm_client.gate_results.append(RuntimeError("gate exploded"))
         response = client.post("/debug/text", json={"text": "The earth is flat."})
         assert response.status_code == 502
         assert "claim gate failed" in response.json()["detail"]
 
     def test_verification_failure_is_502_with_detail(
-        self, client, fake_genai_client: FakeGenAIClient
+        self, client, fake_llm_client: FakeLLMClient
     ) -> None:
-        fake_genai_client.generate_results.append(make_gate_response([(CLAIM, 0.9)]))
-        fake_genai_client.interaction_results.append(FakeInteractionsError(500))
+        fake_llm_client.gate_results.append(make_gate_response([(CLAIM, 0.9)]))
+        fake_llm_client.verify_results.append(make_openrouter_status_error(500))
         response = client.post("/debug/text", json={"text": "some claim text"})
         assert response.status_code == 502
         assert "verification failed" in response.json()["detail"]
 
     def test_happy_path_returns_claims_and_verdicts(
-        self, client, fake_genai_client: FakeGenAIClient
+        self, client, fake_llm_client: FakeLLMClient
     ) -> None:
-        fake_genai_client.generate_results.append(make_gate_response([(CLAIM, 0.9)]))
-        fake_genai_client.interaction_results.append(
-            make_verdict_interaction(
+        fake_llm_client.gate_results.append(make_gate_response([(CLAIM, 0.9)]))
+        fake_llm_client.verify_results.append(
+            make_verdict_completion(
                 "FALSE",
                 "The Eiffel Tower is about 330 meters tall.",
                 citations=[("https://www.toureiffel.paris/x", "Key figures")],
@@ -208,13 +217,13 @@ class TestDebugText:
         ]
 
     def test_opinion_yields_no_claims_and_no_verify_call(
-        self, client, fake_genai_client: FakeGenAIClient
+        self, client, fake_llm_client: FakeLLMClient
     ) -> None:
-        fake_genai_client.generate_results.append(make_gate_response([]))
+        fake_llm_client.gate_results.append(make_gate_response([]))
         response = client.post("/debug/text", json={"text": "this game is terrible"})
         assert response.status_code == 200
         assert response.json() == {"claims": [], "verdicts": []}
-        assert fake_genai_client.interaction_calls == []
+        assert fake_llm_client.verify_calls == []
 
     @pytest.mark.parametrize(
         ("sensitivity", "expected_verified"),
@@ -223,19 +232,19 @@ class TestDebugText:
     def test_sensitivity_threshold_filters_claims(
         self,
         client,
-        fake_genai_client: FakeGenAIClient,
+        fake_llm_client: FakeLLMClient,
         sensitivity: str,
         expected_verified: int,
     ) -> None:
         # 0.5 passes only "high" (0.35); 0.9 passes every threshold.
-        fake_genai_client.generate_results.append(
+        fake_llm_client.gate_results.append(
             make_gate_response(
                 [("A borderline factual claim.", 0.5), ("A strong claim.", 0.9)]
             )
         )
         for _ in range(expected_verified):
-            fake_genai_client.interaction_results.append(
-                make_verdict_interaction("TRUE", "Confirmed.")
+            fake_llm_client.verify_results.append(
+                make_verdict_completion("TRUE", "Confirmed.")
             )
         response = client.post(
             "/debug/text",
@@ -247,9 +256,9 @@ class TestDebugText:
         assert len(body["verdicts"]) == expected_verified
 
     def test_enabled_topics_filters_claims_before_verification(
-        self, client, fake_genai_client: FakeGenAIClient
+        self, client, fake_llm_client: FakeLLMClient
     ) -> None:
-        fake_genai_client.generate_results.append(
+        fake_llm_client.gate_results.append(
             make_gate_response(
                 [
                     ("A claim about an election.", 0.9, "politics"),
@@ -259,8 +268,8 @@ class TestDebugText:
         )
         # Only ONE verdict scripted: the politics claim must never reach the
         # verify call.
-        fake_genai_client.interaction_results.append(
-            make_verdict_interaction("TRUE", "Confirmed.")
+        fake_llm_client.verify_results.append(
+            make_verdict_completion("TRUE", "Confirmed.")
         )
         response = client.post(
             "/debug/text",
@@ -276,16 +285,16 @@ class TestDebugText:
         # ...but only enabled-topic claims are verified.
         assert [v["claim"] for v in body["verdicts"]] == ["A claim about a vaccine."]
         assert body["verdicts"][0]["topic"] == "health"
-        assert len(fake_genai_client.interaction_calls) == 1
+        assert len(fake_llm_client.verify_calls) == 1
 
     def test_other_topic_cannot_be_disabled(
-        self, client, fake_genai_client: FakeGenAIClient
+        self, client, fake_llm_client: FakeLLMClient
     ) -> None:
-        fake_genai_client.generate_results.append(
+        fake_llm_client.gate_results.append(
             make_gate_response([("Some general trivia claim.", 0.9, "other")])
         )
-        fake_genai_client.interaction_results.append(
-            make_verdict_interaction("TRUE", "Confirmed.")
+        fake_llm_client.verify_results.append(
+            make_verdict_completion("TRUE", "Confirmed.")
         )
         # "other" absent from the enabled list, unknown slug thrown in too:
         # both are tolerated; "other" is force-enabled server-side.
@@ -300,27 +309,27 @@ class TestDebugText:
         assert len(response.json()["verdicts"]) == 1
 
     def test_paraphrase_deduped_across_requests(
-        self, client, fake_genai_client: FakeGenAIClient
+        self, client, fake_llm_client: FakeLLMClient
     ) -> None:
-        fake_genai_client.generate_results.append(make_gate_response([(CLAIM, 0.9)]))
-        fake_genai_client.interaction_results.append(
-            make_verdict_interaction("FALSE", "About 330 meters.")
+        fake_llm_client.gate_results.append(make_gate_response([(CLAIM, 0.9)]))
+        fake_llm_client.verify_results.append(
+            make_verdict_completion("FALSE", "About 330 meters.")
         )
         first = client.post("/debug/text", json={"text": "tower claim take one"})
         assert len(first.json()["verdicts"]) == 1
 
-        fake_genai_client.generate_results.append(
+        fake_llm_client.gate_results.append(
             make_gate_response([("the eiffel tower is 450 meters tall", 0.9)])
         )
         second = client.post("/debug/text", json={"text": "tower claim take two"})
         assert second.status_code == 200
         assert second.json()["verdicts"] == []
-        assert len(fake_genai_client.interaction_calls) == 1
+        assert len(fake_llm_client.verify_calls) == 1
 
     def test_429_mid_request_drops_remaining_claims(
-        self, client, fake_genai_client: FakeGenAIClient
+        self, client, fake_llm_client: FakeLLMClient
     ) -> None:
-        fake_genai_client.generate_results.append(
+        fake_llm_client.gate_results.append(
             make_gate_response(
                 [
                     ("First distinct claim about history.", 0.9),
@@ -328,11 +337,11 @@ class TestDebugText:
                 ]
             )
         )
-        fake_genai_client.interaction_results.append(FakeInteractionsError(429))
+        fake_llm_client.verify_results.append(make_openrouter_rate_limit_error())
         response = client.post("/debug/text", json={"text": "two claims here"})
         assert response.status_code == 200  # partial results, not an error
         assert response.json()["verdicts"] == []
-        assert len(fake_genai_client.interaction_calls) == 1
+        assert len(fake_llm_client.verify_calls) == 1
         assert client.app.state.quota_cooldown.active is True
 
 
@@ -473,7 +482,7 @@ def make_fake_ws_app(executor: ThreadPoolExecutor) -> Any:
         settings=settings,
         transcriber=FakeTranscriber(),
         stt_executor=executor,
-        llm_runtime=make_fake_llm_runtime(settings, FakeGenAIClient(), cooldown),
+        llm_runtime=make_fake_llm_runtime(settings, FakeLLMClient(), cooldown),
         verify_bucket=TokenBucket(rate_per_min=6000.0, burst=10),
         quota_cooldown=cooldown,
         # Analytics slots: None disables persistence in SessionPipeline.
@@ -593,13 +602,13 @@ class TestAudioToVerdict:
     def test_stream_then_stop_yields_transcript_status_verdict(
         self,
         client,
-        fake_genai_client: FakeGenAIClient,
+        fake_llm_client: FakeLLMClient,
         fake_transcriber: FakeTranscriber,
     ) -> None:
         fake_transcriber.segments_script.append([SEVEN_WORD_SEGMENT])
-        fake_genai_client.generate_results.append(make_gate_response([(CLAIM, 0.9)]))
-        fake_genai_client.interaction_results.append(
-            make_verdict_interaction(
+        fake_llm_client.gate_results.append(make_gate_response([(CLAIM, 0.9)]))
+        fake_llm_client.verify_results.append(
+            make_verdict_completion(
                 "FALSE",
                 "The Eiffel Tower is about 330 meters tall.",
                 citations=[("https://www.toureiffel.paris/x", "Key figures")],
@@ -635,13 +644,13 @@ class TestAudioToVerdict:
     def test_hello_can_opt_out_of_transcripts(
         self,
         client,
-        fake_genai_client: FakeGenAIClient,
+        fake_llm_client: FakeLLMClient,
         fake_transcriber: FakeTranscriber,
     ) -> None:
         fake_transcriber.segments_script.append([SEVEN_WORD_SEGMENT])
-        fake_genai_client.generate_results.append(make_gate_response([(CLAIM, 0.9)]))
-        fake_genai_client.interaction_results.append(
-            make_verdict_interaction("FALSE", "About 330 meters.")
+        fake_llm_client.gate_results.append(make_gate_response([(CLAIM, 0.9)]))
+        fake_llm_client.verify_results.append(
+            make_verdict_completion("FALSE", "About 330 meters.")
         )
         with client.websocket_connect("/ws/audio") as session:
             session.send_json(make_hello(send_transcripts=False))
@@ -659,15 +668,15 @@ class TestAudioToVerdict:
     def test_mid_session_config_changes_sensitivity(
         self,
         client,
-        fake_genai_client: FakeGenAIClient,
+        fake_llm_client: FakeLLMClient,
         fake_transcriber: FakeTranscriber,
     ) -> None:
         # Worthiness 0.6 fails the hello's "low" (0.75) but passes the
         # mid-session "high" (0.35) update.
         fake_transcriber.segments_script.append([SEVEN_WORD_SEGMENT])
-        fake_genai_client.generate_results.append(make_gate_response([(CLAIM, 0.6)]))
-        fake_genai_client.interaction_results.append(
-            make_verdict_interaction("FALSE", "About 330 meters.")
+        fake_llm_client.gate_results.append(make_gate_response([(CLAIM, 0.6)]))
+        fake_llm_client.verify_results.append(
+            make_verdict_completion("FALSE", "About 330 meters.")
         )
         with client.websocket_connect("/ws/audio") as session:
             session.send_json(make_hello(sensitivity="low"))
@@ -684,11 +693,11 @@ class TestAudioToVerdict:
     def test_topic_filter_drops_claim_and_emits_topic_skipped(
         self,
         client,
-        fake_genai_client: FakeGenAIClient,
+        fake_llm_client: FakeLLMClient,
         fake_transcriber: FakeTranscriber,
     ) -> None:
         fake_transcriber.segments_script.append([SEVEN_WORD_SEGMENT])
-        fake_genai_client.generate_results.append(
+        fake_llm_client.gate_results.append(
             make_gate_response([("An election claim.", 0.9, "politics")])
         )
         # No interaction scripted: the claim must be dropped BEFORE the
@@ -712,22 +721,22 @@ class TestAudioToVerdict:
             }
         ]
         assert not any(frame["type"] == "verdict" for frame in frames)
-        assert fake_genai_client.interaction_calls == []
+        assert fake_llm_client.verify_calls == []
 
     def test_mid_session_config_flips_topics(
         self,
         client,
-        fake_genai_client: FakeGenAIClient,
+        fake_llm_client: FakeLLMClient,
         fake_transcriber: FakeTranscriber,
     ) -> None:
         # The hello disables politics; the mid-session config re-enables it
         # before the claim is gated, so verification proceeds.
         fake_transcriber.segments_script.append([SEVEN_WORD_SEGMENT])
-        fake_genai_client.generate_results.append(
+        fake_llm_client.gate_results.append(
             make_gate_response([("An election claim.", 0.9, "politics")])
         )
-        fake_genai_client.interaction_results.append(
-            make_verdict_interaction("TRUE", "Confirmed.")
+        fake_llm_client.verify_results.append(
+            make_verdict_completion("TRUE", "Confirmed.")
         )
         with client.websocket_connect("/ws/audio") as session:
             session.send_json(make_hello(enabled_topics=["health"]))
@@ -748,13 +757,13 @@ class TestAudioToVerdict:
     def test_topics_only_config_leaves_sensitivity_untouched(
         self,
         client,
-        fake_genai_client: FakeGenAIClient,
+        fake_llm_client: FakeLLMClient,
         fake_transcriber: FakeTranscriber,
     ) -> None:
         # Worthiness 0.6 fails the hello's "low" (0.75); the topics-only
         # config frame must NOT reset sensitivity, so it still fails.
         fake_transcriber.segments_script.append([SEVEN_WORD_SEGMENT])
-        fake_genai_client.generate_results.append(make_gate_response([(CLAIM, 0.6)]))
+        fake_llm_client.gate_results.append(make_gate_response([(CLAIM, 0.6)]))
         with client.websocket_connect("/ws/audio") as session:
             session.send_json(make_hello(sensitivity="low"))
             assert session.receive_json()["type"] == "ready"
@@ -766,20 +775,20 @@ class TestAudioToVerdict:
 
         assert close_code == 1000
         assert not any(frame["type"] == "verdict" for frame in frames)
-        assert fake_genai_client.interaction_calls == []
+        assert fake_llm_client.verify_calls == []
 
     def test_other_topic_cannot_be_disabled(
         self,
         client,
-        fake_genai_client: FakeGenAIClient,
+        fake_llm_client: FakeLLMClient,
         fake_transcriber: FakeTranscriber,
     ) -> None:
         fake_transcriber.segments_script.append([SEVEN_WORD_SEGMENT])
-        fake_genai_client.generate_results.append(
+        fake_llm_client.gate_results.append(
             make_gate_response([("Some general trivia claim.", 0.9, "other")])
         )
-        fake_genai_client.interaction_results.append(
-            make_verdict_interaction("TRUE", "Confirmed.")
+        fake_llm_client.verify_results.append(
+            make_verdict_completion("TRUE", "Confirmed.")
         )
         with client.websocket_connect("/ws/audio") as session:
             # "other" deliberately absent from the enabled list.
@@ -797,15 +806,15 @@ class TestAudioToVerdict:
     def test_hello_without_enabled_topics_enables_all(
         self,
         client,
-        fake_genai_client: FakeGenAIClient,
+        fake_llm_client: FakeLLMClient,
         fake_transcriber: FakeTranscriber,
     ) -> None:
         fake_transcriber.segments_script.append([SEVEN_WORD_SEGMENT])
-        fake_genai_client.generate_results.append(
+        fake_llm_client.gate_results.append(
             make_gate_response([("A sports record claim.", 0.9, "sports")])
         )
-        fake_genai_client.interaction_results.append(
-            make_verdict_interaction("TRUE", "Confirmed.")
+        fake_llm_client.verify_results.append(
+            make_verdict_completion("TRUE", "Confirmed.")
         )
         with client.websocket_connect("/ws/audio") as session:
             session.send_json(make_hello())  # no enabled_topics key at all
@@ -840,7 +849,7 @@ class TestAudioToVerdict:
 
     def test_stt_overload_emits_throttled_error_frame(
         self,
-        fake_genai_client: FakeGenAIClient,
+        fake_llm_client: FakeLLMClient,
         fake_transcriber: FakeTranscriber,
     ) -> None:
         # Tiny watermarks + an STT window the test never fills: pending audio
@@ -851,7 +860,7 @@ class TestAudioToVerdict:
             stt_window_s=50.0,
             stt_hop_s=50.0,
         )
-        with open_test_client(settings, fake_genai_client, fake_transcriber) as client:
+        with open_test_client(settings, fake_llm_client, fake_transcriber) as client:
             with client.websocket_connect("/ws/audio") as session:
                 session.send_json(make_hello())
                 assert session.receive_json()["type"] == "ready"
@@ -868,7 +877,7 @@ class TestAudioToVerdict:
 
     def test_overflow_log_and_frame_are_throttled_together(
         self,
-        fake_genai_client: FakeGenAIClient,
+        fake_llm_client: FakeLLMClient,
         fake_transcriber: FakeTranscriber,
         caplog,
     ) -> None:
@@ -886,7 +895,7 @@ class TestAudioToVerdict:
         )
         with caplog.at_level("WARNING", logger="app.pipeline"):
             with open_test_client(
-                settings, fake_genai_client, fake_transcriber
+                settings, fake_llm_client, fake_transcriber
             ) as client:
                 with client.websocket_connect("/ws/audio") as session:
                     session.send_json(make_hello())
@@ -956,11 +965,11 @@ class TestSttVadSegmentation:
 
     def test_utterances_forced_cuts_and_stop_flush(
         self,
-        fake_genai_client: FakeGenAIClient,
+        fake_llm_client: FakeLLMClient,
         fake_transcriber: FakeTranscriber,
     ) -> None:
         settings = make_test_settings(stt_segmentation="vad", stt_vad_max_segment_s=2.0)
-        with open_test_client(settings, fake_genai_client, fake_transcriber) as client:
+        with open_test_client(settings, fake_llm_client, fake_transcriber) as client:
             client.app.state.vad_span_fn = energy_spans
             with client.websocket_connect("/ws/audio") as session:
                 session.send_json(make_hello())
@@ -990,11 +999,11 @@ class TestSttVadSegmentation:
 
     def test_silence_alone_never_reaches_the_engine(
         self,
-        fake_genai_client: FakeGenAIClient,
+        fake_llm_client: FakeLLMClient,
         fake_transcriber: FakeTranscriber,
     ) -> None:
         settings = make_test_settings(stt_segmentation="vad")
-        with open_test_client(settings, fake_genai_client, fake_transcriber) as client:
+        with open_test_client(settings, fake_llm_client, fake_transcriber) as client:
             client.app.state.vad_span_fn = energy_spans
             with client.websocket_connect("/ws/audio") as session:
                 session.send_json(make_hello())
@@ -1011,7 +1020,7 @@ class TestGracefulStopDeliversInFlightWork:
     def test_in_flight_verdict_survives_stop(
         self,
         client: Any,
-        fake_genai_client: FakeGenAIClient,
+        fake_llm_client: FakeLLMClient,
         fake_transcriber: FakeTranscriber,
     ) -> None:
         """Regression: a verification already running when the client sends
@@ -1027,15 +1036,15 @@ class TestGracefulStopDeliversInFlightWork:
             no_speech_prob=0.05,
         )
         fake_transcriber.segments_script.append([nine_word_segment])
-        fake_genai_client.generate_results.append(make_gate_response([(CLAIM, 0.9)]))
+        fake_llm_client.gate_results.append(make_gate_response([(CLAIM, 0.9)]))
         release_verdict = threading.Event()
 
         async def blocked_verdict(**_call: Any) -> Any:
             while not release_verdict.is_set():
                 await asyncio.sleep(0.01)
-            return make_verdict_interaction("FALSE", "About 330 meters.")
+            return make_verdict_completion("FALSE", "About 330 meters.")
 
-        fake_genai_client.interaction_results.append(blocked_verdict)
+        fake_llm_client.verify_results.append(blocked_verdict)
 
         with client.websocket_connect("/ws/audio") as session:
             session.send_json(make_hello())
@@ -1043,7 +1052,7 @@ class TestGracefulStopDeliversInFlightWork:
             for _ in range(4):  # 1.0 s of audio -> one full STT window
                 session.send_bytes(pcm_silence(0.25))
             # Wait until the verification is genuinely in flight...
-            wait_until_sync(lambda: len(fake_genai_client.interaction_calls) >= 1)
+            wait_until_sync(lambda: len(fake_llm_client.verify_calls) >= 1)
             session.send_json({"type": "stop"})
             # ...and until the server has processed the stop frame, so the
             # verdict completes strictly during the wind-down.
@@ -1063,7 +1072,7 @@ class TestShutdownEnqueueContract:
     @staticmethod
     def build_pipeline(executor: ThreadPoolExecutor) -> SessionPipeline:
         """A SessionPipeline wired from fakes; its websocket is never used."""
-        fake_client = FakeGenAIClient()
+        fake_client = FakeLLMClient()
         settings = make_test_settings()
         return SessionPipeline(
             websocket=SimpleNamespace(),  # type: ignore[arg-type]
@@ -1071,13 +1080,8 @@ class TestShutdownEnqueueContract:
             settings=settings,
             transcriber=FakeTranscriber(),  # type: ignore[arg-type]
             stt_executor=executor,
-            claim_gate=GeminiClaimGate(client=fake_client, model="fake-gate-model"),
-            fact_checker=GeminiFactChecker(
-                client=fake_client,
-                verify_model="fake-verify-model",
-                extraction_model="fake-gate-model",
-                cooldown=QuotaCooldown(),
-            ),
+            claim_gate=create_claim_gate(settings, fake_client),
+            fact_checker=create_fact_checker(settings, fake_client, QuotaCooldown()),
             verify_bucket=TokenBucket(rate_per_min=6000.0, burst=10),
             quota_cooldown=QuotaCooldown(),
         )
@@ -1107,11 +1111,11 @@ class TestShutdownEnqueueContract:
 
 class TestDebugPushToLiveSession:
     def test_verdict_frame_is_pushed_onto_open_session(
-        self, client, fake_genai_client: FakeGenAIClient
+        self, client, fake_llm_client: FakeLLMClient
     ) -> None:
-        fake_genai_client.generate_results.append(make_gate_response([(CLAIM, 0.9)]))
-        fake_genai_client.interaction_results.append(
-            make_verdict_interaction("FALSE", "About 330 meters.")
+        fake_llm_client.gate_results.append(make_gate_response([(CLAIM, 0.9)]))
+        fake_llm_client.verify_results.append(
+            make_verdict_completion("FALSE", "About 330 meters.")
         )
         with client.websocket_connect("/ws/audio") as session:
             session.send_json(make_hello())
@@ -1133,12 +1137,12 @@ class TestDebugPushToLiveSession:
             assert close_code == 1000
 
     def test_debug_text_without_session_still_succeeds(
-        self, client, fake_genai_client: FakeGenAIClient
+        self, client, fake_llm_client: FakeLLMClient
     ) -> None:
         assert len(client.app.state.sessions) == 0
-        fake_genai_client.generate_results.append(make_gate_response([(CLAIM, 0.9)]))
-        fake_genai_client.interaction_results.append(
-            make_verdict_interaction("FALSE", "About 330 meters.")
+        fake_llm_client.gate_results.append(make_gate_response([(CLAIM, 0.9)]))
+        fake_llm_client.verify_results.append(
+            make_verdict_completion("FALSE", "About 330 meters.")
         )
         response = client.post(
             "/debug/text", json={"text": "the eiffel tower is 450 meters tall"}
@@ -1156,14 +1160,14 @@ class TestQuotaCooldownFrames:
     def test_active_cooldown_drops_claim_with_error_frame(
         self,
         client,
-        fake_genai_client: FakeGenAIClient,
+        fake_llm_client: FakeLLMClient,
         fake_transcriber: FakeTranscriber,
     ) -> None:
         client.app.state.quota_cooldown.trip(
             60.0, reason="OpenRouter credits exhausted — top up at openrouter.ai"
         )
         fake_transcriber.segments_script.append([SEVEN_WORD_SEGMENT])
-        fake_genai_client.generate_results.append(make_gate_response([(CLAIM, 0.9)]))
+        fake_llm_client.gate_results.append(make_gate_response([(CLAIM, 0.9)]))
         # No interaction scripted: the claim must be dropped before verification.
         with client.websocket_connect("/ws/audio") as session:
             session.send_json(make_hello())
@@ -1180,9 +1184,8 @@ class TestQuotaCooldownFrames:
         # The frame replays the reason recorded by whichever provider tripped
         # the cooldown instead of hard-coding a provider name.
         assert "top up at openrouter.ai" in cooldown_frames[0]["message"]
-        assert "Gemini" not in cooldown_frames[0]["message"]
         assert not any(frame["type"] == "verdict" for frame in frames)
-        assert fake_genai_client.interaction_calls == []
+        assert fake_llm_client.verify_calls == []
 
 
 # --------------------------------------------------------------------------- #
@@ -1198,7 +1201,7 @@ class TestSttFailure:
     def test_three_failed_windows_degrade_to_cpu_and_the_session_survives(
         self,
         client,
-        fake_genai_client: FakeGenAIClient,
+        fake_llm_client: FakeLLMClient,
         fake_transcriber: FakeTranscriber,
     ) -> None:
         fake_transcriber.fail_next = 3
@@ -1231,7 +1234,7 @@ class TestSttFailure:
     def test_unrecoverable_engine_ends_the_session_and_rejects_new_ones(
         self,
         client,
-        fake_genai_client: FakeGenAIClient,
+        fake_llm_client: FakeLLMClient,
         fake_transcriber: FakeTranscriber,
     ) -> None:
         fake_transcriber.fail_next = 3
@@ -1273,9 +1276,9 @@ class TestDebugSttFault:
 
     def test_hidden_when_debug_endpoints_are_off(
         self,
-        fake_genai_client: FakeGenAIClient,
+        fake_llm_client: FakeLLMClient,
         fake_transcriber: FakeTranscriber,
     ) -> None:
         settings = make_test_settings(debug_endpoints=False)
-        with open_test_client(settings, fake_genai_client, fake_transcriber) as client:
+        with open_test_client(settings, fake_llm_client, fake_transcriber) as client:
             assert client.post("/debug/stt/fail", json={}).status_code == 404

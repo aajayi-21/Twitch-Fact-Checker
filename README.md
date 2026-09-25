@@ -9,10 +9,9 @@ LLM "claim gate", verifies them with a web-search-grounded LLM call, and pushes
 **TRUE / FALSE / MISLEADING / UNVERIFIED** verdicts (with sources) back to a
 Shadow-DOM overlay rendered over the player.
 
-The LLM layer runs on **OpenRouter** (the primary provider: one key, any model, the
-`web` search plugin for grounding); **Gemini** is an optional secondary provider
-(requires a paid-tier key for search grounding). Pick the provider and paste your key
-on the extension's options page — no file editing needed.
+The LLM layer runs on **OpenRouter** (one key, any model, the `web` search plugin for
+grounding); the claim gate can optionally run on a local **Ollama** model. Paste your
+key on the extension's options page — no file editing needed.
 
 ## Quickstart
 
@@ -41,9 +40,7 @@ on the extension's options page — no file editing needed.
 
 3. **Connect your AI provider**: click the extension's toolbar icon → **Open
    settings** → paste your **OpenRouter** key (https://openrouter.ai/keys —
-   the primary provider; hold a few dollars of credit for web search) or,
-   optionally, a **Gemini** key (https://aistudio.google.com/apikey, requires a
-   paid-tier key for search grounding) → **Save & verify**. The key is validated
+   hold a few dollars of credit for web search) → **Save & verify**. The key is validated
    live against the provider and stored only in `backend/.env` on your machine.
 
 That's it — open a stream on a supported site, click the toolbar icon, and press
@@ -141,8 +138,8 @@ set).
 **API keys:** the backend starts without one, in a "needs setup" state (fact-checking
 is disabled until a key is added). The normal path is the extension's options page,
 which validates the key live and writes it to `backend/.env`. Editing `.env` by hand
-still works if you prefer — set `OPENROUTER_API_KEY=<key>` (or `LLM_PROVIDER=gemini`
-plus `GEMINI_API_KEY=<key>`; see `.env.example`) and restart. Both paths use the same
+still works if you prefer — set `OPENROUTER_API_KEY=<key>` (see `.env.example`) and
+restart. Both paths use the same
 file. `.env` holds your real key — it is gitignored and must never be committed.
 
 **First run:** the Whisper model (`distil-small.en`, int8, ~170 MB) is downloaded at
@@ -502,19 +499,11 @@ error message points that out). Documented alternates:
 
 - `openai/gpt-5.6-luna` — a stronger verifier ($0.20/M input); no `temperature`
   support, handled automatically by the capability lookup.
-- `google/gemini-3.8-flash` — strong on current events, Google-native web search
-  available via `OPENROUTER_WEB_ENGINE=native` ($0.014/call); $0.75/M input.
 - `google/gemma-4-26b-a4b-it:free` — $0 tokens, but its endpoint has no
   `structured_outputs` (runs in `json_object` mode) and the free tier's daily
   request cap dies within minutes at the gate's cadence.
 
 Browse the catalogue at <https://openrouter.ai/models>.
-
-**Gemini (optional secondary provider):** pick Gemini on the extension's options
-page and paste your key (or set `LLM_PROVIDER=gemini` and `GEMINI_API_KEY` in
-`.env`; models: `GEMINI_GATE_MODEL` / `GEMINI_VERIFY_MODEL`). Gemini searches with
-its own Google Search tool, which requires a paid-tier key — one reason OpenRouter
-is the primary provider.
 
 **Per-stage providers & Ollama (local gate).** The two pipeline stages can run on
 different providers: the claim gate makes ~300 cheap ungrounded calls/hour, while
@@ -528,7 +517,7 @@ ollama pull nomic-embed-text   # embeddings for contradiction detection
 
 Then on the options page: select **Ollama → Test connection**, and set **Claim
 detection (gate)** to Ollama under stage routing (verification stays on
-OpenRouter/Gemini — local verify is not supported because it has no web-search
+OpenRouter — local verify is not supported because it has no web-search
 grounding). Env equivalents: `GATE_PROVIDER=ollama`, `VERIFY_PROVIDER=openrouter`,
 `OLLAMA_BASE_URL=http://127.0.0.1:11434/v1` (any OpenAI-compatible server works:
 LM Studio, vLLM, llama.cpp). A cold local model's first call can exceed

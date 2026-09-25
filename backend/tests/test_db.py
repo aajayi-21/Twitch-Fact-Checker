@@ -119,7 +119,7 @@ class TestRecordVerdict:
             claim_id=claim.id,
             session_id="s1",
             latency_ms=1234,
-            provider="gemini",
+            provider="openrouter",
             model="fake-verify-model",
         )
         verdict_rows = read_rows(
@@ -127,7 +127,7 @@ class TestRecordVerdict:
             "SELECT id, claim_id, label, latency_ms, provider, model FROM verdicts",
         )
         assert verdict_rows == [
-            (verdict.id, claim.id, "TRUE", 1234, "gemini", "fake-verify-model")
+            (verdict.id, claim.id, "TRUE", 1234, "openrouter", "fake-verify-model")
         ]
         source_rows = read_rows(
             database._path.as_posix(),
@@ -160,7 +160,7 @@ class TestRecordFeedback:
             claim_id=claim.id,
             session_id="s1",
             latency_ms=1,
-            provider="gemini",
+            provider="openrouter",
             model="m",
         )
         assert await database.record_feedback(verdict.id, "up", None, None) is True
@@ -388,7 +388,7 @@ class TestGatePasses:
             gate_pass=gate_pass,
             session_id="s1",
             phase="flush",
-            gate_provider="gemini",
+            gate_provider="openrouter",
             gate_model="g",
         )
         assert read_rows(

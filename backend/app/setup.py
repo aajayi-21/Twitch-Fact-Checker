@@ -16,12 +16,12 @@ Key-material hygiene (the whole point of this module):
 - The key is NEVER logged, echoed, or returned. Responses carry at most a
   last-4 ``key_hint`` (``"…abcd"``).
 - Validation probes cost $0: OpenRouter ``GET /api/v1/key`` (plus the free
-  ``GET /api/v1/credits`` for the ``credits`` field); Gemini a models-list
-  call via google-genai with the candidate key.
+  ``GET /api/v1/credits`` for the ``credits`` field); Ollama a keyless
+  reachability check.
 - Nothing is persisted unless the provider accepted the key.
 - The ``.env`` upsert touches ONLY ``LLM_PROVIDER`` and the submitted
-  provider's key line; every other line (comments, ordering, the other
-  provider's key) is preserved byte-for-byte, and the write is atomic
+  provider's key line; every other line (comments, ordering, unrelated
+  keys) is preserved byte-for-byte, and the write is atomic
   (temp file + ``os.replace``).
 """
 
@@ -72,24 +72,22 @@ _MODEL_ENV_KEYS = {
 #: Accepted values for SetupStagesRequest.jev_mode (mirrors Settings.jev_mode).
 JEV_MODES = ("off", "shadow", "screen")
 
-Provider = Literal["openrouter", "gemini", "ollama"]
+Provider = Literal["openrouter", "ollama"]
 
 # Stage routing: which providers each pipeline stage accepts. Ollama is
 # GATE-ONLY — local verify has no web-search grounding, so every verdict
 # would be downgraded to UNVERIFIED.
-GATE_PROVIDERS: tuple[str, ...] = ("openrouter", "gemini", "ollama")
-VERIFY_PROVIDERS: tuple[str, ...] = ("openrouter", "gemini")
+GATE_PROVIDERS: tuple[str, ...] = ("openrouter", "ollama")
+VERIFY_PROVIDERS: tuple[str, ...] = ("openrouter",)
 
 # Keyed providers only — Ollama has no key and no settings field to persist.
 _PROVIDER_ENV_KEYS: dict[str, str] = {
     "openrouter": "OPENROUTER_API_KEY",
-    "gemini": "GEMINI_API_KEY",
 }
 _PROVIDER_SETTINGS_FIELDS: dict[str, str] = {
     "openrouter": "openrouter_api_key",
-    "gemini": "gemini_api_key",
 }
-_KNOWN_PROVIDERS: frozenset[str] = frozenset({"openrouter", "gemini", "ollama"})
+_KNOWN_PROVIDERS: frozenset[str] = frozenset({"openrouter", "ollama"})
 
 
 class ProviderKeyRejected(Exception):
@@ -119,7 +117,7 @@ class OpenRouterStatus(BaseModel):
     even when OpenRouter is not the active provider for that stage.
     ``StageStatus.model`` shows only the ACTIVE provider's model, so without
     these the options page could never prefill (or dirty-check) a slug for a
-    stage currently routed to Ollama or Gemini.
+    stage currently routed to Ollama.
 
     ``jev_mode`` is the stored Jev pre-screen mode (settable via
     POST /setup/stages); ``jev_model`` and ``jev_min_check_probability`` are
@@ -136,11 +134,6 @@ class OpenRouterStatus(BaseModel):
     jev_min_check_probability: float
 
 
-class GeminiStatus(BaseModel):
-    configured: bool
-    key_hint: str | None
-
-
 class OllamaStatus(BaseModel):
     """Keyless local provider: ``configured`` is always True; ``reachable``
     is a live best-effort probe of the OpenAI-compatible endpoint."""
@@ -152,7 +145,6 @@ class OllamaStatus(BaseModel):
 
 class ProvidersStatus(BaseModel):
     openrouter: OpenRouterStatus
-    gemini: GeminiStatus
     ollama: OllamaStatus
 
 
@@ -259,43 +251,6 @@ async def fetch_openrouter_credits(api_key: str) -> CreditsInfo | None:
     except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
         logger.warning("could not fetch OpenRouter credits: %s", exc)
         return None
-
-
-async def validate_gemini_key(api_key: str) -> None:
-    """Probe the Gemini API with a models-list call (free, $0).
-
-    Raises:
-        ProviderKeyRejected: when Gemini answers with a 4xx (invalid key,
-            permission denied) other than 429.
-        ProviderUnreachable: on timeout, 429, 5xx, or network failure.
-    """
-    from google import genai
-    from google.genai import errors as genai_errors
-
-    client = genai.Client(api_key=api_key)
-    try:
-        await asyncio.wait_for(
-            client.aio.models.list(config={"page_size": 1}),
-            timeout=PROBE_TIMEOUT_S,
-        )
-    except genai_errors.APIError as exc:
-        message = exc.message or f"Gemini API error (HTTP {exc.code})"
-        if 400 <= exc.code < 500 and exc.code != 429:
-            raise ProviderKeyRejected(message) from exc
-        raise ProviderUnreachable(
-            f"Gemini API error (HTTP {exc.code}): {message}"
-        ) from exc
-    except TimeoutError as exc:
-        raise ProviderUnreachable(
-            f"Gemini models-list probe timed out after {PROBE_TIMEOUT_S:.0f}s"
-        ) from exc
-    except Exception as exc:
-        raise ProviderUnreachable(f"could not reach Gemini: {exc}") from exc
-    finally:
-        try:
-            await client.aio.aclose()
-        except Exception as exc:
-            logger.debug("error closing Gemini probe client: %s", exc)
 
 
 class ModelSlugRejected(Exception):
@@ -511,10 +466,6 @@ async def _build_status(settings: Settings) -> SetupStatusResponse:
                 jev_model=settings.jev_model,
                 jev_min_check_probability=settings.jev_min_check_probability,
             ),
-            gemini=GeminiStatus(
-                configured=settings.provider_configured("gemini"),
-                key_hint=_key_hint(settings, "gemini"),
-            ),
             ollama=OllamaStatus(
                 configured=True,
                 reachable=ollama_reachable,
@@ -603,7 +554,7 @@ async def submit_credentials(
     if provider not in _KNOWN_PROVIDERS:
         raise HTTPException(
             status_code=400,
-            detail="provider must be one of: openrouter, gemini, ollama",
+            detail="provider must be one of: openrouter, ollama",
         )
 
     runtime: LLMRuntime = request.app.state.llm_runtime
@@ -622,10 +573,7 @@ async def submit_credentials(
         raise HTTPException(status_code=400, detail="api_key must be non-empty")
 
     try:
-        if provider == "openrouter":
-            await validate_openrouter_key(api_key)
-        else:
-            await validate_gemini_key(api_key)
+        await validate_openrouter_key(api_key)
     except ProviderKeyRejected as exc:
         logger.warning("%s rejected the submitted API key: %s", provider, exc)
         raise HTTPException(status_code=401, detail=str(exc)) from exc
@@ -654,9 +602,8 @@ async def submit_credentials(
             _PROVIDER_SETTINGS_FIELDS[provider]: api_key,
         }
     )
-    if provider == "openrouter":
-        # Best-effort: an unreachable catalogue only costs a warning.
-        await prime_openrouter_capabilities(new_settings.active_openrouter_chat_models)
+    # Best-effort: an unreachable catalogue only costs a warning.
+    await prime_openrouter_capabilities(new_settings.active_openrouter_chat_models)
     await _swap_runtime(request, new_settings)
     return await _build_status(new_settings)
 
@@ -685,7 +632,7 @@ async def submit_stages(
     if gate_provider not in GATE_PROVIDERS:
         raise HTTPException(
             status_code=400,
-            detail="gate_provider must be one of: openrouter, gemini, ollama",
+            detail="gate_provider must be one of: openrouter, ollama",
         )
     if verify_provider not in VERIFY_PROVIDERS:
         if verify_provider == "ollama":
@@ -693,12 +640,12 @@ async def submit_stages(
                 status_code=400,
                 detail=(
                     "local verify is not supported; verify_provider must be "
-                    "openrouter or gemini"
+                    "openrouter"
                 ),
             )
         raise HTTPException(
             status_code=400,
-            detail="verify_provider must be one of: openrouter, gemini",
+            detail="verify_provider must be openrouter",
         )
 
     runtime: LLMRuntime = request.app.state.llm_runtime

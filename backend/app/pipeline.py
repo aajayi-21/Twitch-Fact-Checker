@@ -169,10 +169,9 @@ class QueuedClaim(NamedTuple):
     """A gated claim plus the clock the claim model deliberately lacks.
 
     Why a wrapper instead of two more fields on :class:`~app.models.GateClaim`:
-    ``GateClaim`` is handed to Gemini as ``response_schema=GateResult``
-    (``llm_gemini.py``), so every field added to it changes what the extraction
-    model is asked to produce. The queue's bookkeeping has no business in a
-    prompt schema.
+    ``GateClaim`` is the gate's output schema, so every field added to it
+    changes what the extraction model is asked to produce. The queue's
+    bookkeeping has no business in a prompt schema.
 
     ``gated_at`` is the only honest measure of a claim's age.
     ``Verdict.checked_at`` is stamped at verdict construction and therefore

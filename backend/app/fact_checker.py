@@ -14,9 +14,8 @@ This module owns everything that is independent of the LLM provider:
 The actual LLM transport is two abstract methods —
 :meth:`FactChecker._grounded_structured` and
 :meth:`FactChecker._grounded_fallback` — implemented by
-:class:`app.llm_gemini.GeminiFactChecker` and
 :class:`app.llm_openrouter.OpenRouterFactChecker` so SDK drift stays local to
-those modules. Citations come exclusively from provider grounding metadata
+that module. Citations come exclusively from provider grounding metadata
 (``url_citation`` annotations), never from model prose — models fabricate
 URLs.
 
@@ -273,8 +272,8 @@ class FactChecker(ABC):
     @staticmethod
     def _parse_label_explanation(raw: str) -> VerdictPayload | None:
         """Lenient parse of the ``LABEL:`` / [``EVIDENCE:``] / ``EXPLANATION:``
-        fallback format. The evidence line is optional (Gemini's fallback has
-        none); when a model puts it AFTER the explanation it is trimmed off
+        fallback format. The evidence line is optional (a model may omit it);
+        when a model puts it AFTER the explanation it is trimmed off
         the explanation text.
         """
         label_match = _LABEL_LINE_RE.search(raw)

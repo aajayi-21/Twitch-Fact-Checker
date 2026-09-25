@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from app.db import SCHEMA_SQL
 from app.models import utc_now_iso
 from tests.conftest import (
-    FakeGenAIClient,
+    FakeLLMClient,
     FakeTranscriber,
     make_test_settings,
     open_test_client,
@@ -98,11 +98,11 @@ def seed(db_path: str) -> None:
 
 @pytest.fixture()
 def seeded_client(
-    tmp_path, fake_genai_client: FakeGenAIClient, fake_transcriber: FakeTranscriber
+    tmp_path, fake_llm_client: FakeLLMClient, fake_transcriber: FakeTranscriber
 ) -> Iterator[TestClient]:
     settings = make_test_settings(db_path=str(tmp_path / "stats.db"))
     seed(settings.db_path)
-    with open_test_client(settings, fake_genai_client, fake_transcriber) as client:
+    with open_test_client(settings, fake_llm_client, fake_transcriber) as client:
         yield client
 
 

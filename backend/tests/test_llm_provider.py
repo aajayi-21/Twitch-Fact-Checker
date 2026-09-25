@@ -7,7 +7,6 @@ from openai import AsyncOpenAI
 
 from app.config import Settings
 from app.llm_jev import JevScreenedGate
-from app.llm_gemini import GeminiClaimGate, GeminiFactChecker
 from app.llm_local import LocalClaimGate
 from app.llm_openrouter import (
     OPENROUTER_BASE_URL,
@@ -31,7 +30,6 @@ def make_settings(provider: str, **overrides: object) -> Settings:
     return Settings(
         llm_provider=provider,  # type: ignore[arg-type]
         openrouter_api_key="sk-or-offline-test",
-        gemini_api_key="offline-test-key",
         **overrides,  # type: ignore[arg-type]
         _env_file=None,
     )
@@ -44,15 +42,6 @@ class TestCreateLlmClient:
             assert isinstance(client, AsyncOpenAI)
             assert str(client.base_url).rstrip("/") == OPENROUTER_BASE_URL
             assert client.max_retries == 0  # the app owns retries/cooldowns
-        finally:
-            await close_llm_client(client)
-
-    async def test_gemini_builds_genai_client(self) -> None:
-        from google import genai
-
-        client = create_llm_client(make_settings("gemini"), "gemini")
-        try:
-            assert isinstance(client, genai.Client)
         finally:
             await close_llm_client(client)
 
@@ -88,14 +77,6 @@ class TestCreateGateAndChecker:
         assert isinstance(gate, JevScreenedGate)
         assert isinstance(gate._extractor, OpenRouterClaimGate)
 
-    def test_gemini_classes(self) -> None:
-        settings = make_settings("gemini")
-        dummy_client = SimpleNamespace()
-        gate = create_claim_gate(settings, dummy_client)
-        checker = create_fact_checker(settings, dummy_client, QuotaCooldown())
-        assert isinstance(gate, GeminiClaimGate)
-        assert isinstance(checker, GeminiFactChecker)
-
     def test_ollama_gate_class(self) -> None:
         settings = make_settings("openrouter", gate_provider="ollama")
         gate = create_claim_gate(settings, SimpleNamespace())
@@ -113,15 +94,10 @@ class TestCreateGateAndChecker:
             llm_provider="openrouter",
             openrouter_gate_model="or-gate",
             openrouter_verify_model="or-verify",
-            gemini_gate_model="gm-gate",
-            gemini_verify_model="gm-verify",
             _env_file=None,
         )
         assert settings.active_gate_model == "or-gate"
         assert settings.active_verify_model == "or-verify"
-        gemini_settings = settings.model_copy(update={"llm_provider": "gemini"})
-        assert gemini_settings.active_gate_model == "gm-gate"
-        assert gemini_settings.active_verify_model == "gm-verify"
 
     def test_active_models_follow_stage_overrides(self) -> None:
         settings = Settings(

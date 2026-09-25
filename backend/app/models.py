@@ -190,15 +190,14 @@ class GateClaim(BaseModel):
     """One claim extracted by the gate model."""
 
     # Server-side identity for the analytics funnel. NEVER model-supplied:
-    # the before-validator strips any incoming "id" key, because Gemini's
-    # gate call passes this Pydantic class as its response_schema — without
-    # the strip the model could emit its own (colliding) ids.
+    # the before-validator strips any incoming "id" key, so a model that
+    # echoes an "id" field cannot inject its own (colliding) ids.
     id: str = Field(default_factory=new_claim_id)
     claim_text: str
     check_worthiness: float = Field(ge=0.0, le=1.0)
     # Deliberately NO default: the field must appear in the JSON schema's
-    # `required` list so schema-enforced providers (Gemini response_schema,
-    # OpenRouter strict json_schema) force the model to emit it. The
+    # `required` list so schema-enforced output (OpenRouter strict
+    # json_schema) forces the model to emit it. The
     # before-validator below still supplies "other" whenever a non-strict
     # parse path omits the key.
     topic: Topic
@@ -210,8 +209,8 @@ class GateClaim(BaseModel):
 
         Case/whitespace variants of canonical slugs (e.g. "Politics") are
         normalized rather than discarded: they can only arrive via the
-        non-schema-enforced parse paths (OpenRouter json_object mode, Gemini
-        raw-text fallback), where the enum is prompt-suggested only.
+        non-schema-enforced parse paths (json_object mode, the local gate),
+        where the enum is prompt-suggested only.
 
         Also discards any model-supplied "id" so the server default_factory
         always assigns it (see the field comment).
@@ -256,8 +255,8 @@ class VerdictPayload(BaseModel):
     """The flat schema the verify model must return.
 
     Deliberately minimal: complex schemas combined with search grounding are
-    the known 400 sharp edge. ``evidence`` is required in the OpenRouter
-    schema and absent on Gemini and the text fallbacks, hence optional here.
+    the known 400 sharp edge. ``evidence`` is required in the strict verify
+    schema but may be absent from the text fallbacks, hence optional here.
     """
 
     label: Label

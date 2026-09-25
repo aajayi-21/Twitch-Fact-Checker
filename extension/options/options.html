@@ -59,13 +59,6 @@
               </span>
             </label>
             <label class="segment">
-              <input type="radio" name="apiProvider" value="gemini" />
-              <span class="segment-multi">
-                <span class="segment-name">Gemini</span>
-                <span class="segment-sub">requires paid-tier key for search</span>
-              </span>
-            </label>
-            <label class="segment">
               <input type="radio" name="apiProvider" value="ollama" />
               <span class="segment-multi">
                 <span class="segment-name">Ollama</span>
@@ -130,7 +123,6 @@
             </label>
             <select id="gate-provider-select">
               <option value="openrouter">OpenRouter</option>
-              <option value="gemini">Gemini</option>
               <option value="ollama">Ollama (local)</option>
             </select>
           </div>
@@ -171,9 +163,15 @@
             <label class="stage-label" for="verify-provider-select">
               Verification
             </label>
-            <select id="verify-provider-select">
+            <!-- Verification needs web search, which only OpenRouter
+                 provides here; kept as a (fixed) select so the stage
+                 routing logic reads it like the gate select. -->
+            <select
+              id="verify-provider-select"
+              disabled
+              title="Verification needs web search, which runs on OpenRouter."
+            >
               <option value="openrouter">OpenRouter</option>
-              <option value="gemini">Gemini</option>
             </select>
           </div>
           <div class="stage-row stage-model-row" data-provider-scope="verify" hidden>
@@ -203,7 +201,7 @@
           </div>
           <p class="field-help">
             The gate runs ~300 cheap calls/hour (great locally via Ollama);
-            verification needs web search and stays on OpenRouter or Gemini.
+            verification needs web search and always runs on OpenRouter.
             Model slugs are checked against OpenRouter's live catalogue when
             you Apply — browse them at
             <a href="https://openrouter.ai/models" target="_blank"

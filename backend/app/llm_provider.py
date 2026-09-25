@@ -38,17 +38,8 @@ logger = logging.getLogger(__name__)
 
 
 async def close_llm_client(client: Any) -> None:
-    """Close whichever client a provider spec built.
-
-    ``genai.Client`` closes via ``client.aio.aclose()``; ``AsyncOpenAI``
-    (OpenRouter and local servers alike — no ``aio`` attribute) closes via
-    ``client.close()``.
-    """
-    aio = getattr(client, "aio", None)
-    if aio is not None:
-        await aio.aclose()
-    else:
-        await client.close()
+    """Close a provider client (``AsyncOpenAI`` for OpenRouter and Ollama)."""
+    await client.close()
 
 
 @dataclass(frozen=True)
@@ -112,30 +103,6 @@ def _openrouter_spec() -> ProviderSpec:
     )
 
 
-def _gemini_spec() -> ProviderSpec:
-    from google import genai
-
-    from app.llm_gemini import GeminiClaimGate, GeminiFactChecker
-
-    return ProviderSpec(
-        make_client=lambda s: genai.Client(api_key=s.gemini_api_key),
-        make_gate=lambda s, client: GeminiClaimGate(
-            client=client,
-            model=s.gemini_gate_model,
-            gate_interval_s=s.gate_interval_s,
-            gate_timeout_s=s.gate_timeout_s,
-        ),
-        make_checker=lambda s, client, cooldown: GeminiFactChecker(
-            client=client,
-            verify_model=s.gemini_verify_model,
-            extraction_model=s.gemini_gate_model,
-            cooldown=cooldown,
-            verify_timeout_s=s.verify_timeout_s,
-        ),
-        close=close_llm_client,
-    )
-
-
 def _ollama_spec() -> ProviderSpec:
     from app.llm_local import LocalClaimGate, create_local_client
 
@@ -158,7 +125,6 @@ def _ollama_spec() -> ProviderSpec:
 
 _SPEC_FACTORIES: dict[str, Callable[[], ProviderSpec]] = {
     "openrouter": _openrouter_spec,
-    "gemini": _gemini_spec,
     "ollama": _ollama_spec,
 }
 

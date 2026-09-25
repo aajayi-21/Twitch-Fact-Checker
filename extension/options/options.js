@@ -42,7 +42,6 @@ const SETUP_SUCCESS_COLLAPSE_MS = 1400;
 const STAGE_APPLY_TIMEOUT_MS = 5000;
 const PROVIDER_LABELS = Object.freeze({
   openrouter: "OpenRouter",
-  gemini: "Gemini",
   ollama: "Ollama",
 });
 const BACKEND_DOWN_COPY =
@@ -232,7 +231,7 @@ const renderProviderStatusList = (status) => {
     }
     return ["ok", detail];
   };
-  for (const name of ["openrouter", "gemini", "ollama"]) {
+  for (const name of ["openrouter", "ollama"]) {
     const [rowState, detail] = describeRow(name);
     const row = document.createElement("li");
     row.dataset.provider = name;

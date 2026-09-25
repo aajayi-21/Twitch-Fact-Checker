@@ -13,7 +13,7 @@ from tests.conftest import (
     make_chat_completion,
     make_gate_response,
     make_hello,
-    make_verdict_interaction,
+    make_verdict_completion,
     pcm_silence,
 )
 from tests.test_llm_jev import answer
@@ -124,15 +124,15 @@ class TestDebugPath:
         ],
     )
     def test_screening_then_existing_filters(
-        self, screen_client, fake_genai_client, probability, score, topic, expected
+        self, screen_client, fake_llm_client, probability, score, topic, expected
     ):
         client, transport = screen_client
         transport.decisions.append(answer(probability))
         if probability >= 0.35:
             extraction(transport, score=score, topic=topic)
         if expected:
-            fake_genai_client.interaction_results.append(
-                make_verdict_interaction("FALSE", "About 330 meters.")
+            fake_llm_client.verify_results.append(
+                make_verdict_completion("FALSE", "About 330 meters.")
             )
         response = client.post(
             "/debug/text",
@@ -145,35 +145,35 @@ class TestDebugPath:
         assert response.status_code == 200
         assert len(response.json()["verdicts"]) == expected
         assert len(transport.completion_calls) == int(probability >= 0.35)
-        assert len(fake_genai_client.interaction_calls) == expected
+        assert len(fake_llm_client.verify_calls) == expected
 
     def test_malformed_jev_response_fails_open(
-        self, screen_client, fake_genai_client
+        self, screen_client, fake_llm_client
     ) -> None:
         client, transport = screen_client
         transport.decisions.append({"answers": {}})
         extraction(transport)
-        fake_genai_client.interaction_results.append(
-            make_verdict_interaction("FALSE", "About 330 meters.")
+        fake_llm_client.verify_results.append(
+            make_verdict_completion("FALSE", "About 330 meters.")
         )
         response = client.post("/debug/text", json={"text": CLAIM})
         assert response.status_code == 200
         assert len(response.json()["verdicts"]) == 1
         assert len(transport.completion_calls) == 1
 
-    def test_still_deduplicates(self, screen_client, fake_genai_client) -> None:
+    def test_still_deduplicates(self, screen_client, fake_llm_client) -> None:
         client, transport = screen_client
         transport.decisions.extend([answer(), answer()])
         extraction(transport)
         extraction(transport)
-        fake_genai_client.interaction_results.append(
-            make_verdict_interaction("FALSE", "About 330 meters.")
+        fake_llm_client.verify_results.append(
+            make_verdict_completion("FALSE", "About 330 meters.")
         )
         first = client.post("/debug/text", json={"text": CLAIM})
         second = client.post("/debug/text", json={"text": CLAIM})
         assert len(first.json()["verdicts"]) == 1
         assert second.json()["verdicts"] == []
-        assert len(fake_genai_client.interaction_calls) == 1
+        assert len(fake_llm_client.verify_calls) == 1
 
     def test_records_no_gate_pass(self, screen_client) -> None:
         client, transport = screen_client
@@ -186,14 +186,14 @@ class TestLiveSessions:
     @pytest.mark.parametrize("live", [False, True])
     @pytest.mark.parametrize("approved", [False, True])
     def test_screen_routes_live_and_flush_passes_and_records_them(
-        self, screen_client, fake_transcriber, fake_genai_client, live, approved
+        self, screen_client, fake_transcriber, fake_llm_client, live, approved
     ) -> None:
         client, transport = screen_client
         transport.decisions.append(answer(0.9 if approved else 0.1))
         if approved:
             extraction(transport)
-            fake_genai_client.interaction_results.append(
-                make_verdict_interaction("FALSE", "About 330 meters.")
+            fake_llm_client.verify_results.append(
+                make_verdict_completion("FALSE", "About 330 meters.")
             )
         text = (
             "The Eiffel Tower in Paris is 450 meters tall"
@@ -205,7 +205,7 @@ class TestLiveSessions:
         assert len(transport.completion_calls) == int(approved)
         verdicts = [frame for frame in frames if frame["type"] == "verdict"]
         assert len(verdicts) == int(approved)
-        assert len(fake_genai_client.interaction_calls) == int(approved)
+        assert len(fake_llm_client.verify_calls) == int(approved)
 
         wait_until(lambda: len(gate_pass_rows(client)) == 1)
         (row,) = gate_pass_rows(client)
@@ -225,13 +225,13 @@ class TestLiveSessions:
             assert outcome == "verified"
 
     def test_shadow_extracts_even_when_jev_says_no(
-        self, shadow_client, fake_transcriber, fake_genai_client
+        self, shadow_client, fake_transcriber, fake_llm_client
     ) -> None:
         client, transport = shadow_client
         transport.decisions.append(answer(0.05))
         extraction(transport)
-        fake_genai_client.interaction_results.append(
-            make_verdict_interaction("FALSE", "About 330 meters.")
+        fake_llm_client.verify_results.append(
+            make_verdict_completion("FALSE", "About 330 meters.")
         )
         frames = stream_one_segment(
             client, fake_transcriber, "The Eiffel Tower is 450 meters tall", live=False
@@ -246,9 +246,9 @@ class TestLiveSessions:
 
 class TestJevOff:
     def test_gate_pass_rows_keep_metadata_but_no_text(
-        self, client, fake_transcriber, fake_genai_client
+        self, client, fake_transcriber, fake_llm_client
     ) -> None:
-        fake_genai_client.generate_results.append(make_gate_response([]))
+        fake_llm_client.gate_results.append(make_gate_response([]))
         stream_one_segment(
             client, fake_transcriber, "just some chatter about nothing", live=False
         )

@@ -95,7 +95,6 @@ class TestQuotaCooldown:
         cooldown = QuotaCooldown()
         cooldown.trip(5.0)
         assert cooldown.reason == DEFAULT_COOLDOWN_REASON
-        assert "Gemini" not in cooldown.reason
         assert "OpenRouter" not in cooldown.reason
 
     def test_trip_records_reason_for_replay(self) -> None:

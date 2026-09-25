@@ -8,8 +8,7 @@ This module owns everything that is independent of the LLM provider:
 transcript buffering, the interval/min-words throttle, the context tail used
 for pronoun resolution, and the drain-before-call crash-safety dance. The
 actual LLM transport is a single abstract method, :meth:`ClaimGate._extract`,
-implemented by :class:`app.llm_gemini.GeminiClaimGate`,
-:class:`app.llm_openrouter.OpenRouterClaimGate` and
+implemented by :class:`app.llm_openrouter.OpenRouterClaimGate` and
 :class:`app.llm_local.LocalClaimGate` so SDK drift stays local to those
 modules. :class:`app.llm_jev.JevScreenedGate` wraps one of them with the
 optional Jev pre-screen through the :meth:`ClaimGate._gate_pass` hook.

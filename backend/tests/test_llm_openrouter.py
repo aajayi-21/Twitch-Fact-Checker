@@ -609,7 +609,6 @@ class TestVerifyGroundedStructured:
         assert system["role"] == "system" and user["role"] == "user"
         assert user["content"] == CLAIM
         assert "Today is" in system["content"]
-        assert "Google Search" not in system["content"]
 
     async def test_zero_citations_downgrades_to_unverified(
         self,

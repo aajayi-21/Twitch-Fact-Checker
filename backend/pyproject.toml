@@ -15,9 +15,6 @@ dependencies = [
     # Speech-to-text, default backend (ctranslate2: CPU + CUDA only).
     # Its bundled Silero VAD is also reused by the torch backend.
     "faster-whisper>=1.0",
-    # llm_gemini.py uses the Interactions API (client.aio.interactions) as
-    # shipped in the 2.x line; older 1.x SDKs import fine but fail at runtime.
-    "google-genai>=2.12",
     # llm_openrouter.py and llm_local.py talk to OpenRouter / any
     # OpenAI-compatible local server through the OpenAI SDK.
     "openai>=1.90",

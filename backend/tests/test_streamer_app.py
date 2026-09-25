@@ -25,7 +25,7 @@ from streamer.db import StreamerDatabase
 from streamer.main import create_app as create_streamer_app
 from app.stt_supervisor import SttSupervisor
 from tests.conftest import (
-    FakeGenAIClient,
+    FakeLLMClient,
     FakeTranscriber,
     make_fake_llm_runtime,
     make_test_settings,
@@ -61,7 +61,7 @@ def install_fake_streamer_state(
             rate_per_min=settings.verify_rpm, burst=10
         )
         app.state.llm_runtime = make_fake_llm_runtime(
-            settings, FakeGenAIClient(), cooldown
+            settings, FakeLLMClient(), cooldown
         )
         app.state.sessions = SessionRegistry(
             scope=settings.session_preempt_scope,
