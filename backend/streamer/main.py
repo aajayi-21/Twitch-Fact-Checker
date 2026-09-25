@@ -98,7 +98,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         cpu_fallback=settings.stt_cpu_fallback,
     )
     if settings.stt_warm_up:
-        await stt_supervisor.warm_up(settings.stt_hop_s)
+        await stt_supervisor.warm_up(settings.stt_warm_up_budget_s)
     app.state.stt_supervisor = stt_supervisor
 
     # ---- the chat bot ---------------------------------------------------- #

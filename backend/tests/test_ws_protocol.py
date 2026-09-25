@@ -32,8 +32,10 @@ from tests.conftest import (
     make_hello,
     make_test_settings,
     make_verdict_interaction,
+    energy_spans,
     open_test_client,
     pcm_silence,
+    pcm_tone,
 )
 
 SEVEN_WORD_SEGMENT = TranscriptSegment(
@@ -943,6 +945,65 @@ class TestSttWindowOverlap:
         assert len(fake_transcriber.calls) == 3
         assert fake_transcriber.calls[2]["samples"] == 8000
         assert fake_transcriber.calls[2]["window_start_s"] == pytest.approx(1.0)
+
+
+class TestSttVadSegmentation:
+    """STT_SEGMENTATION=vad through the real pipeline, with a deterministic
+    energy detector standing in for Silero (test audio is tones/silence).
+    Durations are multiples of the detector's 512-sample frame, so every
+    expected position is exact."""
+
+    def test_utterances_forced_cuts_and_stop_flush(
+        self,
+        fake_genai_client: FakeGenAIClient,
+        fake_transcriber: FakeTranscriber,
+    ) -> None:
+        settings = make_test_settings(stt_segmentation="vad", stt_vad_max_segment_s=2.0)
+        with open_test_client(settings, fake_genai_client, fake_transcriber) as client:
+            client.app.state.vad_span_fn = energy_spans
+            with client.websocket_connect("/ws/audio") as session:
+                session.send_json(make_hello())
+                assert session.receive_json()["type"] == "ready"
+                # 1.024 s silence, 1.024 s "speech", 0.64 s trailing silence:
+                # one complete utterance, cut exactly around the speech.
+                session.send_bytes(
+                    pcm_silence(1.024) + pcm_tone(1.024) + pcm_silence(0.64)
+                )
+                wait_until_sync(lambda: len(fake_transcriber.calls) >= 1)
+                # 5.12 s of unbroken speech: forced cuts at the 2.0 s cap.
+                session.send_bytes(pcm_tone(5.12))
+                wait_until_sync(lambda: len(fake_transcriber.calls) >= 3)
+                time.sleep(0.6)  # the 1.12 s remainder is still open speech
+                assert len(fake_transcriber.calls) == 3
+                session.send_json({"type": "stop"})
+                _frames, close_code = collect_frames_until_close(session)
+
+        assert close_code == 1000
+        calls = fake_transcriber.calls
+        assert [call["samples"] for call in calls] == [16384, 32000, 32000, 17920]
+        assert [call["window_start_s"] for call in calls] == pytest.approx(
+            [1.024, 2.688, 4.688, 6.688]
+        )
+        # Non-overlapping clips: the overlap trim and suffix dedupe are off.
+        assert all(call["text_state"].overlapping is False for call in calls)
+
+    def test_silence_alone_never_reaches_the_engine(
+        self,
+        fake_genai_client: FakeGenAIClient,
+        fake_transcriber: FakeTranscriber,
+    ) -> None:
+        settings = make_test_settings(stt_segmentation="vad")
+        with open_test_client(settings, fake_genai_client, fake_transcriber) as client:
+            client.app.state.vad_span_fn = energy_spans
+            with client.websocket_connect("/ws/audio") as session:
+                session.send_json(make_hello())
+                assert session.receive_json()["type"] == "ready"
+                session.send_bytes(pcm_silence(3.0))
+                time.sleep(0.6)
+                session.send_json({"type": "stop"})
+                _frames, close_code = collect_frames_until_close(session)
+        assert close_code == 1000
+        assert fake_transcriber.calls == []
 
 
 class TestGracefulStopDeliversInFlightWork:

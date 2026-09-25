@@ -187,3 +187,49 @@ class TestSttResilienceSettings:
     def test_flush_interval_must_be_positive(self) -> None:
         with pytest.raises(ValueError):
             Settings(session_stats_flush_s=0, _env_file=None)
+
+
+class TestSttSegmentation:
+    @pytest.mark.parametrize(
+        ("backend", "segmentation", "resolved"),
+        [
+            ("faster-whisper", "auto", "window"),
+            ("torch", "auto", "window"),
+            ("faster-whisper", "vad", "vad"),
+            ("torch", "window", "window"),
+        ],
+    )
+    def test_resolution(self, backend: str, segmentation: str, resolved: str) -> None:
+        settings = Settings(
+            _env_file=None, stt_backend=backend, stt_segmentation=segmentation
+        )
+        assert settings.resolved_stt_segmentation == resolved
+
+    def test_warm_up_budget_follows_the_mode(self) -> None:
+        assert Settings(_env_file=None, stt_hop_s=3.5).stt_warm_up_budget_s == 3.5
+        vad = Settings(
+            _env_file=None, stt_segmentation="vad", stt_vad_max_segment_s=8.0
+        )
+        assert vad.stt_warm_up_budget_s == 4.0
+
+    def test_max_segment_must_fit_under_the_high_watermark(self) -> None:
+        with pytest.raises(ValueError, match="STT_VAD_MAX_SEGMENT_S"):
+            Settings(
+                _env_file=None,
+                stt_segmentation="vad",
+                stt_vad_max_segment_s=11.5,
+                audio_high_watermark_s=12.0,
+            )
+
+    def test_min_silence_must_exceed_the_pad(self) -> None:
+        with pytest.raises(ValueError, match="STT_VAD_MIN_SILENCE_MS"):
+            Settings(_env_file=None, stt_segmentation="vad", stt_vad_min_silence_ms=150)
+
+    def test_vad_rules_do_not_apply_in_window_mode(self) -> None:
+        settings = Settings(
+            _env_file=None,
+            stt_vad_max_segment_s=20.0,
+            audio_high_watermark_s=1.0,
+            audio_low_watermark_s=0.5,
+        )
+        assert settings.resolved_stt_segmentation == "window"

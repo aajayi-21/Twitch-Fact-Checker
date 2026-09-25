@@ -64,6 +64,11 @@ def jev_misplaced_message(field: str, slug: str) -> str:
     )
 
 
+#: Padding Silero adds around each speech span in VAD segmentation (pre-roll
+#: so word onsets are not clipped). A constant, not a setting: it only has to
+#: stay below STT_VAD_MIN_SILENCE_MS.
+VAD_SPEECH_PAD_MS = 200
+
 # The analytics database lives next to `.env` by default; tests point DB_PATH
 # at temp files instead.
 _DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent / "fact_checker.db"
@@ -249,11 +254,63 @@ class Settings(BaseSettings):
     # mid-session does not lose them (they used to be written at end only).
     session_stats_flush_s: float = Field(default=60.0, gt=0)
 
+    # How audio is cut into STT inputs (app/segmenter.py):
+    #   window — fixed STT_WINDOW_S windows every STT_HOP_S (overlapping; the
+    #            transcriber trims/dedupes the overlap).
+    #   vad    — Silero VAD utterances: a clip is transcribed once its speech
+    #            ends (STT_VAD_MIN_SILENCE_MS of silence) or reaches
+    #            STT_VAD_MAX_SEGMENT_S; silence and music cost no STT call.
+    #   auto   (default) — vad for parakeet (no 30 s padding, so variable
+    #            lengths are cheap), window for the Whisper backends.
+    stt_segmentation: Literal["auto", "window", "vad"] = "auto"
+    # Must stay below AUDIO_HIGH_WATERMARK_S: a longer utterance would sit
+    # in the ring until the overflow guard dropped its beginning.
+    stt_vad_max_segment_s: float = Field(default=10.0, gt=0.0)
+    stt_vad_min_silence_ms: int = Field(default=500, gt=0)
+
     stt_window_s: float = 4.0
     stt_hop_s: float = 3.5
     max_audio_buffer_s: float = 30.0
     audio_high_watermark_s: float = 12.0
     audio_low_watermark_s: float = 8.0
+
+    @property
+    def resolved_stt_segmentation(self) -> str:
+        """``window`` or ``vad`` (``auto`` resolved by STT backend)."""
+        if self.stt_segmentation != "auto":
+            return self.stt_segmentation
+        return "vad" if self.stt_backend == "parakeet" else "window"
+
+    @property
+    def stt_warm_up_budget_s(self) -> float:
+        """Steady-state seconds one STT call may take before it falls behind.
+
+        Window mode: the hop (one call per hop). VAD mode: half the longest
+        clip — a clip arrives no faster than it is spoken, and the other half
+        is headroom for the audio that queues up while the engine works.
+        """
+        if self.resolved_stt_segmentation == "vad":
+            return self.stt_vad_max_segment_s / 2
+        return self.stt_hop_s
+
+    @model_validator(mode="after")
+    def validate_vad_segmentation(self) -> "Settings":
+        """VAD timing must fit the ring buffer (checked only when VAD is on)."""
+        if self.resolved_stt_segmentation != "vad":
+            return self
+        if self.stt_vad_max_segment_s > self.audio_high_watermark_s - 1.0:
+            raise ValueError(
+                f"STT_VAD_MAX_SEGMENT_S ({self.stt_vad_max_segment_s:g}) must be "
+                "at least 1 s below AUDIO_HIGH_WATERMARK_S "
+                f"({self.audio_high_watermark_s:g}); a longer utterance would "
+                "overflow the audio buffer and lose its beginning"
+            )
+        if self.stt_vad_min_silence_ms <= VAD_SPEECH_PAD_MS:
+            raise ValueError(
+                f"STT_VAD_MIN_SILENCE_MS must exceed {VAD_SPEECH_PAD_MS} (the "
+                "speech padding the VAD adds around each utterance)"
+            )
+        return self
 
     gate_interval_s: float = 12.0
     gate_timeout_s: float = 15.0

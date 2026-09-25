@@ -108,6 +108,12 @@ class SessionTextState:
     # §1 Tier-3 instrumentation): flushed into the analytics sessions row at
     # session end so "how much non-speech reached Whisper" is measurable.
     drop_counts: dict[str, int] = field(default_factory=dict)
+    # Whether this session's STT inputs overlap (fixed windows with a hop
+    # shorter than the window). VAD-segmented utterances never overlap, and
+    # for them the overlap trim and suffix dedupe would only drop real
+    # speech (a phrase legitimately repeated across utterances), so both
+    # filters run only while this is True.
+    overlapping: bool = True
 
 
 class AudioRingBuffer:
@@ -120,6 +126,9 @@ class AudioRingBuffer:
     ``read_window`` and ``consume`` are deliberately decoupled so the STT loop
     can read a 4.0 s window but consume only the 3.5 s hop, leaving 0.5 s of
     overlap for the next window (the transcriber trims the duplicated words).
+    VAD segmentation (:mod:`app.segmenter`) uses the sample-exact pair
+    :meth:`read_all` / :meth:`consume_until` instead, so utterance cuts land
+    exactly on the sample the VAD chose.
     """
 
     def __init__(
@@ -186,6 +195,33 @@ class AudioRingBuffer:
     def consume(self, seconds: float) -> None:
         """Advance the read pointer past audio that has been transcribed."""
         self._release(min(len(self._samples), int(round(seconds * self._sample_rate))))
+
+    def read_all(self) -> tuple[np.ndarray, int]:
+        """All pending audio, plus the absolute sample index of its first sample.
+
+        The audio is a copy; the buffer is unchanged (use
+        :meth:`consume_until`). Positions are absolute (samples since the
+        session started, dropped audio included), so a plan computed on this
+        snapshot stays valid even if :meth:`append` drops old audio meanwhile.
+        """
+        return self._samples.copy(), self._released_samples
+
+    def consume_until(self, absolute_sample: int) -> int:
+        """Release pending audio before ``absolute_sample``; return samples released.
+
+        A position already behind the read pointer (e.g. an overflow dropped
+        that audio in the meantime) releases nothing; one past the end is
+        clamped to what is buffered.
+        """
+        count = min(
+            len(self._samples), max(0, absolute_sample - self._released_samples)
+        )
+        self._release(count)
+        return count
+
+    @property
+    def sample_rate(self) -> int:
+        return self._sample_rate
 
     @property
     def pending_seconds(self) -> float:
@@ -410,7 +446,7 @@ class BaseTranscriber(ABC):
 
         1. Overlap trim — drop segments with
            ``end <= last_emitted_end + 0.15`` (already emitted by the
-           previous, overlapping window).
+           previous, overlapping window). Overlapping sessions only.
         2. ``no_speech_prob > 0.6`` — Whisper thinks it is not speech.
         3. ``avg_logprob < -1.0`` — low-confidence garble.
         4. Hallucination blacklist (normalized exact match).
@@ -419,7 +455,7 @@ class BaseTranscriber(ABC):
         6. Belt-and-braces suffix match: a segment of >= 4 words whose text
            equals the trailing words of previously emitted text is a
            re-transcription of the overlap region, even if its timestamps
-           drifted past the time-based trim.
+           drifted past the time-based trim. Overlapping sessions only.
 
         Raises:
             RuntimeError: if :meth:`load` has not been called.
@@ -468,7 +504,10 @@ class BaseTranscriber(ABC):
         """
         if not normalized:
             return "empty", "empty text"
-        if segment.end <= last_emitted_end + self.OVERLAP_TRIM_TOLERANCE_S:
+        if (
+            text_state.overlapping
+            and segment.end <= last_emitted_end + self.OVERLAP_TRIM_TOLERANCE_S
+        ):
             return "overlap", (
                 f"overlap trim: end {segment.end:.2f} <= "
                 f"{last_emitted_end:.2f} + {self.OVERLAP_TRIM_TOLERANCE_S}"
@@ -486,7 +525,9 @@ class BaseTranscriber(ABC):
             return "blacklist", "hallucination blacklist"
         if normalized == text_state.last_emitted_normalized:
             return "loop", "identical to previous segment (loop artifact)"
-        if self._matches_emitted_suffix(normalized.split(), text_state):
+        if text_state.overlapping and self._matches_emitted_suffix(
+            normalized.split(), text_state
+        ):
             return "suffix", "suffix of previously emitted text (window overlap)"
         return None
 

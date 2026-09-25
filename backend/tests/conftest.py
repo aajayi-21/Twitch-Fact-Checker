@@ -874,6 +874,35 @@ def pcm_silence(seconds: float, sample_rate: int = SAMPLE_RATE) -> bytes:
     return b"\x00\x00" * int(seconds * sample_rate)
 
 
+def pcm_tone(
+    seconds: float, sample_rate: int = SAMPLE_RATE, frequency: float = 220.0
+) -> bytes:
+    """``seconds`` of an Int16LE mono sine tone — "speech" to :func:`energy_spans`."""
+    count = int(seconds * sample_rate)
+    wave = 0.3 * np.sin(2 * np.pi * frequency * np.arange(count) / sample_rate)
+    return (wave * 32767).astype("<i2").tobytes()
+
+
+def energy_spans(audio: np.ndarray, frame: int = 512) -> list[tuple[int, int]]:
+    """Deterministic stand-in for Silero: 512-sample frames with energy.
+
+    Returns buffer-relative ``(start, end)`` sample spans, unpadded, with an
+    open span ending at ``len(audio)`` — the contract VadSegmenter expects.
+    """
+    spans: list[tuple[int, int]] = []
+    start: int | None = None
+    for offset in range(0, len(audio), frame):
+        loud = float(np.abs(audio[offset : offset + frame]).max(initial=0.0)) > 0.01
+        if loud and start is None:
+            start = offset
+        elif not loud and start is not None:
+            spans.append((start, offset))
+            start = None
+    if start is not None:
+        spans.append((start, len(audio)))
+    return spans
+
+
 def pcm_ramp(seconds: float, sample_rate: int = SAMPLE_RATE) -> bytes:
     """Int16LE mono PCM whose sample values ramp (position-identifiable)."""
     count = int(seconds * sample_rate)

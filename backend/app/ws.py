@@ -105,6 +105,9 @@ def _build_pipeline(websocket: WebSocket, hello: ClientHello) -> SessionPipeline
         transcriber=state.transcriber,
         stt_executor=state.stt_executor,
         stt_supervisor=getattr(state, "stt_supervisor", None),
+        # Test seam for STT_SEGMENTATION=vad (synthetic test audio has no
+        # speech for Silero to find); unset in the real app.
+        vad_span_fn=getattr(state, "vad_span_fn", None),
         claim_gate=claim_gate,
         fact_checker=create_fact_checker(
             settings, runtime.verify_client, state.quota_cooldown
