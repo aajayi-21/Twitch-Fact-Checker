@@ -475,6 +475,12 @@ openrouter.ai was unreachable) and the per-model verify modes so far
 (`strict` / `json_object` / `fallback`); `/stats/summary` adds a persisted
 `verify_modes` table with each model's fallback rate.
 
+**Reasoning.** The gate runs with reasoning off (`OPENROUTER_GATE_REASONING_EFFORT=none`):
+extraction needs no deliberation, and a reasoning model's thinking counts against the
+gate's output cap — `deepseek/deepseek-v4.1-flash` at `low` reasoning ran out of budget
+mid-thought on half the batches that contained claims and returned no JSON. Verification
+keeps `OPENROUTER_REASONING_EFFORT` (default `low`).
+
 **How verification is grounded.** Verification sends a `system` message with the
 instructions and a `user` message containing only the claim: OpenRouter's `web`
 plugin runs a search on the user message before the model runs, so anything else

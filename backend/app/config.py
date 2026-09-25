@@ -156,10 +156,19 @@ class Settings(BaseSettings):
     #          per-call price, fails on models without one (e.g. mercury).
     #   auto   — native when the model has it, Exa otherwise.
     openrouter_web_engine: Literal["exa", "native", "auto"] = "exa"
-    # Reasoning-effort cap sent with every OpenRouter call (bounds latency on
+    # Reasoning-effort cap for the VERIFY call (bounds latency on
     # reasoning-default models). Empty string = never send ``reasoning`` —
     # for models whose providers reject it under require_parameters routing.
     openrouter_reasoning_effort: str = "low"
+    # Reasoning for the GATE call (claim extraction + contradiction judge):
+    # "none" (default) explicitly turns reasoning off; "" omits the field
+    # (model default); anything else is an effort level. Off because
+    # extraction needs no deliberation and thinking tokens count against the
+    # gate's output cap: measured on deepseek/deepseek-v4.1-flash, "low"
+    # reasoning ran 1,000-1,200 tokens on claim-heavy batches, hit the cap,
+    # and returned half-finished thoughts instead of JSON on 7 of 13 of
+    # them; with reasoning off the same batches all parsed, in 0.3-2.4 s.
+    openrouter_gate_reasoning_effort: str = "none"
 
     @model_validator(mode="after")
     def validate_jev_settings(self) -> "Settings":
@@ -201,8 +210,13 @@ class Settings(BaseSettings):
 
     @property
     def openrouter_reasoning_effort_or_none(self) -> str | None:
-        """The reasoning effort, with empty/whitespace normalized to None."""
+        """The verify reasoning effort, with empty/whitespace normalized to None."""
         return self.openrouter_reasoning_effort.strip() or None
+
+    @property
+    def openrouter_gate_reasoning_effort_or_none(self) -> str | None:
+        """The gate reasoning effort ("none" = off), empty normalized to None."""
+        return self.openrouter_gate_reasoning_effort.strip() or None
 
     gemini_api_key: str = ""
     gemini_gate_model: str = "gemini-3.1-flash-lite"

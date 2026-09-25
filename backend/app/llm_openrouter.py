@@ -275,11 +275,17 @@ def _reasoning_body(
 ) -> dict[str, Any] | None:
     """The ``reasoning`` extra-body field, or ``None`` when it must be omitted
     (effort disabled via config, reasoning latched unsupported, or the
-    catalogue says the model's endpoints do not accept it)."""
+    catalogue says the model's endpoints do not accept it).
+
+    ``effort="none"`` asks for reasoning to be switched OFF
+    (``{"enabled": false}``) on models that would otherwise think by default.
+    """
     if not effort or _ReasoningSupport.unsupported:
         return None
     if capabilities is not None and not capabilities.supports("reasoning"):
         return None
+    if effort.strip().lower() == "none":
+        return {"enabled": False}
     return {"effort": effort}
 
 
@@ -528,7 +534,17 @@ class OpenRouterClaimGate(ClaimGate):
         ).chat.completions.create(**kwargs)
         if not response.choices:
             raise GateError("gate response contained no choices")
-        return (response.choices[0].message.content or "").strip()
+        choice = response.choices[0]
+        if choice.finish_reason == "length":
+            # Truncated output is never valid JSON; with a reasoning model the
+            # "content" is usually its unfinished thinking. Say so plainly
+            # instead of surfacing a confusing "no JSON object found".
+            raise GateError(
+                f"gate response hit max_tokens ({GATE_MAX_TOKENS}) before "
+                "finishing; if the gate model reasons, keep "
+                "OPENROUTER_GATE_REASONING_EFFORT=none"
+            )
+        return (choice.message.content or "").strip()
 
     @staticmethod
     def _parse_gate_json(raw: str) -> list[GateClaim]:

@@ -80,7 +80,7 @@ def _openrouter_spec() -> ProviderSpec:
             model=s.openrouter_gate_model,
             gate_interval_s=s.gate_interval_s,
             gate_timeout_s=s.gate_timeout_s,
-            reasoning_effort=s.openrouter_reasoning_effort_or_none,
+            reasoning_effort=s.openrouter_gate_reasoning_effort_or_none,
         )
         if s.jev_active_mode == "off":
             return gate
