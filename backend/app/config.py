@@ -10,6 +10,7 @@ usable key.
 """
 
 import os
+import re
 from pathlib import Path
 from typing import Any, Literal
 
@@ -25,20 +26,48 @@ SENSITIVITY_THRESHOLDS: dict[str, float] = {"low": 0.75, "medium": 0.55, "high":
 
 _DEFAULT_ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 
-# Jev uses OpenRouter's Decisions API. It cannot generate claim text, so
-# approved batches are rewritten by a separate chat model before verification.
-DEFAULT_OPENROUTER_GATE_MODEL = "~typesafe/jev-latest"
-DEFAULT_OPENROUTER_EXTRACTION_MODEL = "inception/mercury-2.5-preview"
+# OpenRouter is the primary provider; these are the shipped model slugs.
+# inception/mercury-2.5-preview: cheap ($0.04/M input) and fast enough for the
+# ~300 gate calls an hour, lists temperature + structured_outputs + reasoning
+# on its endpoint (so strict JSON mode works first time), and produced zero
+# fallback verdicts in production. Override per stage in .env or the options
+# page; slugs are validated against the live catalogue on Apply.
+DEFAULT_OPENROUTER_GATE_MODEL = "inception/mercury-2.5-preview"
 DEFAULT_OPENROUTER_VERIFY_MODEL = "inception/mercury-2.5-preview"
-JEV_MODELS = frozenset({DEFAULT_OPENROUTER_GATE_MODEL, "typesafe/jev-1.13"})
+
+# Jev (TypeSafe, via OpenRouter's alpha Decisions API) is an optional
+# PRE-SCREEN in front of the gate model, never a gate model itself: it
+# answers typed questions with probabilities and cannot write claim text.
+# Pinned: "~typesafe/jev-latest" floats to new releases, and the screening
+# threshold is calibrated against one release's probabilities.
+DEFAULT_JEV_MODEL = "typesafe/jev-1.13"
+#: Any Jev id, floating alias included — used to keep Jev OUT of chat slots.
+JEV_FAMILY_RE = re.compile(r"^~?typesafe/jev-", re.IGNORECASE)
+#: What JEV_MODEL accepts: a pinned release, optionally with its build date
+#: (the catalogue's canonical slug, e.g. "typesafe/jev-1.13-20260917").
+JEV_PINNED_RE = re.compile(r"^typesafe/jev-\d+\.\d+(-\d{8})?$")
 
 
 def is_jev_model(model: str) -> bool:
-    """Recognize decisions-only models, including future pinned Jev releases."""
-    return model.strip() == DEFAULT_OPENROUTER_GATE_MODEL or model.strip().startswith(
-        "typesafe/jev-"
+    """Whether ``model`` names a Jev decisions model (floating or pinned)."""
+    return bool(JEV_FAMILY_RE.match(model.strip()))
+
+
+def jev_misplaced_message(field: str, slug: str) -> str:
+    """The migration hint for a Jev id found in a chat-model setting."""
+    return (
+        f"{field}={slug!r}: Jev is a decisions model and cannot extract or "
+        "verify claims. It is now an optional pre-screen in front of the gate "
+        "model. Set OPENROUTER_GATE_MODEL to a chat model (e.g. "
+        f"{DEFAULT_OPENROUTER_GATE_MODEL}), delete OPENROUTER_EXTRACTION_MODEL, "
+        "and enable Jev with JEV_MODE=shadow (log only) or JEV_MODE=screen."
     )
 
+
+#: Padding Silero adds around each speech span in VAD segmentation (pre-roll
+#: so word onsets are not clipped). A constant, not a setting: it only has to
+#: stay below STT_VAD_MIN_SILENCE_MS.
+VAD_SPEECH_PAD_MS = 200
 
 # The analytics database lives next to `.env` by default; tests point DB_PATH
 # at temp files instead.
@@ -77,16 +106,17 @@ class Settings(BaseSettings):
         kwargs.setdefault("_env_file", str(resolve_env_file()))
         super().__init__(**kwargs)
 
-    llm_provider: Literal["openrouter", "gemini"] = "openrouter"
+    # The keyed LLM provider. OpenRouter is the only one; the field is kept so
+    # existing .env files (LLM_PROVIDER=openrouter) stay valid.
+    llm_provider: Literal["openrouter"] = "openrouter"
 
-    # Per-stage provider overrides; "" = follow the legacy ``llm_provider``
-    # switch, so existing single-provider setups are untouched. The verify
-    # Literal deliberately excludes "ollama": local verify has no web-search
-    # grounding, so every verdict would be downgraded to UNVERIFIED — a
-    # hand-edited VERIFY_PROVIDER=ollama fails loudly at boot instead of
-    # half-working.
-    gate_provider: Literal["", "openrouter", "gemini", "ollama"] = ""
-    verify_provider: Literal["", "openrouter", "gemini"] = ""
+    # Per-stage provider overrides; "" = follow ``llm_provider``. The gate
+    # may run on a local Ollama server. The verify Literal deliberately
+    # excludes "ollama": local verify has no web-search grounding, so every
+    # verdict would be downgraded to UNVERIFIED — a hand-edited
+    # VERIFY_PROVIDER=ollama fails loudly at boot instead of half-working.
+    gate_provider: Literal["", "openrouter", "ollama"] = ""
+    verify_provider: Literal["", "openrouter"] = ""
 
     # Ollama (or any OpenAI-compatible local server: LM Studio, vLLM,
     # llama.cpp). The base URL is the OpenAI-compatible root INCLUDING /v1;
@@ -97,11 +127,28 @@ class Settings(BaseSettings):
 
     openrouter_api_key: str = ""
     openrouter_gate_model: str = DEFAULT_OPENROUTER_GATE_MODEL
-    openrouter_extraction_model: str = DEFAULT_OPENROUTER_EXTRACTION_MODEL
     openrouter_verify_model: str = DEFAULT_OPENROUTER_VERIFY_MODEL
+
+    # Jev pre-screen (app/llm_jev.py). Needs the OpenRouter gate (it rides
+    # the same key/client); ignored, with a warning, for other gate providers.
+    #   off    (default) — no Jev calls.
+    #   shadow — Jev runs ALONGSIDE every normal gate pass and its answer is
+    #            only recorded (gate_passes table) for calibration; claims
+    #            are unaffected. Costs one Decisions request per pass.
+    #   screen — Jev runs FIRST; a batch below the threshold skips claim
+    #            extraction. Any Jev failure fails OPEN (extraction runs).
+    #            Can only lower recall — calibrate in shadow mode first
+    #            (scripts/report_jev_calibration.py).
+    jev_mode: Literal["off", "shadow", "screen"] = "off"
+    jev_model: str = DEFAULT_JEV_MODEL
+    # Probability that a checkable assertion exists — NOT probability of
+    # truth. Uncalibrated starting point.
     jev_min_check_probability: float = Field(
         default=0.35, ge=0.0, le=1.0, allow_inf_nan=False
     )
+    # Deadline for the Jev call alone; must leave room inside GATE_TIMEOUT_S
+    # for extraction in screen mode. Jev typically answers in 0.1-0.5 s.
+    jev_timeout_s: float = Field(default=3.0, gt=0.0, allow_inf_nan=False)
     openrouter_web_max_results: int = 5
     # Web-search engine for the verify call's ``web`` plugin:
     #   exa    (default) — OpenRouter's Exa search, works for EVERY model and
@@ -110,55 +157,83 @@ class Settings(BaseSettings):
     #          per-call price, fails on models without one (e.g. mercury).
     #   auto   — native when the model has it, Exa otherwise.
     openrouter_web_engine: Literal["exa", "native", "auto"] = "exa"
-    # Reasoning-effort cap sent with every OpenRouter call (bounds latency on
+    # Reasoning-effort cap for the VERIFY call (bounds latency on
     # reasoning-default models). Empty string = never send ``reasoning`` —
     # for models whose providers reject it under require_parameters routing.
     openrouter_reasoning_effort: str = "low"
+    # Reasoning for the GATE call (claim extraction + contradiction judge):
+    # "none" (default) explicitly turns reasoning off; "" omits the field
+    # (model default); anything else is an effort level. Off because
+    # extraction needs no deliberation and thinking tokens count against the
+    # gate's output cap: measured on deepseek/deepseek-v4.1-flash, "low"
+    # reasoning ran 1,000-1,200 tokens on claim-heavy batches, hit the cap,
+    # and returned half-finished thoughts instead of JSON on 7 of 13 of
+    # them; with reasoning off the same batches all parsed, in 0.3-2.4 s.
+    openrouter_gate_reasoning_effort: str = "none"
 
     @model_validator(mode="after")
-    def validate_generative_models(self) -> "Settings":
-        for field in ("openrouter_extraction_model", "openrouter_verify_model"):
-            if is_jev_model(getattr(self, field)):
-                raise ValueError(f"{field}: Jev can only be used for gate decisions")
+    def validate_jev_settings(self) -> "Settings":
+        """Keep Jev out of chat slots and its pre-screen settings coherent."""
+        for field in ("openrouter_gate_model", "openrouter_verify_model"):
+            slug = getattr(self, field)
+            if is_jev_model(slug):
+                raise ValueError(jev_misplaced_message(field.upper(), slug))
+        if not JEV_PINNED_RE.match(self.jev_model.strip()):
+            raise ValueError(
+                f"JEV_MODEL={self.jev_model!r}: use a pinned Jev release such as "
+                f"{DEFAULT_JEV_MODEL!r} (the floating ~typesafe/jev-latest would "
+                "change under a threshold calibrated for one release)"
+            )
+        if self.jev_mode != "off" and self.jev_timeout_s >= self.gate_timeout_s:
+            raise ValueError(
+                f"JEV_TIMEOUT_S ({self.jev_timeout_s:g}) must be below "
+                f"GATE_TIMEOUT_S ({self.gate_timeout_s:g}) so extraction still "
+                "has time after the pre-screen"
+            )
         return self
 
     @property
-    def uses_jev(self) -> bool:
-        return self.resolved_gate_provider == "openrouter" and is_jev_model(
-            self.openrouter_gate_model
-        )
+    def jev_active_mode(self) -> str:
+        """``jev_mode`` when the gate runs on OpenRouter, else ``"off"``."""
+        if self.resolved_gate_provider != "openrouter":
+            return "off"
+        return self.jev_mode
 
     @property
     def active_openrouter_chat_models(self) -> set[str]:
-        """Only generative models belong in the chat capability catalogue."""
+        """OpenRouter chat slugs routed to a stage (Jev is not a chat model)."""
         models: set[str] = set()
         if self.resolved_gate_provider == "openrouter":
-            models.add(
-                self.openrouter_extraction_model
-                if self.uses_jev
-                else self.openrouter_gate_model
-            )
+            models.add(self.openrouter_gate_model)
         if self.resolved_verify_provider == "openrouter":
             models.add(self.openrouter_verify_model)
         return models
 
     @property
     def openrouter_reasoning_effort_or_none(self) -> str | None:
-        """The reasoning effort, with empty/whitespace normalized to None."""
+        """The verify reasoning effort, with empty/whitespace normalized to None."""
         return self.openrouter_reasoning_effort.strip() or None
 
-    gemini_api_key: str = ""
-    gemini_gate_model: str = "gemini-3.1-flash-lite"
-    gemini_verify_model: str = "gemini-3.5-flash"
+    @property
+    def openrouter_gate_reasoning_effort_or_none(self) -> str | None:
+        """The gate reasoning effort ("none" = off), empty normalized to None."""
+        return self.openrouter_gate_reasoning_effort.strip() or None
 
     # Speech-to-text engine:
     #   "faster-whisper" (default) — ctranslate2; CPU and CUDA only, fastest
     #     on CPU, and the model name is a ctranslate2 name ("distil-small.en").
-    #   "torch" — transformers + PyTorch; the ONLY way to reach Intel XPU or
+    #   "torch" — Whisper via transformers + PyTorch; reaches Intel XPU and
     #     AMD ROCm, and the model name is a Hugging Face repo id
     #     ("openai/whisper-small.en"). Install it with
     #     scripts/install_stt_gpu.sh.
-    stt_backend: Literal["faster-whisper", "torch"] = "faster-whisper"
+    #   "parakeet" — NVIDIA Parakeet TDT via transformers + PyTorch (same
+    #     install); markedly more accurate than whisper-small.en and cheap on
+    #     variable-length VAD clips. Model: PARAKEET_MODEL. Device/dtype come
+    #     from WHISPER_DEVICE / WHISPER_COMPUTE_TYPE.
+    stt_backend: Literal["faster-whisper", "torch", "parakeet"] = "faster-whisper"
+    # Hugging Face repo id for STT_BACKEND=parakeet. v3 is the Parakeet with
+    # official transformers weights (25 European languages, auto-detected).
+    parakeet_model: str = "nvidia/parakeet-tdt-0.6b-v3"
 
     whisper_model: str = "distil-small.en"
     # cpu | cuda | rocm | xpu | auto. "rocm" is an alias for PyTorch's HIP
@@ -174,6 +249,13 @@ class Settings(BaseSettings):
     # (".en" / "…-en" names) pin "en", everything else auto-detects. Set it
     # explicitly for a multilingual model on a known-language stream.
     whisper_language: str = ""
+
+    @property
+    def stt_model_name(self) -> str:
+        """The active STT engine's model id (healthz / ready frame / logs)."""
+        if self.stt_backend == "parakeet":
+            return self.parakeet_model
+        return self.whisper_model
 
     @property
     def whisper_language_or_none(self) -> str | None:
@@ -197,11 +279,63 @@ class Settings(BaseSettings):
     # mid-session does not lose them (they used to be written at end only).
     session_stats_flush_s: float = Field(default=60.0, gt=0)
 
+    # How audio is cut into STT inputs (app/segmenter.py):
+    #   window — fixed STT_WINDOW_S windows every STT_HOP_S (overlapping; the
+    #            transcriber trims/dedupes the overlap).
+    #   vad    — Silero VAD utterances: a clip is transcribed once its speech
+    #            ends (STT_VAD_MIN_SILENCE_MS of silence) or reaches
+    #            STT_VAD_MAX_SEGMENT_S; silence and music cost no STT call.
+    #   auto   (default) — vad for parakeet (no 30 s padding, so variable
+    #            lengths are cheap), window for the Whisper backends.
+    stt_segmentation: Literal["auto", "window", "vad"] = "auto"
+    # Must stay below AUDIO_HIGH_WATERMARK_S: a longer utterance would sit
+    # in the ring until the overflow guard dropped its beginning.
+    stt_vad_max_segment_s: float = Field(default=10.0, gt=0.0)
+    stt_vad_min_silence_ms: int = Field(default=500, gt=0)
+
     stt_window_s: float = 4.0
     stt_hop_s: float = 3.5
     max_audio_buffer_s: float = 30.0
     audio_high_watermark_s: float = 12.0
     audio_low_watermark_s: float = 8.0
+
+    @property
+    def resolved_stt_segmentation(self) -> str:
+        """``window`` or ``vad`` (``auto`` resolved by STT backend)."""
+        if self.stt_segmentation != "auto":
+            return self.stt_segmentation
+        return "vad" if self.stt_backend == "parakeet" else "window"
+
+    @property
+    def stt_warm_up_budget_s(self) -> float:
+        """Steady-state seconds one STT call may take before it falls behind.
+
+        Window mode: the hop (one call per hop). VAD mode: half the longest
+        clip — a clip arrives no faster than it is spoken, and the other half
+        is headroom for the audio that queues up while the engine works.
+        """
+        if self.resolved_stt_segmentation == "vad":
+            return self.stt_vad_max_segment_s / 2
+        return self.stt_hop_s
+
+    @model_validator(mode="after")
+    def validate_vad_segmentation(self) -> "Settings":
+        """VAD timing must fit the ring buffer (checked only when VAD is on)."""
+        if self.resolved_stt_segmentation != "vad":
+            return self
+        if self.stt_vad_max_segment_s > self.audio_high_watermark_s - 1.0:
+            raise ValueError(
+                f"STT_VAD_MAX_SEGMENT_S ({self.stt_vad_max_segment_s:g}) must be "
+                "at least 1 s below AUDIO_HIGH_WATERMARK_S "
+                f"({self.audio_high_watermark_s:g}); a longer utterance would "
+                "overflow the audio buffer and lose its beginning"
+            )
+        if self.stt_vad_min_silence_ms <= VAD_SPEECH_PAD_MS:
+            raise ValueError(
+                f"STT_VAD_MIN_SILENCE_MS must exceed {VAD_SPEECH_PAD_MS} (the "
+                "speech padding the VAD adds around each utterance)"
+            )
+        return self
 
     gate_interval_s: float = 12.0
     gate_timeout_s: float = 15.0
@@ -263,7 +397,6 @@ class Settings(BaseSettings):
         """The gate model of the gate stage's provider (logs/healthz/ready)."""
         return {
             "openrouter": self.openrouter_gate_model,
-            "gemini": self.gemini_gate_model,
             "ollama": self.ollama_gate_model,
         }[self.resolved_gate_provider]
 
@@ -272,19 +405,12 @@ class Settings(BaseSettings):
         """The verify model of the verify stage's provider."""
         return {
             "openrouter": self.openrouter_verify_model,
-            "gemini": self.gemini_verify_model,
         }[self.resolved_verify_provider]
 
     @property
     def active_api_key(self) -> str:
-        """The LEGACY provider's API key (may be empty when unconfigured).
-
-        Still keyed off ``llm_provider`` (which can only be a keyed
-        provider); per-stage code paths use :meth:`provider_configured`.
-        """
-        if self.llm_provider == "openrouter":
-            return self.openrouter_api_key
-        return self.gemini_api_key
+        """The OpenRouter API key (may be empty when unconfigured)."""
+        return self.openrouter_api_key
 
     def provider_configured(self, provider: str) -> bool:
         """Whether ``provider`` is usable.
@@ -296,8 +422,6 @@ class Settings(BaseSettings):
         """
         if provider == "openrouter":
             return not self._is_placeholder_key(self.openrouter_api_key)
-        if provider == "gemini":
-            return not self._is_placeholder_key(self.gemini_api_key)
         return provider == "ollama"
 
     @property
@@ -316,8 +440,8 @@ class Settings(BaseSettings):
     def require_llm_api_key(self) -> None:
         """Fail loudly at startup when an ACTIVE stage provider has no key.
 
-        Only the resolved stage providers' keys are required (Ollama needs
-        none): an OpenRouter setup needs no Gemini key and vice versa.
+        Ollama needs no key; the verify stage always runs on OpenRouter, so
+        in practice this checks ``OPENROUTER_API_KEY``.
 
         Raises:
             RuntimeError: if a resolved stage provider's API key is empty,
@@ -326,13 +450,11 @@ class Settings(BaseSettings):
         for provider in {self.resolved_gate_provider, self.resolved_verify_provider}:
             if provider == "openrouter":
                 self.require_openrouter_api_key()
-            elif provider == "gemini":
-                self.require_gemini_api_key()
 
     def require_openrouter_api_key(self) -> None:
         """Fail loudly when ``OPENROUTER_API_KEY`` is missing or a placeholder.
 
-        Same hardening as the Gemini check: a ``.env`` copied verbatim from
+        A ``.env`` copied verbatim from
         ``.env.example`` must fail here too — python-dotenv parses an inline
         comment after an EMPTY value as the value itself, so a ``#``-prefixed
         "key" is a leftover comment, not a real key.
@@ -349,26 +471,6 @@ class Settings(BaseSettings):
                 "costs credits even on :free models, so hold a small credit "
                 "balance. The key is backend-only and must never be shipped "
                 "in the extension."
-            )
-
-    def require_gemini_api_key(self) -> None:
-        """Fail loudly when ``GEMINI_API_KEY`` is missing or a placeholder.
-
-        A ``.env`` copied verbatim from ``.env.example`` must fail here too:
-        python-dotenv parses an inline comment after an EMPTY value as the
-        value itself, so a ``#``-prefixed "key" is a leftover comment, not a
-        real key.
-
-        Raises:
-            RuntimeError: if ``GEMINI_API_KEY`` is empty, whitespace, or a
-                leftover comment rather than a real key.
-        """
-        if self._is_placeholder_key(self.gemini_api_key):
-            raise RuntimeError(
-                "GEMINI_API_KEY is not set. Copy backend/.env.example to "
-                "backend/.env and fill in your Gemini API key "
-                "(https://aistudio.google.com/apikey). The key is backend-only "
-                "and must never be shipped in the extension."
             )
 
     @staticmethod

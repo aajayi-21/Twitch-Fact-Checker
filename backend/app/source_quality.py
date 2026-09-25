@@ -1,19 +1,25 @@
-"""Citation quality tiers — the "high confidence" half of public posting.
+"""Citation quality tiers — shared by public posting and by measurement.
 
-``FactChecker._enforce_invariants`` downgrades a non-UNVERIFIED verdict only
-when it has NO citations at all::
+``FactChecker._enforce_invariants`` downgrades a non-UNVERIFIED verdict when
+it has no citations, or when the verify model rated its evidence below
+``strong``. Neither looks at WHO the citations are: one fandom wiki or one
+Reddit thread can keep a ``FALSE`` alive. `docs/improvement-report.md` §6.5
+proposed a source tier list for exactly this reason.
 
-    if label != "UNVERIFIED" and not sources:
+Two consumers:
 
-That is the right bar for a private overlay chip, and far too low for a public
-accusation: one fandom wiki or one Reddit thread is enough to keep a ``FALSE``
-alive. `docs/improvement-report.md` §6.5 proposed a source tier list for
-exactly this reason, and public posting is where it earns its keep.
+- ``streamer.chat.policy`` gates what the chat bot says out loud on it (a
+  public accusation needs an A/B source and no denylisted one).
+- ``app.reports`` MEASURES it over persisted verdicts (the dashboard's
+  source-quality card and ``scripts/report_source_tiers.py``): how many
+  labelled verdicts rest only on C/D sources, and which unrecognized domains
+  those are.
 
-Deliberately NOT wired into ``_enforce_invariants`` here. Doing that would
-silently change what every existing overlay user sees and needs its own eval
-against the feedback table — two blast radii in one change. This module gates
-only what the bot says out loud.
+Deliberately still NOT wired into ``_enforce_invariants``. Doing that would
+change what every overlay user sees; on production data an "A/B source
+required" rule would downgrade roughly a third of labelled verdicts, many
+of them citing reputable outlets this list simply does not know yet. Measure,
+extend the list, then decide.
 
 Tiers:
 
@@ -185,9 +191,9 @@ class SourceSummary(NamedTuple):
 def registrable_domain(url: str) -> str | None:
     """Lowercased host with a leading ``www.`` stripped, or ``None``.
 
-    Mirrors the ``urlsplit(source.url).hostname`` shape ``db.record_verdict``
-    already uses for the ``sources.domain`` column, so a chat message and the
-    persisted row can never disagree about what a citation's domain was.
+    Same host parsing as the ``sources.domain`` column (``db.record_verdict``
+    uses ``urlsplit(url).hostname``), minus the ``www.`` that column keeps —
+    so tier lookups over stored rows go through the URL, not the column.
     """
     try:
         host = urlsplit(url).hostname
@@ -223,6 +229,21 @@ def tier_for_domain(
 
 
 def _builtin_tier(domain: str) -> Tier:
+    tier = _lookup_builtin(domain)
+    return "C" if tier is None else tier
+
+
+def is_recognized_domain(domain: str | None) -> bool:
+    """Whether the built-in list classifies ``domain`` (C-by-list counts).
+
+    ``False`` means the domain gets ``C`` only by default — the population
+    worth reviewing when extending the list.
+    """
+    return domain is not None and _lookup_builtin(domain) is not None
+
+
+def _lookup_builtin(domain: str) -> Tier | None:
+    """The built-in tier for ``domain``, or ``None`` when it is unlisted."""
     if domain in _TIER_D:
         return "D"
     if domain in _TIER_A:
@@ -246,7 +267,7 @@ def _builtin_tier(domain: str) -> Tier:
             return "B"
         if parent in _TIER_C_EXACT:
             return "C"
-    return "C"
+    return None
 
 
 def tier_for_url(url: str, *, extra: Mapping[str, Tier] | None = None) -> Tier:

@@ -18,17 +18,17 @@ from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.db import Database
-from app.llm_gemini import GeminiClaimGate, GeminiFactChecker
+from app.llm_provider import create_claim_gate, create_fact_checker
 from app.models import ClientHello, GateClaim, TranscriptSegment
 from app.pipeline import SessionPipeline
 from app.rate_limit import QuotaCooldown, TokenBucket
 from tests.conftest import (
-    FakeGenAIClient,
+    FakeLLMClient,
     FakeTranscriber,
     make_gate_response,
     make_hello,
     make_test_settings,
-    make_verdict_interaction,
+    make_verdict_completion,
     pcm_silence,
 )
 
@@ -71,11 +71,11 @@ class TestSessionPersistence:
         self,
         client: TestClient,
         app_settings: Settings,
-        fake_genai_client: FakeGenAIClient,
+        fake_llm_client: FakeLLMClient,
         fake_transcriber: FakeTranscriber,
     ) -> None:
         fake_transcriber.segments_script.append([EIGHT_WORD_SEGMENT])
-        fake_genai_client.generate_results.append(
+        fake_llm_client.gate_results.append(
             make_gate_response(
                 [
                     # Order matters: the verified claim precedes its
@@ -87,8 +87,8 @@ class TestSessionPersistence:
                 ]
             )
         )
-        fake_genai_client.interaction_results.append(
-            make_verdict_interaction(
+        fake_llm_client.verify_results.append(
+            make_verdict_completion(
                 "TRUE",
                 "Official figure including antennas.",
                 citations=[("https://www.toureiffel.paris/facts", "Key figures")],
@@ -151,7 +151,7 @@ class TestSessionPersistence:
         )[0]
         assert verdict_row[0] == "TRUE"
         assert verdict_row[1] >= 0
-        assert verdict_row[2] == "gemini"
+        assert verdict_row[2] == "openrouter"
         assert verdict_row[3] == "fake-verify-model"
         assert rows(db_path, "SELECT url FROM sources") == [
             ("https://www.toureiffel.paris/facts",)
@@ -164,17 +164,17 @@ class TestSessionPersistence:
         self,
         client: TestClient,
         app_settings: Settings,
-        fake_genai_client: FakeGenAIClient,
+        fake_llm_client: FakeLLMClient,
         fake_transcriber: FakeTranscriber,
     ) -> None:
-        from tests.conftest import FakeInteractionsError
+        from tests.conftest import make_openrouter_status_error
 
         fake_transcriber.segments_script.append([EIGHT_WORD_SEGMENT])
-        fake_genai_client.generate_results.append(
+        fake_llm_client.gate_results.append(
             make_gate_response([("The Eiffel Tower is 330 meters tall.", 0.9)])
         )
-        fake_genai_client.interaction_results.append(
-            FakeInteractionsError(500, "verify exploded")
+        fake_llm_client.verify_results.append(
+            make_openrouter_status_error(500, "verify exploded")
         )
         with client.websocket_connect("/ws/audio") as session:
             session.send_json(make_hello())
@@ -203,7 +203,7 @@ class TestQueueDroppedOutcome:
         await db.open()
         executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="stt-unit")
         try:
-            fake_client = FakeGenAIClient()
+            fake_client = FakeLLMClient()
             settings = make_test_settings(db_path=str(tmp_path / "queue.db"))
             pipeline = SessionPipeline(
                 websocket=SimpleNamespace(),  # type: ignore[arg-type]
@@ -211,12 +211,9 @@ class TestQueueDroppedOutcome:
                 settings=settings,
                 transcriber=FakeTranscriber(),  # type: ignore[arg-type]
                 stt_executor=executor,
-                claim_gate=GeminiClaimGate(client=fake_client, model="fake-gate-model"),
-                fact_checker=GeminiFactChecker(
-                    client=fake_client,
-                    verify_model="fake-verify-model",
-                    extraction_model="fake-gate-model",
-                    cooldown=QuotaCooldown(),
+                claim_gate=create_claim_gate(settings, fake_client),
+                fact_checker=create_fact_checker(
+                    settings, fake_client, QuotaCooldown()
                 ),
                 verify_bucket=TokenBucket(rate_per_min=6000.0, burst=10),
                 quota_cooldown=QuotaCooldown(),
@@ -254,7 +251,7 @@ class TestQueueDroppedOutcome:
 class TestPeriodicStatsFlush:
     def test_running_counters_flush_while_the_session_is_live(
         self,
-        fake_genai_client: FakeGenAIClient,
+        fake_llm_client: FakeLLMClient,
         fake_transcriber: FakeTranscriber,
     ) -> None:
         """Crash insurance: counters land BEFORE the session ends, with
@@ -262,7 +259,7 @@ class TestPeriodicStatsFlush:
         from tests.conftest import open_test_client
 
         settings = make_test_settings(session_stats_flush_s=0.2)
-        with open_test_client(settings, fake_genai_client, fake_transcriber) as client:
+        with open_test_client(settings, fake_llm_client, fake_transcriber) as client:
             with client.websocket_connect("/ws/audio") as session:
                 session.send_json(make_hello())
                 assert session.receive_json()["type"] == "ready"

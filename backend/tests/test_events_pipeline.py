@@ -16,11 +16,11 @@ from app.events import SessionEvent
 from app.models import TranscriptSegment
 from app.sessions import SessionRegistry
 from tests.conftest import (
-    FakeGenAIClient,
+    FakeLLMClient,
     FakeTranscriber,
     make_gate_response,
     make_hello,
-    make_verdict_interaction,
+    make_verdict_completion,
     pcm_silence,
 )
 from tests.test_ws_protocol import (
@@ -63,14 +63,14 @@ class TestLivePhasePublish:
     def test_verdict_reaches_the_hub_with_claim_metadata(
         self,
         client: Any,
-        fake_genai_client: FakeGenAIClient,
+        fake_llm_client: FakeLLMClient,
         fake_transcriber: FakeTranscriber,
     ) -> None:
         events, subscription = collected(client, types={"verdict"})  # type: ignore[misc]
         fake_transcriber.segments_script.append([NINE_WORD_SEGMENT])
-        fake_genai_client.generate_results.append(make_gate_response([(CLAIM, 0.9)]))
-        fake_genai_client.interaction_results.append(
-            make_verdict_interaction("FALSE", "About 330 meters.")
+        fake_llm_client.gate_results.append(make_gate_response([(CLAIM, 0.9)]))
+        fake_llm_client.verify_results.append(
+            make_verdict_completion("FALSE", "About 330 meters.")
         )
 
         with client.websocket_connect("/ws/audio") as session:
@@ -78,7 +78,7 @@ class TestLivePhasePublish:
             assert session.receive_json()["type"] == "ready"
             for _ in range(4):
                 session.send_bytes(pcm_silence(0.25))
-            wait_until_sync(lambda: len(fake_genai_client.interaction_calls) >= 1)
+            wait_until_sync(lambda: len(fake_llm_client.verify_calls) >= 1)
             session.send_json({"type": "stop"})
             collect_frames_until_close(session)
 
@@ -102,7 +102,7 @@ class TestFlushPhasePublish:
     def test_in_flight_verdict_is_published_during_the_flush(
         self,
         client: Any,
-        fake_genai_client: FakeGenAIClient,
+        fake_llm_client: FakeLLMClient,
         fake_transcriber: FakeTranscriber,
     ) -> None:
         """The flush phase writes the socket DIRECTLY, bypassing the outbound
@@ -112,22 +112,22 @@ class TestFlushPhasePublish:
         """
         events, subscription = collected(client, types={"verdict"})  # type: ignore[misc]
         fake_transcriber.segments_script.append([NINE_WORD_SEGMENT])
-        fake_genai_client.generate_results.append(make_gate_response([(CLAIM, 0.9)]))
+        fake_llm_client.gate_results.append(make_gate_response([(CLAIM, 0.9)]))
         release_verdict = threading.Event()
 
         async def blocked_verdict(**_call: Any) -> Any:
             while not release_verdict.is_set():
                 await asyncio.sleep(0.01)
-            return make_verdict_interaction("FALSE", "About 330 meters.")
+            return make_verdict_completion("FALSE", "About 330 meters.")
 
-        fake_genai_client.interaction_results.append(blocked_verdict)
+        fake_llm_client.verify_results.append(blocked_verdict)
 
         with client.websocket_connect("/ws/audio") as session:
             session.send_json(make_hello())
             assert session.receive_json()["type"] == "ready"
             for _ in range(4):
                 session.send_bytes(pcm_silence(0.25))
-            wait_until_sync(lambda: len(fake_genai_client.interaction_calls) >= 1)
+            wait_until_sync(lambda: len(fake_llm_client.verify_calls) >= 1)
             session.send_json({"type": "stop"})
             registry: SessionRegistry = client.app.state.sessions
             wait_until_sync(
@@ -147,16 +147,16 @@ class TestStreamTimePersistence:
     def test_claims_record_their_position_in_the_stream(
         self,
         client: Any,
-        fake_genai_client: FakeGenAIClient,
+        fake_llm_client: FakeLLMClient,
         fake_transcriber: FakeTranscriber,
     ) -> None:
         """``claims.stream_time_s`` has existed in the schema since it was
         written but nothing ever populated it, so a disputed verdict could not
         be located in the VOD."""
         fake_transcriber.segments_script.append([NINE_WORD_SEGMENT])
-        fake_genai_client.generate_results.append(make_gate_response([(CLAIM, 0.9)]))
-        fake_genai_client.interaction_results.append(
-            make_verdict_interaction("FALSE", "About 330 meters.")
+        fake_llm_client.gate_results.append(make_gate_response([(CLAIM, 0.9)]))
+        fake_llm_client.verify_results.append(
+            make_verdict_completion("FALSE", "About 330 meters.")
         )
 
         with client.websocket_connect("/ws/audio") as session:
@@ -164,7 +164,7 @@ class TestStreamTimePersistence:
             assert session.receive_json()["type"] == "ready"
             for _ in range(4):
                 session.send_bytes(pcm_silence(0.25))
-            wait_until_sync(lambda: len(fake_genai_client.interaction_calls) >= 1)
+            wait_until_sync(lambda: len(fake_llm_client.verify_calls) >= 1)
             session.send_json({"type": "stop"})
             collect_frames_until_close(session)
 

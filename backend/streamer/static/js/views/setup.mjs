@@ -55,13 +55,12 @@ function Step({ done, title, children }) {
 
 function LlmStep() {
   const status = setupStatus.value;
-  const [provider, setProvider] = useState("openrouter");
   const [key, setKey] = useState("");
   const [busy, setBusy] = useState(false);
   const save = async () => {
     setBusy(true);
     try {
-      await api.postLlmCredentials({ provider, api_key: key });
+      await api.postLlmCredentials({ provider: "openrouter", api_key: key });
       setKey(""); // hygiene: the key lives only in this input + one POST
       flash("ok", "Key verified ✓");
       refreshSetup();
@@ -76,20 +75,11 @@ function LlmStep() {
       ${status?.configured
         ? html`connected`
         : html`<div class="q-actions" style="margin-top:6px;gap:8px">
-            <select
-              class="input"
-              style="width:130px"
-              value=${provider}
-              onChange=${(event) => setProvider(event.target.value)}
-            >
-              <option value="openrouter">OpenRouter</option>
-              <option value="gemini">Gemini</option>
-            </select>
             <input
               class="input"
               type="password"
               style="flex:1"
-              placeholder="API key"
+              placeholder="OpenRouter API key"
               autocomplete="off"
               value=${key}
               onInput=${(event) => setKey(event.target.value)}

@@ -38,8 +38,7 @@ import unicodedata
 from typing import Literal
 
 from app.models import Label, Verdict
-
-from streamer.chat.source_quality import registrable_domain
+from app.source_quality import registrable_domain
 
 logger = logging.getLogger(__name__)
 

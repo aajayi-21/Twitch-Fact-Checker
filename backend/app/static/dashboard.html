@@ -119,6 +119,7 @@
     text-align: right;
   }
   .empty { color: var(--muted); padding: 12px 0; }
+  .card-note { color: var(--muted); font-size: 12px; margin-top: 10px; }
 
   /* Channel cards */
   .channel-card .head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }
@@ -202,6 +203,11 @@
     <h2>Claim funnel · all time</h2>
     <div class="barlist" id="funnel-chart"><div class="empty">Loading…</div></div>
   </div>
+  <div class="card">
+    <h2>Best source tier · labelled verdicts</h2>
+    <div class="barlist" id="tiers-chart"><div class="empty">Loading…</div></div>
+    <div class="card-note" id="tiers-note"></div>
+  </div>
 </div>
 
 <div class="card" style="margin-bottom:16px">
@@ -248,6 +254,13 @@ const FUNNEL_STAGES = [
   ["duplicate", "Duplicate"],
   ["topic_skipped", "Topic filtered"],
   ["below_threshold", "Below threshold"],
+];
+
+const TIER_ROWS = [
+  ["A", "A · primary"],
+  ["B", "B · major outlet"],
+  ["C", "C · other"],
+  ["D", "D · user-made"],
 ];
 
 const fmtInt = (n) => Number(n ?? 0).toLocaleString("en-US");
@@ -341,6 +354,29 @@ const renderSummary = (summary) => {
     document.getElementById("funnel-chart"),
     FUNNEL_STAGES.map(([key, name]) => [name, totals.funnel?.[key] ?? 0, "var(--series)"]),
   );
+  renderSourceTiers(summary.source_tiers);
+};
+
+/* Measured, not enforced: how many TRUE/FALSE/MISLEADING verdicts rest only
+   on C (unrecognized/context) or D (user-generated) sources. */
+const renderSourceTiers = (tiers) => {
+  const note = document.getElementById("tiers-note");
+  if (!tiers) {
+    note.textContent = "";
+    return;
+  }
+  renderBarList(
+    document.getElementById("tiers-chart"),
+    [
+      ...TIER_ROWS.map(([key, name]) => [name, tiers.best_tier?.[key] ?? 0, "var(--series)"]),
+      ["No sources", tiers.no_sources ?? 0, "var(--lbl-unv)"],
+    ],
+  );
+  note.textContent = tiers.labelled
+    ? `An "A/B source required" rule would downgrade ${fmtInt(tiers.would_downgrade)} ` +
+      `of ${fmtInt(tiers.labelled)} (${fmtPct(tiers.would_downgrade_rate * 100)}) ` +
+      "to UNVERIFIED. Not enforced — see scripts/report_source_tiers.py."
+    : "";
 };
 
 const channelCard = (entry) => {

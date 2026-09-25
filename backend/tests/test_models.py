@@ -358,9 +358,8 @@ class TestGateClaimId:
         assert first.id and second.id and first.id != second.id
 
     def test_model_supplied_id_is_discarded(self) -> None:
-        """Gemini derives its response schema from this Pydantic class, so a
-        model COULD emit ids; the before-validator must strip them or they
-        become colliding primary keys."""
+        """A model COULD echo an "id" field; the before-validator must strip
+        it or it becomes a colliding primary key."""
         from app.models import GateClaim
 
         claim = GateClaim.model_validate(

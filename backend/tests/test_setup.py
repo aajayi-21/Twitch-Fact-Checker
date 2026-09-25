@@ -19,8 +19,8 @@ from starlette.websockets import WebSocketDisconnect
 
 from app import setup as setup_api
 from app.config import (
+    DEFAULT_JEV_MODEL,
     DEFAULT_OPENROUTER_GATE_MODEL,
-    DEFAULT_OPENROUTER_EXTRACTION_MODEL,
     DEFAULT_OPENROUTER_VERIFY_MODEL,
     Settings,
     resolve_env_file,
@@ -37,19 +37,22 @@ from app.setup import (
     upsert_env_values,
 )
 from tests.conftest import (
-    FakeGenAIClient,
+    TEST_GATE_MODEL,
+    TEST_VERIFY_MODEL,
+    FakeLLMClient,
     FakeTranscriber,
     make_fake_llm_runtime,
     make_gate_response,
     make_hello,
     make_test_settings,
-    make_verdict_interaction,
+    make_verdict_completion,
     open_test_client,
     pcm_silence,
 )
 
-GEMINI_KEY = "gm-test-key-9xyz-abcd"
 OPENROUTER_KEY = "sk-or-v1-test-key-wxyz"
+# Google Gemini support was removed; stale clients may still send its id.
+REMOVED_PROVIDER = "gemini"
 
 CLAIM = "The Eiffel Tower is 450 meters tall."
 SEVEN_WORD_SEGMENT = TranscriptSegment(
@@ -67,9 +70,12 @@ BASE_ENV = (
     "LLM_PROVIDER=openrouter\n"
     "OPENROUTER_API_KEY=sk-or-old-key-value\n"
     "\n"
-    "# gemini section (key intentionally empty)\n"
-    "GEMINI_API_KEY=\n"
+    "# unrelated settings (every upsert must leave these byte-identical)\n"
     "WHISPER_MODEL=distil-small.en\n"
+    # The conftest fake routes calls by model slug; pinning the test slugs
+    # here keeps a runtime rebuilt from THIS file routable after a hot-swap.
+    f"OPENROUTER_GATE_MODEL={TEST_GATE_MODEL}\n"
+    f"OPENROUTER_VERIFY_MODEL={TEST_VERIFY_MODEL}\n"
     # Dead port so the status payload's ollama reachability probe refuses
     # instantly and deterministically (offline-suite rule) even after
     # Settings is rebuilt from this file.
@@ -79,6 +85,18 @@ BASE_ENV = (
 NOT_CONFIGURED_WS_MESSAGE = (
     "Backend has no API key yet — add one in the extension options."
 )
+
+
+@pytest.fixture(autouse=True)
+def _offline_openrouter_credits(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the suite offline: every status build with OpenRouter serving a
+    stage would otherwise GET openrouter.ai's credits endpoint. Tests that
+    need credits install their own fake (a later setattr wins)."""
+
+    async def no_credits(api_key: str) -> CreditsInfo | None:
+        return None
+
+    monkeypatch.setattr(setup_api, "fetch_openrouter_credits", no_credits)
 
 
 @pytest.fixture()
@@ -93,12 +111,12 @@ def temp_env_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 @pytest.fixture()
 def unconfigured_client(
     temp_env_file: Path,
-    fake_genai_client: FakeGenAIClient,
+    fake_llm_client: FakeLLMClient,
     fake_transcriber: FakeTranscriber,
 ) -> Iterator[TestClient]:
     """The real app booted UNCONFIGURED (no key for the active provider)."""
-    settings = make_test_settings(gemini_api_key="", openrouter_api_key="")
-    with open_test_client(settings, fake_genai_client, fake_transcriber) as client:
+    settings = make_test_settings(openrouter_api_key="")
+    with open_test_client(settings, fake_llm_client, fake_transcriber) as client:
         yield client
 
 
@@ -112,7 +130,7 @@ def _accept_any_key_async(record: list[str]):  # type: ignore[no-untyped-def]
 
 
 def _install_fake_runtime_builder(
-    monkeypatch: pytest.MonkeyPatch, swap_client: FakeGenAIClient
+    monkeypatch: pytest.MonkeyPatch, swap_client: FakeLLMClient
 ) -> None:
     """Route the endpoint's post-validation rebuild through conftest fakes."""
 
@@ -203,11 +221,11 @@ class TestHostValidation:
         async def must_not_run(api_key: str) -> None:
             raise AssertionError("validation probe ran for a rejected Host")
 
-        monkeypatch.setattr(setup_api, "validate_gemini_key", must_not_run)
+        monkeypatch.setattr(setup_api, "validate_openrouter_key", must_not_run)
         response = unconfigured_client.post(
             "/setup/credentials",
             headers={"host": "rebound.attacker.example"},
-            json={"provider": "gemini", "api_key": "attacker-key"},
+            json={"provider": "openrouter", "api_key": "attacker-key"},
         )
         assert response.status_code == 400
         assert temp_env_file.read_text(encoding="utf-8") == BASE_ENV
@@ -227,6 +245,7 @@ class TestUnconfiguredSurface:
             "status": "ok",
             "server_version": "0.1.0",
             "whisper_model": "fake-whisper.en",
+            "stt_segmentation": "window",
             "configured": False,
             "llm_provider": None,
             "gate_provider": None,
@@ -246,13 +265,13 @@ class TestUnconfiguredSurface:
         assert response.json() == {
             "configured": False,
             "gate": {
-                "provider": "gemini",
-                "model": "fake-gate-model",
+                "provider": "openrouter",
+                "model": TEST_GATE_MODEL,
                 "configured": False,
             },
             "verify": {
-                "provider": "gemini",
-                "model": "fake-verify-model",
+                "provider": "openrouter",
+                "model": TEST_VERIFY_MODEL,
                 "configured": False,
             },
             "providers": {
@@ -260,11 +279,12 @@ class TestUnconfiguredSurface:
                     "configured": False,
                     "key_hint": None,
                     "credits": None,
-                    "gate_model": DEFAULT_OPENROUTER_GATE_MODEL,
-                    "extraction_model": DEFAULT_OPENROUTER_EXTRACTION_MODEL,
-                    "verify_model": DEFAULT_OPENROUTER_VERIFY_MODEL,
+                    "gate_model": TEST_GATE_MODEL,
+                    "verify_model": TEST_VERIFY_MODEL,
+                    "jev_mode": "off",
+                    "jev_model": DEFAULT_JEV_MODEL,
+                    "jev_min_check_probability": 0.35,
                 },
-                "gemini": {"configured": False, "key_hint": None},
                 "ollama": {
                     "configured": True,
                     "reachable": False,
@@ -356,15 +376,41 @@ class TestCredentialsValidation:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         async def unreachable(api_key: str) -> None:
-            raise ProviderUnreachable("could not reach Gemini: connect timeout")
+            raise ProviderUnreachable("could not reach OpenRouter: connect timeout")
 
-        monkeypatch.setattr(setup_api, "validate_gemini_key", unreachable)
+        monkeypatch.setattr(setup_api, "validate_openrouter_key", unreachable)
         response = unconfigured_client.post(
-            "/setup/credentials", json={"provider": "gemini", "api_key": GEMINI_KEY}
+            "/setup/credentials",
+            json={"provider": "openrouter", "api_key": OPENROUTER_KEY},
         )
         assert response.status_code == 502
-        assert "could not reach Gemini" in response.json()["detail"]
+        assert "could not reach OpenRouter" in response.json()["detail"]
         assert temp_env_file.read_text(encoding="utf-8") == BASE_ENV
+
+    def test_removed_provider_is_400_and_nothing_persisted(
+        self,
+        unconfigured_client: TestClient,
+        temp_env_file: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The retired Google provider is no longer a valid choice: a stale
+        options page submitting it gets a clear 400 before any probe runs,
+        and the env file is left byte-identical."""
+
+        async def must_not_run(api_key: str) -> None:
+            raise AssertionError("validation probe ran for a rejected provider")
+
+        monkeypatch.setattr(setup_api, "validate_openrouter_key", must_not_run)
+        response = unconfigured_client.post(
+            "/setup/credentials",
+            json={"provider": REMOVED_PROVIDER, "api_key": "AIza-stale-key"},
+        )
+        assert response.status_code == 400
+        assert response.json() == {
+            "detail": "provider must be one of: openrouter, ollama"
+        }
+        assert temp_env_file.read_text(encoding="utf-8") == BASE_ENV
+        assert unconfigured_client.get("/healthz").json()["configured"] is False
 
 
 # --------------------------------------------------------------------------- #
@@ -373,47 +419,53 @@ class TestCredentialsValidation:
 
 
 class TestCredentialsSuccess:
-    def test_gemini_success_persists_swaps_and_serves_debug(
+    def test_fresh_install_key_persists_swaps_and_serves_debug(
         self,
         unconfigured_client: TestClient,
         temp_env_file: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        """First-run onboarding: a .env copied from the example (empty key
+        line, no LLM_PROVIDER line) becomes a working backend in one POST."""
+        fresh_install_env = BASE_ENV.replace("LLM_PROVIDER=openrouter\n", "").replace(
+            "OPENROUTER_API_KEY=sk-or-old-key-value", "OPENROUTER_API_KEY="
+        )
+        temp_env_file.write_text(fresh_install_env, encoding="utf-8")
         probed_keys: list[str] = []
         monkeypatch.setattr(
-            setup_api, "validate_gemini_key", _accept_any_key_async(probed_keys)
+            setup_api, "validate_openrouter_key", _accept_any_key_async(probed_keys)
         )
-        swap_client = FakeGenAIClient()
+        swap_client = FakeLLMClient()
         _install_fake_runtime_builder(monkeypatch, swap_client)
 
         response = unconfigured_client.post(
-            "/setup/credentials", json={"provider": "gemini", "api_key": GEMINI_KEY}
+            "/setup/credentials",
+            json={"provider": "openrouter", "api_key": OPENROUTER_KEY},
         )
         assert response.status_code == 200
         assert response.json() == {
             "configured": True,
             "gate": {
-                "provider": "gemini",
-                "model": "gemini-3.1-flash-lite",
+                "provider": "openrouter",
+                "model": TEST_GATE_MODEL,
                 "configured": True,
             },
             "verify": {
-                "provider": "gemini",
-                "model": "gemini-3.5-flash",
+                "provider": "openrouter",
+                "model": TEST_VERIFY_MODEL,
                 "configured": True,
             },
             "providers": {
-                # The old OpenRouter key survives in the env file, so that
-                # provider stays configured (its key line is untouched).
                 "openrouter": {
                     "configured": True,
-                    "key_hint": "…alue",
-                    "credits": None,
-                    "gate_model": DEFAULT_OPENROUTER_GATE_MODEL,
-                    "extraction_model": DEFAULT_OPENROUTER_EXTRACTION_MODEL,
-                    "verify_model": DEFAULT_OPENROUTER_VERIFY_MODEL,
+                    "key_hint": "…wxyz",
+                    "credits": None,  # offline stub (see module fixture)
+                    "gate_model": TEST_GATE_MODEL,
+                    "verify_model": TEST_VERIFY_MODEL,
+                    "jev_mode": "off",
+                    "jev_model": DEFAULT_JEV_MODEL,
+                    "jev_min_check_probability": 0.35,
                 },
-                "gemini": {"configured": True, "key_hint": "…abcd"},
                 "ollama": {
                     "configured": True,
                     "reachable": False,
@@ -421,28 +473,32 @@ class TestCredentialsSuccess:
                 },
             },
         }
-        assert probed_keys == [GEMINI_KEY]
+        assert probed_keys == [OPENROUTER_KEY]
 
-        # Upsert: ONLY the LLM_PROVIDER and GEMINI_API_KEY lines changed;
-        # comments, blank lines, and the OTHER provider's key are preserved
-        # byte-for-byte (including their positions).
-        expected_env = BASE_ENV.replace(
-            "LLM_PROVIDER=openrouter", "LLM_PROVIDER=gemini"
-        ).replace("GEMINI_API_KEY=", f"GEMINI_API_KEY={GEMINI_KEY}")
+        # Upsert: ONLY the key line changed in place and the missing
+        # LLM_PROVIDER line was appended; comments, blank lines, and the
+        # unrelated settings are preserved byte-for-byte (and in position).
+        expected_env = (
+            fresh_install_env.replace(
+                "OPENROUTER_API_KEY=", f"OPENROUTER_API_KEY={OPENROUTER_KEY}"
+            )
+            + "LLM_PROVIDER=openrouter\n"
+        )
         assert temp_env_file.read_text(encoding="utf-8") == expected_env
 
         # Hot-swap visible via /healthz without any restart...
         health = unconfigured_client.get("/healthz").json()
         assert health["configured"] is True
-        assert health["llm_provider"] == "gemini"
-        assert health["gate_model"] == "gemini-3.1-flash-lite"
+        assert health["llm_provider"] == "openrouter"
+        assert health["gate_model"] == TEST_GATE_MODEL
+        assert health["verify_model"] == TEST_VERIFY_MODEL
 
         # ...and /debug/text now runs against the swapped-in (fake) stack.
-        swap_client.generate_results.append(
+        swap_client.gate_results.append(
             make_gate_response([("The Eiffel Tower is 450 meters tall.", 0.9)])
         )
-        swap_client.interaction_results.append(
-            make_verdict_interaction("FALSE", "It is about 330 meters tall.")
+        swap_client.verify_results.append(
+            make_verdict_completion("FALSE", "It is about 330 meters tall.")
         )
         debug_response = unconfigured_client.post(
             "/debug/text", json={"text": "the eiffel tower is 450 meters tall"}
@@ -468,7 +524,7 @@ class TestCredentialsSuccess:
             return CreditsInfo(total=10.0, usage=1.25)
 
         monkeypatch.setattr(setup_api, "fetch_openrouter_credits", fake_credits)
-        _install_fake_runtime_builder(monkeypatch, FakeGenAIClient())
+        _install_fake_runtime_builder(monkeypatch, FakeLLMClient())
 
         response = unconfigured_client.post(
             "/setup/credentials",
@@ -479,26 +535,27 @@ class TestCredentialsSuccess:
         assert body["configured"] is True
         assert body["gate"] == {
             "provider": "openrouter",
-            "model": DEFAULT_OPENROUTER_GATE_MODEL,
+            "model": TEST_GATE_MODEL,
             "configured": True,
         }
         assert body["verify"]["provider"] == "openrouter"
+        # OpenRouter is the only keyed provider; Ollama is the keyless one.
+        assert set(body["providers"]) == {"openrouter", "ollama"}
         openrouter_status = body["providers"]["openrouter"]
         assert openrouter_status["key_hint"] == "…wxyz"
         assert openrouter_status["credits"] == {"total": 10.0, "usage": 1.25}
-        assert body["providers"]["gemini"] == {
-            "configured": False,
-            "key_hint": None,
-        }
         assert probed_keys == [OPENROUTER_KEY]
 
+        # Key rotation: only the stale key's value changes (LLM_PROVIDER is
+        # rewritten to the value it already had); every other line, the
+        # unrelated settings included, is byte-identical.
         content = temp_env_file.read_text(encoding="utf-8")
         expected_env = BASE_ENV.replace(
             "OPENROUTER_API_KEY=sk-or-old-key-value",
             f"OPENROUTER_API_KEY={OPENROUTER_KEY}",
         )
         assert content == expected_env
-        assert "GEMINI_API_KEY=\n" in content  # other provider untouched
+        assert "WHISPER_MODEL=distil-small.en\n" in content
 
         # /setup/status mirrors the POST response (openrouter -> credits).
         status = unconfigured_client.get("/setup/status").json()
@@ -518,21 +575,24 @@ class TestCredentialsSuccess:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         caplog.set_level(logging.DEBUG)
-        monkeypatch.setattr(setup_api, "validate_gemini_key", _accept_any_key_async([]))
-        _install_fake_runtime_builder(monkeypatch, FakeGenAIClient())
+        monkeypatch.setattr(
+            setup_api, "validate_openrouter_key", _accept_any_key_async([])
+        )
+        _install_fake_runtime_builder(monkeypatch, FakeLLMClient())
 
         post = unconfigured_client.post(
-            "/setup/credentials", json={"provider": "gemini", "api_key": GEMINI_KEY}
+            "/setup/credentials",
+            json={"provider": "openrouter", "api_key": OPENROUTER_KEY},
         )
         status = unconfigured_client.get("/setup/status")
         health = unconfigured_client.get("/healthz")
 
         assert post.status_code == 200
         for response in (post, status, health):
-            assert GEMINI_KEY not in response.text
-        assert post.json()["providers"]["gemini"]["key_hint"] == "…abcd"
+            assert OPENROUTER_KEY not in response.text
+        assert post.json()["providers"]["openrouter"]["key_hint"] == "…wxyz"
         for record in caplog.records:
-            assert GEMINI_KEY not in record.getMessage()
+            assert OPENROUTER_KEY not in record.getMessage()
 
 
 # --------------------------------------------------------------------------- #
@@ -544,7 +604,7 @@ class TestHotSwapPreemptsLiveSession:
     def test_live_session_gets_fatal_frame_and_next_session_uses_new_runtime(
         self,
         temp_env_file: Path,
-        fake_genai_client: FakeGenAIClient,
+        fake_llm_client: FakeLLMClient,
         fake_transcriber: FakeTranscriber,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -553,19 +613,21 @@ class TestHotSwapPreemptsLiveSession:
         'running' while every LLM call fails on a closed client. The swap
         must end the session with a fatal ``credentials_updated`` frame and
         a 1000 close, and the NEXT session must run on the new runtime."""
-        monkeypatch.setattr(setup_api, "validate_gemini_key", _accept_any_key_async([]))
-        swap_client = FakeGenAIClient()
+        monkeypatch.setattr(
+            setup_api, "validate_openrouter_key", _accept_any_key_async([])
+        )
+        swap_client = FakeLLMClient()
         _install_fake_runtime_builder(monkeypatch, swap_client)
         settings = make_test_settings()  # configured boot (old fake client)
 
-        with open_test_client(settings, fake_genai_client, fake_transcriber) as client:
+        with open_test_client(settings, fake_llm_client, fake_transcriber) as client:
             with client.websocket_connect("/ws/audio") as session:
                 session.send_json(make_hello())
                 assert session.receive_json()["type"] == "ready"
 
                 response = client.post(
                     "/setup/credentials",
-                    json={"provider": "gemini", "api_key": GEMINI_KEY},
+                    json={"provider": "openrouter", "api_key": OPENROUTER_KEY},
                 )
                 assert response.status_code == 200
 
@@ -580,9 +642,9 @@ class TestHotSwapPreemptsLiveSession:
             # The next session's verdict is served by the swapped-in client;
             # the OLD client must see zero gate/verify calls end to end.
             fake_transcriber.segments_script.append([SEVEN_WORD_SEGMENT])
-            swap_client.generate_results.append(make_gate_response([(CLAIM, 0.9)]))
-            swap_client.interaction_results.append(
-                make_verdict_interaction("FALSE", "It is about 330 meters.")
+            swap_client.gate_results.append(make_gate_response([(CLAIM, 0.9)]))
+            swap_client.verify_results.append(
+                make_verdict_completion("FALSE", "It is about 330 meters.")
             )
             with client.websocket_connect("/ws/audio") as second:
                 second.send_json(make_hello())
@@ -597,8 +659,8 @@ class TestHotSwapPreemptsLiveSession:
                 frame["label"] for frame in frames if frame["type"] == "verdict"
             ]
             assert verdict_labels == ["FALSE"]
-            assert fake_genai_client.generate_calls == []
-            assert fake_genai_client.interaction_calls == []
+            assert fake_llm_client.gate_calls == []
+            assert fake_llm_client.verify_calls == []
 
 
 class TestHotSwapInstallsFreshCooldown:
@@ -609,12 +671,15 @@ class TestHotSwapInstallsFreshCooldown:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Regression: the most likely reason for a mid-run key swap is a
-        tripped cooldown (e.g. OpenRouter 402). The swap must install a
-        FRESH QuotaCooldown atomically with the runtime — not reuse (or
-        merely reset) the old instance — so new sessions and /debug/text
-        verify immediately instead of replaying the old provider's reason."""
-        monkeypatch.setattr(setup_api, "validate_gemini_key", _accept_any_key_async([]))
-        swap_client = FakeGenAIClient()
+        tripped cooldown (e.g. OpenRouter 402 on an exhausted key). The swap
+        must install a FRESH QuotaCooldown atomically with the runtime — not
+        reuse (or merely reset) the old instance — so new sessions and
+        /debug/text verify immediately instead of replaying the old key's
+        reason."""
+        monkeypatch.setattr(
+            setup_api, "validate_openrouter_key", _accept_any_key_async([])
+        )
+        swap_client = FakeLLMClient()
         _install_fake_runtime_builder(monkeypatch, swap_client)
 
         old_cooldown: QuotaCooldown = unconfigured_client.app.state.quota_cooldown
@@ -624,7 +689,8 @@ class TestHotSwapInstallsFreshCooldown:
         assert old_cooldown.active is True
 
         response = unconfigured_client.post(
-            "/setup/credentials", json={"provider": "gemini", "api_key": GEMINI_KEY}
+            "/setup/credentials",
+            json={"provider": "openrouter", "api_key": OPENROUTER_KEY},
         )
         assert response.status_code == 200
 
@@ -634,9 +700,9 @@ class TestHotSwapInstallsFreshCooldown:
 
         # /debug/text reads app.state.quota_cooldown per request: the claim
         # must be verified now, not dropped with the stale OpenRouter reason.
-        swap_client.generate_results.append(make_gate_response([(CLAIM, 0.9)]))
-        swap_client.interaction_results.append(
-            make_verdict_interaction("FALSE", "It is about 330 meters.")
+        swap_client.gate_results.append(make_gate_response([(CLAIM, 0.9)]))
+        swap_client.verify_results.append(
+            make_verdict_completion("FALSE", "It is about 330 meters.")
         )
         debug_response = unconfigured_client.post(
             "/debug/text", json={"text": "the eiffel tower is 450 meters tall"}
@@ -657,11 +723,11 @@ class TestUpsertEnvValues:
         env_path = tmp_path / ".env"
         original = (
             "# leading comment\r\n"
-            "LLM_PROVIDER=gemini\n"
+            "LLM_PROVIDER=stale-value\n"
             "  OPENROUTER_API_KEY = old-value\n"
             "\n"
-            "# GEMINI_API_KEY=commented-out-stays\n"
-            "GEMINI_API_KEY=old-gemini\r\n"
+            "# OPENROUTER_API_KEY=commented-out-stays\n"
+            "WHISPER_MODEL=old-whisper\r\n"
             "TRAILING=keep"  # no trailing newline
         )
         with env_path.open("w", encoding="utf-8", newline="") as handle:
@@ -677,8 +743,8 @@ class TestUpsertEnvValues:
             "LLM_PROVIDER=openrouter\n"
             "OPENROUTER_API_KEY=new-key\n"
             "\n"
-            "# GEMINI_API_KEY=commented-out-stays\n"
-            "GEMINI_API_KEY=old-gemini\r\n"
+            "# OPENROUTER_API_KEY=commented-out-stays\n"
+            "WHISPER_MODEL=old-whisper\r\n"
             "TRAILING=keep"
         )
 
@@ -687,15 +753,17 @@ class TestUpsertEnvValues:
     ) -> None:
         env_path = tmp_path / ".env"
         env_path.write_text("EXISTING=1", encoding="utf-8")  # no trailing \n
-        upsert_env_values(env_path, {"LLM_PROVIDER": "gemini", "GEMINI_API_KEY": "k"})
+        upsert_env_values(
+            env_path, {"LLM_PROVIDER": "openrouter", "OPENROUTER_API_KEY": "k"}
+        )
         assert env_path.read_text(encoding="utf-8") == (
-            "EXISTING=1\nLLM_PROVIDER=gemini\nGEMINI_API_KEY=k\n"
+            "EXISTING=1\nLLM_PROVIDER=openrouter\nOPENROUTER_API_KEY=k\n"
         )
 
     def test_creates_file_and_parents_when_missing(self, tmp_path: Path) -> None:
         env_path = tmp_path / "nested" / "dir" / ".env"
-        upsert_env_values(env_path, {"LLM_PROVIDER": "gemini"})
-        assert env_path.read_text(encoding="utf-8") == "LLM_PROVIDER=gemini\n"
+        upsert_env_values(env_path, {"LLM_PROVIDER": "openrouter"})
+        assert env_path.read_text(encoding="utf-8") == "LLM_PROVIDER=openrouter\n"
         assert (env_path.stat().st_mode & 0o777) == 0o600
 
     def test_tightens_permissive_mode_on_existing_file(self, tmp_path: Path) -> None:
@@ -705,25 +773,28 @@ class TestUpsertEnvValues:
         env_path = tmp_path / ".env"
         env_path.write_text("LLM_PROVIDER=openrouter\n", encoding="utf-8")
         os.chmod(env_path, 0o644)
-        upsert_env_values(env_path, {"GEMINI_API_KEY": "gm-secret-value"})
+        upsert_env_values(env_path, {"OPENROUTER_API_KEY": "sk-or-secret-value"})
         assert (env_path.stat().st_mode & 0o777) == 0o600
-        assert "GEMINI_API_KEY=gm-secret-value" in env_path.read_text(encoding="utf-8")
+        assert "OPENROUTER_API_KEY=sk-or-secret-value" in env_path.read_text(
+            encoding="utf-8"
+        )
 
     def test_rewrites_every_duplicate_occurrence(self, tmp_path: Path) -> None:
         env_path = tmp_path / ".env"
         env_path.write_text(
-            "GEMINI_API_KEY=first\nOTHER=x\nGEMINI_API_KEY=last\n", encoding="utf-8"
+            "OPENROUTER_API_KEY=first\nOTHER=x\nOPENROUTER_API_KEY=last\n",
+            encoding="utf-8",
         )
-        upsert_env_values(env_path, {"GEMINI_API_KEY": "new"})
+        upsert_env_values(env_path, {"OPENROUTER_API_KEY": "new"})
         # python-dotenv honors the LAST occurrence, so both must be rewritten.
         assert env_path.read_text(encoding="utf-8") == (
-            "GEMINI_API_KEY=new\nOTHER=x\nGEMINI_API_KEY=new\n"
+            "OPENROUTER_API_KEY=new\nOTHER=x\nOPENROUTER_API_KEY=new\n"
         )
 
     def test_rejects_values_with_line_breaks(self, tmp_path: Path) -> None:
         env_path = tmp_path / ".env"
         with pytest.raises(ValueError, match="multi-line"):
-            upsert_env_values(env_path, {"GEMINI_API_KEY": "evil\nINJECTED=1"})
+            upsert_env_values(env_path, {"OPENROUTER_API_KEY": "evil\nINJECTED=1"})
         assert not env_path.exists()
 
 
@@ -746,7 +817,12 @@ class TestEnvFileOverride:
     def test_missing_override_file_boots_unconfigured(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        for var in ("LLM_PROVIDER", "OPENROUTER_API_KEY", "GEMINI_API_KEY"):
+        for var in (
+            "LLM_PROVIDER",
+            "GATE_PROVIDER",
+            "VERIFY_PROVIDER",
+            "OPENROUTER_API_KEY",
+        ):
             monkeypatch.delenv(var, raising=False)
         monkeypatch.setenv("ENV_FILE", str(tmp_path / "does-not-exist.env"))
         settings = Settings()
@@ -770,13 +846,13 @@ class TestConfiguredBootFromEnvFile:
     ) -> None:
         """Boot the REAL lifespan from a hand-written .env (via ENV_FILE):
         Settings -> is_configured -> build_llm_runtime composes the real
-        Gemini gate/checker around the (faked) client, and /healthz plus the
+        OpenRouter gate/checker around the (faked) client, and /healthz plus the
         /ws/audio hello handshake report a configured backend. Only the two
         network edges are faked — the Whisper model load and the provider
         client constructor; the suite must stay offline."""
         env_path = tmp_path / "boot.env"
         env_path.write_text(
-            "LLM_PROVIDER=gemini\nGEMINI_API_KEY=AIza-boot-test-key\n",
+            "LLM_PROVIDER=openrouter\nOPENROUTER_API_KEY=sk-or-boot-test-key\n",
             encoding="utf-8",
         )
         monkeypatch.setenv("ENV_FILE", str(env_path))
@@ -784,27 +860,33 @@ class TestConfiguredBootFromEnvFile:
         # pydantic-settings; clear any that could shadow the file's values.
         for variable in (
             "LLM_PROVIDER",
+            "GATE_PROVIDER",
+            "VERIFY_PROVIDER",
             "OPENROUTER_API_KEY",
-            "GEMINI_API_KEY",
+            "OPENROUTER_GATE_MODEL",
+            "OPENROUTER_VERIFY_MODEL",
             "WHISPER_MODEL",
         ):
             monkeypatch.delenv(variable, raising=False)
+        # The real lifespan opens the analytics database: without this it is
+        # the developer's REAL backend/fact_checker.db, and the hello below
+        # records a session row in it on every suite run.
+        monkeypatch.setenv("DB_PATH", str(tmp_path / "boot.db"))
 
-        boot_client = FakeGenAIClient()
+        boot_client = FakeLLMClient()
 
         def fake_transcriber_factory(*_args: Any, **_kwargs: Any) -> FakeTranscriber:
             return FakeTranscriber()
 
-        def fake_create_llm_client(
-            settings: Settings, provider: str
-        ) -> FakeGenAIClient:
-            assert provider == "gemini"
-            assert settings.gemini_api_key == "AIza-boot-test-key"
+        def fake_create_llm_client(settings: Settings, provider: str) -> FakeLLMClient:
+            # Both stages resolve to OpenRouter: one shared client.
+            assert provider == "openrouter"
+            assert settings.openrouter_api_key == "sk-or-boot-test-key"
             return boot_client
 
         monkeypatch.setattr("app.main.create_transcriber", fake_transcriber_factory)
         # Do NOT stub create_claim_gate/create_fact_checker: the point is
-        # that the real build_llm_runtime composes the real Gemini stack.
+        # that the real build_llm_runtime composes the real OpenRouter stack.
         monkeypatch.setattr(
             "app.llm_provider.create_llm_client", fake_create_llm_client
         )
@@ -816,9 +898,9 @@ class TestConfiguredBootFromEnvFile:
         ) as boot_client_http:
             health = boot_client_http.get("/healthz").json()
             assert health["configured"] is True
-            assert health["llm_provider"] == "gemini"
-            assert health["gate_model"] == "gemini-3.1-flash-lite"
-            assert health["verify_model"] == "gemini-3.5-flash"
+            assert health["llm_provider"] == "openrouter"
+            assert health["gate_model"] == DEFAULT_OPENROUTER_GATE_MODEL
+            assert health["verify_model"] == DEFAULT_OPENROUTER_VERIFY_MODEL
             assert health["whisper_model"] == "distil-small.en"
 
             # A valid hello is answered with "ready" (no gate/verify call is
@@ -832,23 +914,18 @@ class TestConfiguredBootFromEnvFile:
 
 class TestIsConfigured:
     @pytest.mark.parametrize(
-        ("provider", "kwargs", "expected"),
+        ("api_key", "expected"),
         [
-            ("gemini", {"gemini_api_key": "AIza-real"}, True),
-            ("gemini", {"gemini_api_key": ""}, False),
-            ("gemini", {"gemini_api_key": "   "}, False),
-            ("gemini", {"gemini_api_key": "# leftover comment"}, False),
-            # Only the ACTIVE provider's key matters.
-            ("gemini", {"gemini_api_key": "", "openrouter_api_key": "sk-or"}, False),
-            ("openrouter", {"openrouter_api_key": "sk-or-real"}, True),
-            ("openrouter", {"openrouter_api_key": ""}, False),
-            ("openrouter", {"openrouter_api_key": "", "gemini_api_key": "k"}, False),
+            ("sk-or-real", True),
+            ("", False),
+            ("   ", False),
+            ("# leftover comment", False),
         ],
     )
-    def test_active_provider_key_decides(
-        self, provider: str, kwargs: dict[str, str], expected: bool
-    ) -> None:
-        settings = Settings(llm_provider=provider, _env_file=None, **kwargs)
+    def test_openrouter_key_decides(self, api_key: str, expected: bool) -> None:
+        settings = Settings(
+            llm_provider="openrouter", openrouter_api_key=api_key, _env_file=None
+        )
         assert settings.is_configured is expected
 
 
@@ -856,15 +933,26 @@ class TestIsConfigured:
 # Per-stage providers: ollama credentials probe + POST /setup/stages
 # --------------------------------------------------------------------------- #
 
-# Env file with BOTH keyed providers usable, so stage flips between them are
-# legal and the post-swap Settings rebuild (which reads THIS file) stays
-# configured. Dead ollama port per the offline-suite rule.
+# Env file with the OpenRouter key usable, so gate flips between OpenRouter
+# and Ollama are legal and the post-swap Settings rebuild (which reads THIS
+# file) stays configured. No OPENROUTER_*_MODEL lines: the stored slugs are
+# the code defaults. Dead ollama port per the offline-suite rule.
 STAGES_ENV = (
-    "LLM_PROVIDER=gemini\n"
-    "GEMINI_API_KEY=AIza-stages-test-key\n"
+    "LLM_PROVIDER=openrouter\n"
     "OPENROUTER_API_KEY=sk-or-stages-test-key\n"
     "OLLAMA_BASE_URL=http://127.0.0.1:1/v1\n"
 )
+
+
+def make_stages_settings(**overrides: Any) -> Settings:
+    """Boot settings mirroring STAGES_ENV (key + default stored slugs)."""
+    base: dict[str, Any] = {
+        "openrouter_api_key": "sk-or-stages-test-key",
+        "openrouter_gate_model": DEFAULT_OPENROUTER_GATE_MODEL,
+        "openrouter_verify_model": DEFAULT_OPENROUTER_VERIFY_MODEL,
+    }
+    base.update(overrides)
+    return make_test_settings(**base)
 
 
 @pytest.fixture()
@@ -927,44 +1015,49 @@ class TestSetupStages:
     def configured_client(
         self,
         stages_env_file: Path,
-        fake_genai_client: FakeGenAIClient,
+        fake_llm_client: FakeLLMClient,
         fake_transcriber: FakeTranscriber,
     ) -> Iterator[TestClient]:
-        """App booted with BOTH keyed providers usable (mirrors STAGES_ENV)."""
-        settings = make_test_settings(
-            gemini_api_key="AIza-stages-test-key",
-            openrouter_api_key="sk-or-stages-test-key",
-        )
-        with open_test_client(settings, fake_genai_client, fake_transcriber) as client:
+        """App booted with the OpenRouter key usable (mirrors STAGES_ENV)."""
+        settings = make_stages_settings()
+        with open_test_client(settings, fake_llm_client, fake_transcriber) as client:
             yield client
 
     def test_happy_path_persists_swaps_and_reports(
         self,
-        configured_client: TestClient,
         stages_env_file: Path,
+        fake_llm_client: FakeLLMClient,
+        fake_transcriber: FakeTranscriber,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        _install_fake_runtime_builder(monkeypatch, FakeGenAIClient())
-        response = configured_client.post(
-            "/setup/stages",
-            json={"gate_provider": "openrouter", "verify_provider": "gemini"},
-        )
-        assert response.status_code == 200
-        body = response.json()
-        assert body["configured"] is True
-        assert body["gate"]["provider"] == "openrouter"
-        assert body["verify"]["provider"] == "gemini"
-        # Existing lines preserved byte-for-byte; the two stage keys appended.
-        # No OPENROUTER_*_MODEL lines: this request submitted no slug, and
-        # writing the code defaults would pin them into .env for a user who
-        # never chose a model.
-        assert stages_env_file.read_text(encoding="utf-8") == (
-            STAGES_ENV + "GATE_PROVIDER=openrouter\n" + "VERIFY_PROVIDER=gemini\n"
-        )
-        # Hot-swap is visible on the very next status read (no restart).
-        status = configured_client.get("/setup/status").json()
-        assert status["gate"]["provider"] == "openrouter"
-        assert status["verify"]["provider"] == "gemini"
+        # Booted with the gate on Ollama; move it back to OpenRouter.
+        _install_fake_runtime_builder(monkeypatch, FakeLLMClient())
+        settings = make_stages_settings(gate_provider="ollama")
+        with open_test_client(settings, fake_llm_client, fake_transcriber) as client:
+            before = client.get("/setup/status").json()
+            assert before["gate"]["provider"] == "ollama"
+            response = client.post(
+                "/setup/stages",
+                json={"gate_provider": "openrouter", "verify_provider": "openrouter"},
+            )
+            assert response.status_code == 200
+            body = response.json()
+            assert body["configured"] is True
+            assert body["gate"]["provider"] == "openrouter"
+            assert body["verify"]["provider"] == "openrouter"
+            # Existing lines preserved byte-for-byte; the two stage keys
+            # appended. No OPENROUTER_*_MODEL lines: this request submitted no
+            # slug, and writing the code defaults would pin them into .env for
+            # a user who never chose a model.
+            assert stages_env_file.read_text(encoding="utf-8") == (
+                STAGES_ENV
+                + "GATE_PROVIDER=openrouter\n"
+                + "VERIFY_PROVIDER=openrouter\n"
+            )
+            # Hot-swap is visible on the very next status read (no restart).
+            status = client.get("/setup/status").json()
+            assert status["gate"]["provider"] == "openrouter"
+            assert status["verify"]["provider"] == "openrouter"
 
     def test_ollama_gate_with_reachable_server(
         self,
@@ -973,10 +1066,10 @@ class TestSetupStages:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         _probe_ollama_ok(monkeypatch)
-        _install_fake_runtime_builder(monkeypatch, FakeGenAIClient())
+        _install_fake_runtime_builder(monkeypatch, FakeLLMClient())
         response = configured_client.post(
             "/setup/stages",
-            json={"gate_provider": "ollama", "verify_provider": "gemini"},
+            json={"gate_provider": "ollama", "verify_provider": "openrouter"},
         )
         assert response.status_code == 200
         body = response.json()
@@ -992,9 +1085,12 @@ class TestSetupStages:
     ) -> None:
         response = configured_client.post(
             "/setup/stages",
-            json={"gate_provider": "anthropic", "verify_provider": "gemini"},
+            json={"gate_provider": "anthropic", "verify_provider": "openrouter"},
         )
         assert response.status_code == 400
+        assert response.json() == {
+            "detail": "gate_provider must be one of: openrouter, ollama"
+        }
         assert stages_env_file.read_text(encoding="utf-8") == STAGES_ENV
 
     def test_ollama_verify_is_400_local_verify_unsupported(
@@ -1011,17 +1107,18 @@ class TestSetupStages:
     def test_unkeyed_stage_provider_is_409_naming_the_stage(
         self,
         stages_env_file: Path,
-        fake_genai_client: FakeGenAIClient,
+        fake_llm_client: FakeLLMClient,
         fake_transcriber: FakeTranscriber,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        # Booted with NO openrouter key: routing verify there must 409.
-        settings = make_test_settings(
-            gemini_api_key="AIza-stages-test-key", openrouter_api_key=""
-        )
-        with open_test_client(settings, fake_genai_client, fake_transcriber) as client:
+        # Booted with NO openrouter key: the keyless Ollama gate passes its
+        # check, so the 409 must name the verify stage's missing key.
+        _probe_ollama_ok(monkeypatch)
+        settings = make_stages_settings(openrouter_api_key="")
+        with open_test_client(settings, fake_llm_client, fake_transcriber) as client:
             response = client.post(
                 "/setup/stages",
-                json={"gate_provider": "gemini", "verify_provider": "openrouter"},
+                json={"gate_provider": "ollama", "verify_provider": "openrouter"},
             )
         assert response.status_code == 409
         assert "verify provider 'openrouter'" in response.json()["detail"]
@@ -1036,7 +1133,7 @@ class TestSetupStages:
         _probe_ollama_down(monkeypatch)
         response = configured_client.post(
             "/setup/stages",
-            json={"gate_provider": "ollama", "verify_provider": "gemini"},
+            json={"gate_provider": "ollama", "verify_provider": "openrouter"},
         )
         assert response.status_code == 409
         assert "gate provider 'ollama'" in response.json()["detail"]
@@ -1121,48 +1218,86 @@ class TestOpenRouterModelSlugs:
     def configured_client(
         self,
         stages_env_file: Path,
-        fake_genai_client: FakeGenAIClient,
+        fake_llm_client: FakeLLMClient,
         fake_transcriber: FakeTranscriber,
     ) -> Iterator[TestClient]:
-        settings = make_test_settings(
-            gemini_api_key="AIza-stages-test-key",
-            openrouter_api_key="sk-or-stages-test-key",
-        )
-        with open_test_client(settings, fake_genai_client, fake_transcriber) as client:
+        settings = make_stages_settings()
+        with open_test_client(settings, fake_llm_client, fake_transcriber) as client:
             yield client
 
     def test_status_exposes_stored_slugs_even_when_stage_uses_another_provider(
-        self, configured_client: TestClient
+        self,
+        stages_env_file: Path,
+        fake_llm_client: FakeLLMClient,
+        fake_transcriber: FakeTranscriber,
     ) -> None:
         """StageStatus.model shows the ACTIVE model; the options page needs
         the stored OpenRouter slugs to prefill regardless of routing."""
-        body = configured_client.get("/setup/status").json()
+        settings = make_stages_settings(gate_provider="ollama")
+        with open_test_client(settings, fake_llm_client, fake_transcriber) as client:
+            body = client.get("/setup/status").json()
+        assert body["gate"]["provider"] == "ollama"
+        assert body["gate"]["model"] == "gemma3:4b"
         openrouter = body["providers"]["openrouter"]
         assert openrouter["gate_model"] == DEFAULT_OPENROUTER_GATE_MODEL
         assert openrouter["verify_model"] == DEFAULT_OPENROUTER_VERIFY_MODEL
-        assert openrouter["extraction_model"] == DEFAULT_OPENROUTER_EXTRACTION_MODEL
+        assert openrouter["jev_mode"] == "off"
+        assert openrouter["jev_model"] == DEFAULT_JEV_MODEL
 
-    def test_jev_alias_is_accepted_without_chat_catalogue(
-        self, configured_client, monkeypatch
+    @pytest.mark.parametrize("field", ["gate_model", "verify_model"])
+    @pytest.mark.parametrize("slug", ["~typesafe/jev-latest", "typesafe/jev-1.13"])
+    def test_jev_rejected_in_model_slots_before_the_catalogue(
+        self, configured_client, stages_env_file, monkeypatch, field, slug
     ) -> None:
-        current = configured_client.app.state.llm_runtime.settings
-        current.openrouter_gate_model = "inception/mercury-2.5-preview"
-        _catalogue_down(monkeypatch)
-        _install_fake_runtime_builder(monkeypatch, FakeGenAIClient())
+        calls: list[int] = []
+        _catalogue_ok(monkeypatch, calls)
+        before = stages_env_file.read_text()
         response = configured_client.post(
             "/setup/stages",
             json={
                 "gate_provider": "openrouter",
-                "verify_provider": "gemini",
-                "gate_model": DEFAULT_OPENROUTER_GATE_MODEL,
+                "verify_provider": "openrouter",
+                field: slug,
+            },
+        )
+        assert response.status_code == 400
+        assert "JEV_MODE=shadow" in response.json()["detail"]
+        assert stages_env_file.read_text() == before
+        assert calls == []
+
+    def test_jev_mode_persists_and_hot_swaps_without_the_catalogue(
+        self, configured_client, stages_env_file, monkeypatch
+    ) -> None:
+        _catalogue_down(monkeypatch)
+        _install_fake_runtime_builder(monkeypatch, FakeLLMClient())
+        response = configured_client.post(
+            "/setup/stages",
+            json={
+                "gate_provider": "openrouter",
+                "verify_provider": "openrouter",
+                "jev_mode": "shadow",
             },
         )
         assert response.status_code == 200
-        assert response.json()["gate"]["model"] == DEFAULT_OPENROUTER_GATE_MODEL
+        assert response.json()["providers"]["openrouter"]["jev_mode"] == "shadow"
+        runtime_settings = configured_client.app.state.llm_runtime.settings
+        assert runtime_settings.jev_mode == "shadow"
+        assert runtime_settings.jev_active_mode == "shadow"
+        assert "JEV_MODE=shadow" in stages_env_file.read_text()
 
-    @pytest.mark.parametrize("field", ["extraction_model", "verify_model"])
-    def test_jev_rejected_for_generative_roles_without_persisting(
-        self, configured_client, stages_env_file, field
+    def test_empty_jev_mode_keeps_the_stored_mode_and_writes_nothing(
+        self, configured_client, stages_env_file, monkeypatch
+    ) -> None:
+        _install_fake_runtime_builder(monkeypatch, FakeLLMClient())
+        response = configured_client.post(
+            "/setup/stages",
+            json={"gate_provider": "openrouter", "verify_provider": "openrouter"},
+        )
+        assert response.status_code == 200
+        assert "JEV_MODE" not in stages_env_file.read_text()
+
+    def test_unknown_jev_mode_is_rejected(
+        self, configured_client, stages_env_file
     ) -> None:
         before = stages_env_file.read_text()
         response = configured_client.post(
@@ -1170,56 +1305,31 @@ class TestOpenRouterModelSlugs:
             json={
                 "gate_provider": "openrouter",
                 "verify_provider": "openrouter",
-                field: DEFAULT_OPENROUTER_GATE_MODEL,
+                "jev_mode": "always",
             },
         )
         assert response.status_code == 400
-        assert "gate decisions only" in response.json()["detail"]
+        assert "jev_mode" in response.json()["detail"]
         assert stages_env_file.read_text() == before
 
-    def test_extraction_model_validates_persists_and_hot_swaps(
-        self, configured_client, stages_env_file, monkeypatch
+    def test_invalid_resulting_settings_are_400_with_env_untouched(
+        self, configured_client, stages_env_file
     ) -> None:
-        calls = []
-        _catalogue_ok(monkeypatch, calls)
-        _install_fake_runtime_builder(monkeypatch, FakeGenAIClient())
-        response = configured_client.post(
-            "/setup/stages",
-            json={
-                "gate_provider": "openrouter",
-                "verify_provider": "openrouter",
-                "extraction_model": "openai/gpt-oss-120b",
-            },
-        )
-        assert response.status_code == 200
-        assert (
-            response.json()["providers"]["openrouter"]["extraction_model"]
-            == "openai/gpt-oss-120b"
-        )
-        assert (
-            configured_client.app.state.llm_runtime.settings.openrouter_extraction_model
-            == "openai/gpt-oss-120b"
-        )
-        assert (
-            "OPENROUTER_EXTRACTION_MODEL=openai/gpt-oss-120b"
-            in stages_env_file.read_text()
-        )
-        assert calls == [1]
-
-    def test_unknown_extraction_model_is_rejected(
-        self, configured_client, stages_env_file, monkeypatch
-    ) -> None:
-        _catalogue_ok(monkeypatch, [])
+        # A Jev timeout that leaves no room for extraction only becomes
+        # invalid once Jev is switched on: the new Settings must be built
+        # (and rejected) BEFORE anything is written.
+        stages_env_file.write_text(STAGES_ENV + "JEV_TIMEOUT_S=20\n")
         before = stages_env_file.read_text()
         response = configured_client.post(
             "/setup/stages",
             json={
                 "gate_provider": "openrouter",
                 "verify_provider": "openrouter",
-                "extraction_model": "acme/unknown",
+                "jev_mode": "screen",
             },
         )
         assert response.status_code == 400
+        assert "JEV_TIMEOUT_S" in response.json()["detail"]
         assert stages_env_file.read_text() == before
 
     def test_valid_slugs_persist_and_hot_swap(
@@ -1230,7 +1340,7 @@ class TestOpenRouterModelSlugs:
     ) -> None:
         calls: list[int] = []
         _catalogue_ok(monkeypatch, calls)
-        _install_fake_runtime_builder(monkeypatch, FakeGenAIClient())
+        _install_fake_runtime_builder(monkeypatch, FakeLLMClient())
         response = configured_client.post(
             "/setup/stages",
             json={
@@ -1314,10 +1424,10 @@ class TestOpenRouterModelSlugs:
         a network round-trip nor change the stored slugs."""
         calls: list[int] = []
         _catalogue_ok(monkeypatch, calls)
-        _install_fake_runtime_builder(monkeypatch, FakeGenAIClient())
+        _install_fake_runtime_builder(monkeypatch, FakeLLMClient())
         response = configured_client.post(
             "/setup/stages",
-            json={"gate_provider": "gemini", "verify_provider": "gemini"},
+            json={"gate_provider": "openrouter", "verify_provider": "openrouter"},
         )
         assert response.status_code == 200
         assert calls == []
@@ -1339,7 +1449,7 @@ class TestOpenRouterModelSlugs:
         from app.llm_openrouter import OpenRouterClaimGate, _ReasoningSupport
 
         _catalogue_ok(monkeypatch, [])
-        _install_fake_runtime_builder(monkeypatch, FakeGenAIClient())
+        _install_fake_runtime_builder(monkeypatch, FakeLLMClient())
         OpenRouterClaimGate._json_schema_unsupported = True
         OpenRouterClaimGate._consecutive_strict_503s = 3
         OpenRouterClaimGate._json_schema_retry_at = 1e12
@@ -1367,7 +1477,7 @@ class TestOpenRouterModelSlugs:
         from app.llm_openrouter import OpenRouterClaimGate
 
         _catalogue_ok(monkeypatch, [])
-        _install_fake_runtime_builder(monkeypatch, FakeGenAIClient())
+        _install_fake_runtime_builder(monkeypatch, FakeLLMClient())
         OpenRouterClaimGate._json_schema_unsupported = True
         response = configured_client.post(
             "/setup/stages",
@@ -1450,14 +1560,11 @@ class TestStageSlugsOnlyValidateWhatChanged:
     def configured_client(
         self,
         stages_env_file: Path,
-        fake_genai_client: FakeGenAIClient,
+        fake_llm_client: FakeLLMClient,
         fake_transcriber: FakeTranscriber,
     ) -> Iterator[TestClient]:
-        settings = make_test_settings(
-            gemini_api_key="AIza-stages-test-key",
-            openrouter_api_key="sk-or-stages-test-key",
-        )
-        with open_test_client(settings, fake_genai_client, fake_transcriber) as client:
+        settings = make_stages_settings()
+        with open_test_client(settings, fake_llm_client, fake_transcriber) as client:
             yield client
 
     def test_resubmitting_the_stored_slug_skips_the_catalogue(
@@ -1466,13 +1573,13 @@ class TestStageSlugsOnlyValidateWhatChanged:
         """The prefilled, unchanged slug must not cost a network round-trip."""
         calls: list[int] = []
         _catalogue_ok(monkeypatch, calls)
-        _install_fake_runtime_builder(monkeypatch, FakeGenAIClient())
+        _install_fake_runtime_builder(monkeypatch, FakeLLMClient())
         stored = DEFAULT_OPENROUTER_GATE_MODEL
         response = configured_client.post(
             "/setup/stages",
             json={
                 "gate_provider": "openrouter",
-                "verify_provider": "gemini",
+                "verify_provider": "openrouter",
                 "gate_model": stored,
                 "verify_model": DEFAULT_OPENROUTER_VERIFY_MODEL,
             },
@@ -1485,13 +1592,14 @@ class TestStageSlugsOnlyValidateWhatChanged:
     ) -> None:
         """Moving a stage to Ollama must not require openrouter.ai."""
         _catalogue_down(monkeypatch)
-        _install_fake_runtime_builder(monkeypatch, FakeGenAIClient())
+        _probe_ollama_ok(monkeypatch)
+        _install_fake_runtime_builder(monkeypatch, FakeLLMClient())
         stored = DEFAULT_OPENROUTER_GATE_MODEL
         response = configured_client.post(
             "/setup/stages",
             json={
-                "gate_provider": "openrouter",
-                "verify_provider": "gemini",
+                "gate_provider": "ollama",
+                "verify_provider": "openrouter",
                 "gate_model": stored,
                 "verify_model": DEFAULT_OPENROUTER_VERIFY_MODEL,
             },
@@ -1506,7 +1614,7 @@ class TestStageSlugsOnlyValidateWhatChanged:
     ) -> None:
         calls: list[int] = []
         _catalogue_ok(monkeypatch, calls)
-        _install_fake_runtime_builder(monkeypatch, FakeGenAIClient())
+        _install_fake_runtime_builder(monkeypatch, FakeLLMClient())
         stored = DEFAULT_OPENROUTER_GATE_MODEL
         response = configured_client.post(
             "/setup/stages",

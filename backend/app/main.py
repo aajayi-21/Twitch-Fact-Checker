@@ -44,7 +44,7 @@ _CORS_ORIGIN_REGEX = (
 
 
 def _active_openrouter_models(settings: Settings) -> set[str]:
-    """Active generative slugs; Jev does not use chat capabilities."""
+    """The OpenRouter chat slugs actually routed to a pipeline stage."""
     return settings.active_openrouter_chat_models
 
 
@@ -126,7 +126,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         cpu_fallback=settings.stt_cpu_fallback,
     )
     if settings.stt_warm_up:
-        await stt_supervisor.warm_up(settings.stt_hop_s)
+        await stt_supervisor.warm_up(settings.stt_warm_up_budget_s)
     app.state.stt_supervisor = stt_supervisor
 
     configured = app.state.llm_runtime.configured
@@ -250,7 +250,10 @@ def create_app() -> FastAPI:
             # (speech engine unrecoverable; restart). Details under "stt".
             "status": stt.status_word,
             "server_version": SERVER_VERSION,
-            "whisper_model": settings.whisper_model,
+            # Key kept for existing clients; it names the ACTIVE STT model
+            # (a Parakeet repo id under STT_BACKEND=parakeet).
+            "whisper_model": settings.stt_model_name,
+            "stt_segmentation": settings.resolved_stt_segmentation,
             "stt": stt.snapshot(),
             "configured": configured,
             "llm_provider": runtime.settings.llm_provider if configured else None,
@@ -289,16 +292,15 @@ def _openrouter_health(settings: Settings) -> dict[str, Any] | None:
             slug: lookup_model_capabilities(slug).as_dict() for slug in sorted(models)
         },
         "verify_modes": verify_mode_snapshot(),
-        "decision_gate": (
-            {
-                "model": settings.openrouter_gate_model,
-                "extraction_model": settings.openrouter_extraction_model,
-                "min_check_probability": settings.jev_min_check_probability,
-                "api": "decisions",
-            }
-            if settings.uses_jev
-            else None
-        ),
+        # The optional Jev pre-screen (Decisions API, not a chat model).
+        "decision_gate": {
+            "mode": settings.jev_active_mode,
+            "configured_mode": settings.jev_mode,
+            "model": settings.jev_model,
+            "min_check_probability": settings.jev_min_check_probability,
+            "timeout_s": settings.jev_timeout_s,
+            "api": "decisions",
+        },
     }
 
 

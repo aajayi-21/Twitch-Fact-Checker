@@ -42,7 +42,6 @@ const SETUP_SUCCESS_COLLAPSE_MS = 1400;
 const STAGE_APPLY_TIMEOUT_MS = 5000;
 const PROVIDER_LABELS = Object.freeze({
   openrouter: "OpenRouter",
-  gemini: "Gemini",
   ollama: "Ollama",
 });
 const BACKEND_DOWN_COPY =
@@ -70,10 +69,11 @@ const gateProviderSelect = document.getElementById("gate-provider-select");
 const verifyProviderSelect = document.getElementById("verify-provider-select");
 const applyStagesButton = document.getElementById("apply-stages-button");
 const gateModelInput = document.getElementById("gate-model-input");
-const extractionModelInput = document.getElementById("extraction-model-input");
+const gateModelError = document.getElementById("gate-model-error");
+const jevModeSelect = document.getElementById("jev-mode-select");
 const verifyModelInput = document.getElementById("verify-model-input");
 const gateModelRow = document.querySelector('[data-provider-scope="gate"]');
-const extractionModelRow = document.querySelector('[data-provider-scope="extraction"]');
+const jevModeRow = document.querySelector('[data-provider-scope="jev"]');
 const verifyModelRow = document.querySelector('[data-provider-scope="verify"]');
 const stageStatus = document.getElementById("stage-status");
 const backendUrlInput = document.getElementById("backend-url");
@@ -231,7 +231,7 @@ const renderProviderStatusList = (status) => {
     }
     return ["ok", detail];
   };
-  for (const name of ["openrouter", "gemini", "ollama"]) {
+  for (const name of ["openrouter", "ollama"]) {
     const [rowState, detail] = describeRow(name);
     const row = document.createElement("li");
     row.dataset.provider = name;
@@ -259,23 +259,38 @@ const setStageStatus = (text, stateName) => {
  * says "gemma3:4b" whenever that stage is routed to Ollama.
  *
  * @param {object|null} status
- * @param {"gate"|"extraction"|"verify"} stage
+ * @param {"gate"|"verify"} stage
  * @returns {string}
  */
 const storedSlug = (status, stage) =>
   status?.providers?.openrouter?.[`${stage}_model`] ?? "";
 
-const usesJev = () => {
-  const slug = gateModelInput.value.trim() || storedSlug(lastStatus, "gate");
-  return gateProviderSelect.value === "openrouter" &&
-    (slug === "~typesafe/jev-latest" || slug.startsWith("typesafe/jev-"));
-};
+/** The stored Jev pre-screen mode ("off" | "shadow" | "screen"). */
+const storedJevMode = (status) => status?.providers?.openrouter?.jev_mode ?? "off";
 
-/** Model slug inputs only apply to OpenRouter-routed stages. */
+/**
+ * Jev ids (mirrors the backend's JEV_FAMILY_RE). Jev answers decisions, not
+ * chat completions, so it can never be a gate or verify model — it is the
+ * pre-screen selected below.
+ */
+const JEV_SLUG_RE = /^~?typesafe\/jev-/i;
+
+const jevSlugTyped = () =>
+  [gateModelInput, verifyModelInput].some((input) =>
+    JEV_SLUG_RE.test(input.value.trim())
+  );
+
+/** Model slug inputs (and the Jev pre-screen) only apply to OpenRouter. */
 const syncModelRowVisibility = () => {
   gateModelRow.hidden = gateProviderSelect.value !== "openrouter";
-  extractionModelRow.hidden = !usesJev();
+  jevModeRow.hidden = gateProviderSelect.value !== "openrouter";
   verifyModelRow.hidden = verifyProviderSelect.value !== "openrouter";
+  const misplaced = jevSlugTyped();
+  gateModelError.hidden = !misplaced;
+  gateModelError.textContent = misplaced
+    ? "Jev is a pre-screen, not a chat model — enter a chat model slug and " +
+      "pick a Jev pre-screen mode instead."
+    : "";
 };
 
 /** Apply is enabled when any select OR slug differs from the backend. */
@@ -289,9 +304,10 @@ const updateStagesDirty = () => {
     (gateProviderSelect.value !== (lastStatus.gate?.provider ?? "") ||
       verifyProviderSelect.value !== (lastStatus.verify?.provider ?? "") ||
       slugDirty("gate", gateModelInput, gateProviderSelect) ||
-      (usesJev() && slugDirty("extraction", extractionModelInput, gateProviderSelect)) ||
+      (gateProviderSelect.value === "openrouter" &&
+        jevModeSelect.value !== storedJevMode(lastStatus)) ||
       slugDirty("verify", verifyModelInput, verifyProviderSelect));
-  applyStagesButton.disabled = !dirty;
+  applyStagesButton.disabled = !dirty || jevSlugTyped();
 };
 
 const renderStageSection = (status) => {
@@ -302,7 +318,7 @@ const renderStageSection = (status) => {
     verifyProviderSelect.value = status.verify.provider;
   }
   gateModelInput.value = storedSlug(status, "gate");
-  extractionModelInput.value = storedSlug(status, "extraction");
+  jevModeSelect.value = storedJevMode(status);
   verifyModelInput.value = storedSlug(status, "verify");
   syncModelRowVisibility();
   stageSection.hidden = false;
@@ -587,9 +603,10 @@ const handleApplyStages = async () => {
         // backend to keep whatever slug it already has.
         gate_model:
           gateProvider === "openrouter" ? gateModelInput.value.trim() : "",
-        extraction_model: usesJev() ? extractionModelInput.value.trim() : "",
         verify_model:
           verifyProvider === "openrouter" ? verifyModelInput.value.trim() : "",
+        // The Jev pre-screen rides the OpenRouter gate; "" keeps it as is.
+        jev_mode: gateProvider === "openrouter" ? jevModeSelect.value : "",
       }),
       signal: AbortSignal.timeout(STAGE_APPLY_TIMEOUT_MS),
     });
@@ -643,14 +660,14 @@ const wireProviderCard = () => {
       saveKeyButton.disabled = false;
     });
   });
-  for (const select of [gateProviderSelect, verifyProviderSelect]) {
+  for (const select of [gateProviderSelect, verifyProviderSelect, jevModeSelect]) {
     select.addEventListener("change", () => {
       setStageStatus("", "setup");
       syncModelRowVisibility();
       updateStagesDirty();
     });
   }
-  for (const input of [gateModelInput, extractionModelInput, verifyModelInput]) {
+  for (const input of [gateModelInput, verifyModelInput]) {
     input.addEventListener("input", () => {
       setStageStatus("", "setup");
       syncModelRowVisibility();

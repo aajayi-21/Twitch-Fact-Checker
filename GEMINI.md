@@ -1,7 +1,7 @@
 # 🛠️ CLAUDE.md - Twitch Live Fact-Checker
 
 ## 🎯 Project Overview
-This project is a Chrome Extension (Manifest V3) paired with a Python backend. It actively monitors an open Twitch live stream, transcribes the audio, and uses a web-search-grounded LLM (Google Gemini or some other LLM) to automatically detect testable claims. When a claim requires verification, the extension displays a non-intrusive popup over the stream featuring a high-level label (e.g., **TRUE**, **FALSE**, **MISLEADING**, **UNVERIFIED**) and a concise, well-sourced explanation. The popup should be aesthetically pleasing.
+This project is a Chrome Extension (Manifest V3) paired with a Python backend. It actively monitors an open Twitch live stream, transcribes the audio, and uses a web-search-grounded LLM (via OpenRouter) to automatically detect testable claims. When a claim requires verification, the extension displays a non-intrusive popup over the stream featuring a high-level label (e.g., **TRUE**, **FALSE**, **MISLEADING**, **UNVERIFIED**) and a concise, well-sourced explanation. The popup should be aesthetically pleasing.
 
 ## 🏗️ Architecture & Tech Stack
 
@@ -15,7 +15,7 @@ The following architecture is a recommendation that should be used as inspiratio
 
 ### Backend: Python API (`/backend`)
 *   **Core:** Python 3.11+, FastAPI (for high-performance, asynchronous REST/WebSocket endpoints).
-*   **LLM Integration:** OpenRouter is the primary provider (OpenAI SDK against the OpenRouter API, the `web` plugin for search grounding, capability-aware strict JSON via the public model catalogue). Google GenAI SDK (Gemini + Google Search tool) is the optional secondary provider.
+*   **LLM Integration:** OpenRouter is the primary provider (OpenAI SDK against the OpenRouter API, the `web` plugin for search grounding, capability-aware strict JSON via the public model catalogue). The claim gate can optionally run on a local Ollama model.
 *   **Logic Pipeline:** 
     1. Receive transcribed text buffer.
     2. Determine if the buffer contains a factual claim worth checking.
@@ -66,8 +66,8 @@ As an AI assisting with this project, you must strictly adhere to the following 
 
 Use this section as rough inspiration
 
-When writing the code that interacts with Gemini:
-*   **Structured Output:** Force the LLM to return strict JSON using `response_schema` or structured prompt instructions.
+When writing the code that interacts with the LLM:
+*   **Structured Output:** Force the LLM to return strict JSON using a strict `json_schema` response format or structured prompt instructions.
 *   **JSON Schema:**
     ```json
     {

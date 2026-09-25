@@ -35,7 +35,7 @@ import logging
 import re
 import time
 from collections import deque
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, NamedTuple
 
@@ -45,7 +45,7 @@ from pydantic import BaseModel, ValidationError
 from uuid import uuid4
 
 from app.claim_gate import ClaimGate, GateError
-from app.config import SENSITIVITY_THRESHOLDS, Settings
+from app.config import SENSITIVITY_THRESHOLDS, VAD_SPEECH_PAD_MS, Settings
 from app.contradiction import ContradictionDetector
 from app.db import Database, DayCounter
 from app.events import EventHub
@@ -67,7 +67,15 @@ from app.models import (
     resolve_enabled_topics,
 )
 from app.rate_limit import QuotaCooldown, TokenBucket
+from app.segmenter import (
+    SegmentPlan,
+    SpanFn,
+    VadSegmenter,
+    VadSegmenterConfig,
+    make_silero_span_fn,
+)
 from app.sessions import ChannelKey, channel_key
+from app.source_quality import summarize_sources
 from app.stt_supervisor import SttEngineFailed, SttSupervisor, SttWindowFailed
 from app.transcriber import AudioRingBuffer, SessionTextState, Transcriber
 
@@ -161,10 +169,9 @@ class QueuedClaim(NamedTuple):
     """A gated claim plus the clock the claim model deliberately lacks.
 
     Why a wrapper instead of two more fields on :class:`~app.models.GateClaim`:
-    ``GateClaim`` is handed to Gemini as ``response_schema=GateResult``
-    (``llm_gemini.py``), so every field added to it changes what the extraction
-    model is asked to produce. The queue's bookkeeping has no business in a
-    prompt schema.
+    ``GateClaim`` is the gate's output schema, so every field added to it
+    changes what the extraction model is asked to produce. The queue's
+    bookkeeping has no business in a prompt schema.
 
     ``gated_at`` is the only honest measure of a claim's age.
     ``Verdict.checked_at`` is stamped at verdict construction and therefore
@@ -207,6 +214,7 @@ class SessionPipeline:
         contradiction_detector: ContradictionDetector | None = None,
         event_hub: EventHub | None = None,
         stt_supervisor: SttSupervisor | None = None,
+        vad_span_fn: SpanFn | None = None,
     ) -> None:
         self._websocket = websocket
         self._settings = settings
@@ -247,6 +255,10 @@ class SessionPipeline:
         self._verify_calls = 0
         # Funnel tally for the end-of-session log line.
         self._claim_outcomes: dict[str, int] = {}
+        # claim id -> the gate_passes row that produced it, so the claim's
+        # funnel row links back to the batch (Jev calibration). Entries are
+        # dropped once the claim reaches a non-pending outcome.
+        self._gate_pass_ids: dict[str, str] = {}
         self._sensitivity: Sensitivity = hello.sensitivity
         # Seeded from hello, updated by config frames; "other" always enabled.
         self._enabled_topics: frozenset[str] = resolve_enabled_topics(
@@ -261,6 +273,23 @@ class SessionPipeline:
             high_wm_s=settings.audio_high_watermark_s,
             low_wm_s=settings.audio_low_watermark_s,
         )
+        # STT_SEGMENTATION=vad: utterance cuts instead of fixed windows.
+        # ``vad_span_fn`` is a test seam (synthetic audio has no speech for
+        # Silero to find); the real app always uses Silero.
+        self._segmenter: VadSegmenter | None = None
+        if settings.resolved_stt_segmentation == "vad":
+            segmenter_config = VadSegmenterConfig(
+                sample_rate=hello.sample_rate,
+                min_silence_s=settings.stt_vad_min_silence_ms / 1000,
+                speech_pad_s=VAD_SPEECH_PAD_MS / 1000,
+                max_segment_s=settings.stt_vad_max_segment_s,
+            )
+            self._segmenter = VadSegmenter(
+                vad_span_fn or make_silero_span_fn(segmenter_config),
+                segmenter_config,
+            )
+        # Seconds of audio VAD released without an STT call (silence, music).
+        self._vad_skipped_s = 0.0
         self._verify_queue: asyncio.Queue[QueuedClaim] = asyncio.Queue(
             maxsize=VERIFY_QUEUE_MAXSIZE
         )
@@ -288,7 +317,7 @@ class SessionPipeline:
         # Per-session STT dedupe memory: owned here (not on the shared
         # Transcriber) so a preempted session's still-running executor job
         # can never pollute the next session's overlap/suffix filters.
-        self._text_state = SessionTextState()
+        self._text_state = SessionTextState(overlapping=self._segmenter is None)
 
     # ------------------------------------------------------------------ #
     # Public interface
@@ -454,7 +483,12 @@ class SessionPipeline:
             outcomes or "none",
             self._verify_calls,
             self._verify_calls * self._settings.cost_per_verify_usd,
-            f" | stt drops: {drops}" if drops else "",
+            (f" | stt drops: {drops}" if drops else "")
+            + (
+                f" | vad skipped={self._vad_skipped_s:.0f}s"
+                if self._segmenter is not None
+                else ""
+            ),
         )
 
     async def _run_phases(self) -> None:
@@ -559,6 +593,9 @@ class SessionPipeline:
 
     async def _stt_loop(self) -> None:
         """Feed ring-buffer windows through the single-worker STT executor."""
+        if self._segmenter is not None:
+            await self._stt_loop_vad()
+            return
         hop_s = self._settings.stt_hop_s
         window_s = self._settings.stt_window_s
         loop = asyncio.get_running_loop()
@@ -590,13 +627,18 @@ class SessionPipeline:
             try:
                 claims = await self._gate.run()
             except GateError as exc:
-                logger.warning("gate pass failed (batch dropped): %s", exc)
+                logger.warning(
+                    "gate pass failed (batch dropped): %s%s", exc, self._jev_suffix()
+                )
+                await self._record_gate_pass("live")
                 continue
+            await self._record_gate_pass("live", claims)
             logger.info(
-                "gate pass #%d in %.1fs -> %d claim(s)%s",
+                "gate pass #%d in %.1fs -> %d claim(s)%s%s",
                 self._gate.calls_made,
                 time.monotonic() - gate_started,
                 len(claims),
+                self._jev_suffix(),
                 "".join(
                     f"\n    {claim.check_worthiness:.2f} [{claim.topic}] "
                     f"{claim.claim_text!r}"
@@ -1064,6 +1106,9 @@ class SessionPipeline:
 
     async def _flush_stt(self) -> None:
         """Transcribe whatever audio is still buffered (no overlap needed)."""
+        if self._segmenter is not None:
+            await self._flush_stt_vad()
+            return
         loop = asyncio.get_running_loop()
         window_s = self._settings.stt_window_s
         while self._ring.pending_seconds >= FLUSH_MIN_AUDIO_S:
@@ -1072,6 +1117,71 @@ class SessionPipeline:
             await self._transcribe_and_route(
                 loop, audio, window_start_s, self._send_direct
             )
+
+    async def _stt_loop_vad(self) -> None:
+        """Transcribe VAD-cut utterances as they complete (report §1 Tier 2).
+
+        Each pass snapshots ALL pending audio, lets the segmenter decide
+        (off the event loop: Silero is a few ms of CPU), releases what the
+        plan covers, and transcribes the planned clip. After acting it
+        re-plans at once — a backlog can hold several finished utterances —
+        and otherwise waits for at least one poll's worth of new audio
+        before re-analyzing.
+        """
+        assert self._segmenter is not None
+        loop = asyncio.get_running_loop()
+        min_new_samples = int(QUEUE_POLL_S * self._ring.sample_rate)
+        analyzed_up_to = -min_new_samples
+        while not self._stop_requested.is_set():
+            audio, base = self._ring.read_all()
+            buffered_up_to = base + len(audio)
+            if buffered_up_to - analyzed_up_to < min_new_samples:
+                await self._sleep_or_stop(QUEUE_POLL_S)
+                continue
+            plan = await asyncio.to_thread(self._segmenter.plan, audio)
+            analyzed_up_to = buffered_up_to
+            if plan is None:
+                await self._sleep_or_stop(QUEUE_POLL_S)
+                continue
+            await self._run_vad_plan(loop, plan, audio, base, self._emit_queued)
+            analyzed_up_to = -min_new_samples
+
+    async def _flush_stt_vad(self) -> None:
+        """Stop flush in VAD mode: every remaining span counts as complete."""
+        assert self._segmenter is not None
+        loop = asyncio.get_running_loop()
+        while self._ring.pending_seconds >= FLUSH_MIN_AUDIO_S:
+            audio, base = self._ring.read_all()
+            plan = await asyncio.to_thread(self._segmenter.plan, audio, final=True)
+            if plan is None or plan.consume_to <= 0:
+                break
+            await self._run_vad_plan(loop, plan, audio, base, self._send_direct)
+
+    async def _run_vad_plan(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        plan: SegmentPlan,
+        audio: Any,
+        base_sample: int,
+        emit: FrameEmitter,
+    ) -> None:
+        """Release the planned audio, then transcribe the planned clip.
+
+        Released BEFORE inference (as window mode consumes its hop first),
+        so the ring only accumulates audio that arrives during inference.
+        Positions are absolute samples, so the clip's stream time is exact
+        and an overflow drop in the meantime cannot shift it.
+        """
+        self._ring.consume_until(base_sample + plan.consume_to)
+        sample_rate = self._ring.sample_rate
+        spoken = 0 if plan.speech is None else plan.speech[1] - plan.speech[0]
+        self._vad_skipped_s += max(0, plan.consume_to - spoken) / sample_rate
+        if plan.speech is None:
+            return
+        start, end = plan.speech
+        await self._transcribe_and_route(
+            loop, audio[start:end], (base_sample + start) / sample_rate, emit
+        )
 
     def _drain_verify_queue(self) -> list[QueuedClaim]:
         claims: list[QueuedClaim] = []
@@ -1086,14 +1196,51 @@ class SessionPipeline:
         try:
             claims = await self._gate.run()
         except GateError as exc:
-            logger.warning("final gate pass failed (batch dropped): %s", exc)
+            logger.warning(
+                "final gate pass failed (batch dropped): %s%s", exc, self._jev_suffix()
+            )
+            await self._record_gate_pass("flush")
             return []
-        logger.info("final gate pass -> %d claim(s)", len(claims))
+        await self._record_gate_pass("flush", claims)
+        logger.info("final gate pass -> %d claim(s)%s", len(claims), self._jev_suffix())
         return await self._filter_claims(claims, self._send_direct)
 
     # ------------------------------------------------------------------ #
     # Analytics recording (no-ops when the pipeline has no Database)
     # ------------------------------------------------------------------ #
+
+    def _jev_suffix(self) -> str:
+        """`` [jev skip p=0.12<0.35]``-style note for the last gate pass."""
+        gate_pass = self._gate.last_pass
+        screen = gate_pass.screen if gate_pass is not None else None
+        if screen is None:
+            return ""
+        if screen.probability is None:
+            return f" [jev {screen.route}: {screen.error}]"
+        comparison = ">=" if screen.probability >= screen.threshold else "<"
+        return (
+            f" [jev {screen.route} p={screen.probability:.2f}"
+            f"{comparison}{screen.threshold:.2f}]"
+        )
+
+    async def _record_gate_pass(
+        self, phase: str, claims: Sequence[GateClaim] = ()
+    ) -> None:
+        """Persist the gate's ``last_pass`` and remember its claims' link."""
+        gate_pass = self._gate.last_pass
+        if gate_pass is None:
+            return
+        for claim in claims:
+            self._gate_pass_ids[claim.id] = gate_pass.id
+        if self._db is None:
+            return
+        await self._db.record_gate_pass(
+            gate_pass=gate_pass,
+            session_id=self._session_id,
+            phase=phase,
+            gate_provider=self._settings.resolved_gate_provider,
+            gate_model=self._settings.active_gate_model,
+        )
 
     async def _record_claim(
         self, claim: GateClaim, outcome: str, *, stream_time_s: float | None = None
@@ -1106,6 +1253,9 @@ class SessionPipeline:
         """
         if outcome != "pending":
             self._claim_outcomes[outcome] = self._claim_outcomes.get(outcome, 0) + 1
+            gate_pass_id = self._gate_pass_ids.pop(claim.id, None)
+        else:
+            gate_pass_id = self._gate_pass_ids.get(claim.id)
         if self._db is None:
             return
         await self._db.record_claim(
@@ -1124,11 +1274,27 @@ class SessionPipeline:
             stream_time_s=(
                 self._last_emitted_end if stream_time_s is None else stream_time_s
             ),
+            gate_pass_id=gate_pass_id,
         )
 
     async def _record_verdict(
         self, claim: GateClaim, verdict: Verdict, verify_started_at: float
     ) -> None:
+        if verdict.label != "UNVERIFIED":
+            # Source-tier MEASUREMENT (report §6.5): logged and reported on
+            # the dashboard, never used to change the verdict here.
+            summary = summarize_sources(verdict.sources) if verdict.sources else None
+            logger.info(
+                "verdict %s best source tier %s%s: %s",
+                verdict.label,
+                summary.best_tier if summary else "-",
+                (
+                    ""
+                    if summary is None or summary.best_tier in ("A", "B")
+                    else " (an A/B source rule would downgrade this)"
+                ),
+                ", ".join(summary.domains) if summary else "no sources",
+            )
         if self._db is None:
             return
         await self._db.record_verdict(

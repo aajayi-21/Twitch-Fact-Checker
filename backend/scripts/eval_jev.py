@@ -1,10 +1,13 @@
-"""Explicit, paid Decisions API smoke/evaluation on synthetic transcript cases.
+"""Explicit, paid Decisions API smoke test on synthetic transcript cases.
 
     uv run python scripts/eval_jev.py --yes-spend-credits
+    uv run python scripts/eval_jev.py --yes-spend-credits --model typesafe/jev-1.13
 
 No web searches, extraction calls, or saved user transcripts are sent. Prints
-one JSON row per case and aggregate routing accuracy. This small example set
-is a regression aid, not a calibration benchmark.
+one JSON row per case and aggregate routing accuracy against
+JEV_MIN_CHECK_PROBABILITY. This small example set is a wire/regression smoke
+test, not a calibration benchmark — calibrate on real streams with
+JEV_MODE=shadow and scripts/report_jev_calibration.py.
 """
 
 import argparse
@@ -18,12 +21,11 @@ from typing import Any
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACKEND_DIR))
 
-from app.config import Settings  # noqa: E402
+from app.config import JEV_PINNED_RE, Settings  # noqa: E402
 from app.llm_jev import (  # noqa: E402
     JEV_DECISIONS_URL,
-    JEV_QUESTIONS,
     JevResponse,
-    build_jev_state,
+    build_jev_body,
 )
 from app.llm_openrouter import create_openrouter_client  # noqa: E402
 
@@ -31,8 +33,9 @@ from app.llm_openrouter import create_openrouter_client  # noqa: E402
 async def run(args: argparse.Namespace) -> int:
     settings = Settings()
     settings.require_openrouter_api_key()
-    if not settings.uses_jev:
-        print("Configure an OpenRouter Jev gate before evaluation.", file=sys.stderr)
+    model = args.model or settings.jev_model
+    if not JEV_PINNED_RE.match(model):
+        print(f"not a pinned Jev release: {model!r}", file=sys.stderr)
         return 2
     cases = json.loads(args.cases.read_text())
     correct = errors = 0
@@ -41,15 +44,11 @@ async def run(args: argparse.Namespace) -> int:
         for case in cases:
             started = time.monotonic()
             try:
-                async with asyncio.timeout(settings.gate_timeout_s):
+                async with asyncio.timeout(settings.jev_timeout_s):
                     raw = await client.post(
                         JEV_DECISIONS_URL,
                         cast_to=dict[str, Any],
-                        body={
-                            "model": settings.openrouter_gate_model,
-                            "state": build_jev_state(case["context"], case["text"]),
-                            "questions": JEV_QUESTIONS,
-                        },
+                        body=build_jev_body(model, case["context"], case["text"]),
                     )
                 response = JevResponse.model_validate(raw)
                 probability = response.answers.needs_fact_check.noul
@@ -89,6 +88,9 @@ async def run(args: argparse.Namespace) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--yes-spend-credits", action="store_true")
+    parser.add_argument(
+        "--model", default=None, help="pinned Jev release (default: JEV_MODEL)"
+    )
     parser.add_argument(
         "--cases", type=Path, default=BACKEND_DIR / "tests/fixtures/jev_cases.json"
     )

@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from app.db import SCHEMA_SQL
 from app.models import utc_now_iso
 from tests.conftest import (
-    FakeGenAIClient,
+    FakeLLMClient,
     FakeTranscriber,
     make_test_settings,
     open_test_client,
@@ -79,6 +79,15 @@ def seed(db_path: str) -> None:
                 " explanation, checked_at) VALUES (?, ?, 's-a', ?, 'because', ?)",
                 (verdict_id, claim_id, label, now),
             )
+        # v-2 (TRUE) cites a B-tier wire (stored with www., as record_verdict
+        # does) plus an unrecognized domain; v-1 (FALSE) cites nothing.
+        conn.executemany(
+            "INSERT INTO sources (verdict_id, rank, url, domain) VALUES (?, ?, ?, ?)",
+            [
+                ("v-2", 0, "https://www.reuters.com/a", "www.reuters.com"),
+                ("v-2", 1, "https://blog.example/b", "blog.example"),
+            ],
+        )
         conn.execute(
             "INSERT INTO feedback (verdict_id, rating, created_at)"
             " VALUES ('v-1', 'down', ?)",
@@ -89,11 +98,11 @@ def seed(db_path: str) -> None:
 
 @pytest.fixture()
 def seeded_client(
-    tmp_path, fake_genai_client: FakeGenAIClient, fake_transcriber: FakeTranscriber
+    tmp_path, fake_llm_client: FakeLLMClient, fake_transcriber: FakeTranscriber
 ) -> Iterator[TestClient]:
     settings = make_test_settings(db_path=str(tmp_path / "stats.db"))
     seed(settings.db_path)
-    with open_test_client(settings, fake_genai_client, fake_transcriber) as client:
+    with open_test_client(settings, fake_llm_client, fake_transcriber) as client:
         yield client
 
 
@@ -194,3 +203,18 @@ class TestVerifyModes:
             assert set(row) == {"model", "n", "fallback_n", "fallback_rate"}
             assert 0.0 <= row["fallback_rate"] <= 1.0
             assert row["fallback_n"] <= row["n"]
+
+
+class TestSourceTiers:
+    def test_summary_measures_best_tier_of_labelled_verdicts(
+        self, seeded_client: TestClient
+    ) -> None:
+        tiers = seeded_client.get("/stats/summary").json()["source_tiers"]
+        # UNVERIFIED (v-3) asserts nothing and is excluded.
+        assert tiers["labelled"] == 2
+        assert tiers["best_tier"] == {"A": 0, "B": 1, "C": 0, "D": 0}
+        assert tiers["no_sources"] == 1
+        assert tiers["would_downgrade"] == 1
+        assert tiers["would_downgrade_rate"] == 0.5
+        assert tiers["by_label"]["TRUE"]["B"] == 1
+        assert tiers["by_label"]["FALSE"]["none"] == 1

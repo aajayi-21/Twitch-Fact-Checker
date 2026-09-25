@@ -40,12 +40,12 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
 from app.models import TOPICS, Verdict
+from app.source_quality import Tier, summarize_sources
 
 from streamer.chat.format import (
     claim_is_postable,
     explanation_is_postable,
 )
-from streamer.chat.source_quality import Tier, summarize_sources
 
 # Labels that may EVER be posted. UNVERIFIED is not in this set and no
 # configuration can add it: a public shrug is noise, and a public shrug about

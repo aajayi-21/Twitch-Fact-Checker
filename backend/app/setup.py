@@ -16,12 +16,12 @@ Key-material hygiene (the whole point of this module):
 - The key is NEVER logged, echoed, or returned. Responses carry at most a
   last-4 ``key_hint`` (``"…abcd"``).
 - Validation probes cost $0: OpenRouter ``GET /api/v1/key`` (plus the free
-  ``GET /api/v1/credits`` for the ``credits`` field); Gemini a models-list
-  call via google-genai with the candidate key.
+  ``GET /api/v1/credits`` for the ``credits`` field); Ollama a keyless
+  reachability check.
 - Nothing is persisted unless the provider accepted the key.
 - The ``.env`` upsert touches ONLY ``LLM_PROVIDER`` and the submitted
-  provider's key line; every other line (comments, ordering, the other
-  provider's key) is preserved byte-for-byte, and the write is atomic
+  provider's key line; every other line (comments, ordering, unrelated
+  keys) is preserved byte-for-byte, and the write is atomic
   (temp file + ``os.replace``).
 """
 
@@ -35,9 +35,14 @@ from typing import Any, Literal
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
-from app.config import JEV_MODELS, Settings, is_jev_model, resolve_env_file
+from app.config import (
+    Settings,
+    is_jev_model,
+    jev_misplaced_message,
+    resolve_env_file,
+)
 from app.llm_openrouter import reset_openrouter_capability_latches
 from app.llm_provider import LLMRuntime, build_llm_runtime, close_llm_runtime
 from app.openrouter_catalogue import (  # noqa: F401 — re-exported for callers/tests
@@ -61,28 +66,28 @@ OPENROUTER_CREDITS_URL = "https://openrouter.ai/api/v1/credits"
 #: SetupStagesRequest field -> the .env key that persists it.
 _MODEL_ENV_KEYS = {
     "gate_model": "OPENROUTER_GATE_MODEL",
-    "extraction_model": "OPENROUTER_EXTRACTION_MODEL",
     "verify_model": "OPENROUTER_VERIFY_MODEL",
 }
 
-Provider = Literal["openrouter", "gemini", "ollama"]
+#: Accepted values for SetupStagesRequest.jev_mode (mirrors Settings.jev_mode).
+JEV_MODES = ("off", "shadow", "screen")
+
+Provider = Literal["openrouter", "ollama"]
 
 # Stage routing: which providers each pipeline stage accepts. Ollama is
 # GATE-ONLY — local verify has no web-search grounding, so every verdict
 # would be downgraded to UNVERIFIED.
-GATE_PROVIDERS: tuple[str, ...] = ("openrouter", "gemini", "ollama")
-VERIFY_PROVIDERS: tuple[str, ...] = ("openrouter", "gemini")
+GATE_PROVIDERS: tuple[str, ...] = ("openrouter", "ollama")
+VERIFY_PROVIDERS: tuple[str, ...] = ("openrouter",)
 
 # Keyed providers only — Ollama has no key and no settings field to persist.
 _PROVIDER_ENV_KEYS: dict[str, str] = {
     "openrouter": "OPENROUTER_API_KEY",
-    "gemini": "GEMINI_API_KEY",
 }
 _PROVIDER_SETTINGS_FIELDS: dict[str, str] = {
     "openrouter": "openrouter_api_key",
-    "gemini": "gemini_api_key",
 }
-_KNOWN_PROVIDERS: frozenset[str] = frozenset({"openrouter", "gemini", "ollama"})
+_KNOWN_PROVIDERS: frozenset[str] = frozenset({"openrouter", "ollama"})
 
 
 class ProviderKeyRejected(Exception):
@@ -108,24 +113,25 @@ class OpenRouterStatus(BaseModel):
     """``key_hint`` is the ONLY key material that ever leaves the backend:
     an ellipsis plus the last four characters. ``credits`` is best-effort.
 
-    The three model fields are the stored OpenRouter slugs, reported
+    ``gate_model``/``verify_model`` are the stored OpenRouter slugs, reported
     even when OpenRouter is not the active provider for that stage.
     ``StageStatus.model`` shows only the ACTIVE provider's model, so without
     these the options page could never prefill (or dirty-check) a slug for a
-    stage currently routed to Ollama or Gemini.
+    stage currently routed to Ollama.
+
+    ``jev_mode`` is the stored Jev pre-screen mode (settable via
+    POST /setup/stages); ``jev_model`` and ``jev_min_check_probability`` are
+    reported read-only (``.env``-only settings).
     """
 
     configured: bool
     key_hint: str | None
     credits: CreditsInfo | None
     gate_model: str
-    extraction_model: str
     verify_model: str
-
-
-class GeminiStatus(BaseModel):
-    configured: bool
-    key_hint: str | None
+    jev_mode: str
+    jev_model: str
+    jev_min_check_probability: float
 
 
 class OllamaStatus(BaseModel):
@@ -139,7 +145,6 @@ class OllamaStatus(BaseModel):
 
 class ProvidersStatus(BaseModel):
     openrouter: OpenRouterStatus
-    gemini: GeminiStatus
     ollama: OllamaStatus
 
 
@@ -168,18 +173,18 @@ class SetupCredentialsRequest(BaseModel):
 class SetupStagesRequest(BaseModel):
     """Body for POST /setup/stages — per-stage provider routing and models.
 
-    ``gate_model``, ``extraction_model``, and ``verify_model`` are OpenRouter
-    slugs. The extraction model rewrites Jev-approved batches and judges
-    contradictions. Empty means "leave the stored slug alone",
-    which keeps this endpoint backward-compatible with clients that send only
-    the two provider fields.
+    ``gate_model``/``verify_model`` are OpenRouter chat slugs (e.g.
+    ``"openai/gpt-oss-120b"``); ``jev_mode`` is the Jev pre-screen mode
+    (off/shadow/screen). Empty means "leave the stored value alone", which
+    keeps this endpoint backward-compatible with clients that send only the
+    two provider fields.
     """
 
     gate_provider: str = ""
     verify_provider: str = ""
     gate_model: str = ""
-    extraction_model: str = ""
     verify_model: str = ""
+    jev_mode: str = ""
 
 
 # --------------------------------------------------------------------------- #
@@ -246,43 +251,6 @@ async def fetch_openrouter_credits(api_key: str) -> CreditsInfo | None:
     except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
         logger.warning("could not fetch OpenRouter credits: %s", exc)
         return None
-
-
-async def validate_gemini_key(api_key: str) -> None:
-    """Probe the Gemini API with a models-list call (free, $0).
-
-    Raises:
-        ProviderKeyRejected: when Gemini answers with a 4xx (invalid key,
-            permission denied) other than 429.
-        ProviderUnreachable: on timeout, 429, 5xx, or network failure.
-    """
-    from google import genai
-    from google.genai import errors as genai_errors
-
-    client = genai.Client(api_key=api_key)
-    try:
-        await asyncio.wait_for(
-            client.aio.models.list(config={"page_size": 1}),
-            timeout=PROBE_TIMEOUT_S,
-        )
-    except genai_errors.APIError as exc:
-        message = exc.message or f"Gemini API error (HTTP {exc.code})"
-        if 400 <= exc.code < 500 and exc.code != 429:
-            raise ProviderKeyRejected(message) from exc
-        raise ProviderUnreachable(
-            f"Gemini API error (HTTP {exc.code}): {message}"
-        ) from exc
-    except TimeoutError as exc:
-        raise ProviderUnreachable(
-            f"Gemini models-list probe timed out after {PROBE_TIMEOUT_S:.0f}s"
-        ) from exc
-    except Exception as exc:
-        raise ProviderUnreachable(f"could not reach Gemini: {exc}") from exc
-    finally:
-        try:
-            await client.aio.aclose()
-        except Exception as exc:
-            logger.debug("error closing Gemini probe client: %s", exc)
 
 
 class ModelSlugRejected(Exception):
@@ -493,12 +461,10 @@ async def _build_status(settings: Settings) -> SetupStatusResponse:
                 key_hint=_key_hint(settings, "openrouter"),
                 credits=credits,
                 gate_model=settings.openrouter_gate_model,
-                extraction_model=settings.openrouter_extraction_model,
                 verify_model=settings.openrouter_verify_model,
-            ),
-            gemini=GeminiStatus(
-                configured=settings.provider_configured("gemini"),
-                key_hint=_key_hint(settings, "gemini"),
+                jev_mode=settings.jev_mode,
+                jev_model=settings.jev_model,
+                jev_min_check_probability=settings.jev_min_check_probability,
             ),
             ollama=OllamaStatus(
                 configured=True,
@@ -588,7 +554,7 @@ async def submit_credentials(
     if provider not in _KNOWN_PROVIDERS:
         raise HTTPException(
             status_code=400,
-            detail="provider must be one of: openrouter, gemini, ollama",
+            detail="provider must be one of: openrouter, ollama",
         )
 
     runtime: LLMRuntime = request.app.state.llm_runtime
@@ -607,10 +573,7 @@ async def submit_credentials(
         raise HTTPException(status_code=400, detail="api_key must be non-empty")
 
     try:
-        if provider == "openrouter":
-            await validate_openrouter_key(api_key)
-        else:
-            await validate_gemini_key(api_key)
+        await validate_openrouter_key(api_key)
     except ProviderKeyRejected as exc:
         logger.warning("%s rejected the submitted API key: %s", provider, exc)
         raise HTTPException(status_code=401, detail=str(exc)) from exc
@@ -639,11 +602,8 @@ async def submit_credentials(
             _PROVIDER_SETTINGS_FIELDS[provider]: api_key,
         }
     )
-    if provider == "openrouter":
-        # Best-effort: an unreachable catalogue only costs a warning.
-        await prime_openrouter_capabilities(
-            new_settings.active_openrouter_chat_models
-        )
+    # Best-effort: an unreachable catalogue only costs a warning.
+    await prime_openrouter_capabilities(new_settings.active_openrouter_chat_models)
     await _swap_runtime(request, new_settings)
     return await _build_status(new_settings)
 
@@ -654,12 +614,14 @@ async def submit_stages(
 ) -> SetupStatusResponse:
     """Route each pipeline stage to a provider and model; persist + hot-swap.
 
-    Generative model slugs are validated against the live catalogue; supported
-    Jev IDs are gate-only and use the Decisions API. Empty model fields leave
-    stored slugs untouched.
+    ``gate_model``/``verify_model`` are OpenRouter chat slugs, validated
+    against the live catalogue; ``jev_mode`` sets the Jev pre-screen. Empty
+    fields leave stored values untouched.
 
     Responses: 400 unknown provider (or ollama for verify — local verify is
-    not supported) or an unknown model slug, 409 when a chosen provider is
+    not supported), an unknown model slug, a Jev id in a model slot, an
+    unknown Jev mode, or settings that fail validation (nothing is written
+    in any of these cases), 409 when a chosen provider is
     not configured (missing key, or Ollama unreachable), 502 when
     OpenRouter's catalogue is unreachable, 500 with a descriptive detail on
     persistence/rebuild failure. On success the runtime swap is atomic and
@@ -670,7 +632,7 @@ async def submit_stages(
     if gate_provider not in GATE_PROVIDERS:
         raise HTTPException(
             status_code=400,
-            detail="gate_provider must be one of: openrouter, gemini, ollama",
+            detail="gate_provider must be one of: openrouter, ollama",
         )
     if verify_provider not in VERIFY_PROVIDERS:
         if verify_provider == "ollama":
@@ -678,16 +640,22 @@ async def submit_stages(
                 status_code=400,
                 detail=(
                     "local verify is not supported; verify_provider must be "
-                    "openrouter or gemini"
+                    "openrouter"
                 ),
             )
         raise HTTPException(
             status_code=400,
-            detail="verify_provider must be one of: openrouter, gemini",
+            detail="verify_provider must be openrouter",
         )
 
     runtime: LLMRuntime = request.app.state.llm_runtime
     current = runtime.settings
+    jev_mode = body.jev_mode.strip().lower() or current.jev_mode
+    if jev_mode not in JEV_MODES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"jev_mode must be one of: {', '.join(JEV_MODES)}",
+        )
     for stage, provider in (("gate", gate_provider), ("verify", verify_provider)):
         if provider == "ollama":
             try:
@@ -714,51 +682,67 @@ async def submit_stages(
     # together so a two-model change still costs one catalogue fetch.
     stored_models = {
         "gate_model": current.openrouter_gate_model,
-        "extraction_model": current.openrouter_extraction_model,
         "verify_model": current.openrouter_verify_model,
     }
     requested_models = {
         field: getattr(body, field).strip() or stored
         for field, stored in stored_models.items()
     }
+    # Jev answers decisions, not chat completions, and is absent from the
+    # chat catalogue: reject it in a model slot before spending a fetch.
+    for field, slug in requested_models.items():
+        if is_jev_model(slug):
+            raise HTTPException(
+                status_code=400,
+                detail=jev_misplaced_message(_MODEL_ENV_KEYS[field], slug),
+            )
     changed_models = {
         field: slug
         for field, slug in requested_models.items()
         if slug != stored_models[field]
     }
-    # Decisions models are absent from the chat catalogue. Allow documented
-    # Jev IDs only in the gate slot; never route them to chat completions.
-    for field, slug in requested_models.items():
-        if is_jev_model(slug) and (field != "gate_model" or slug not in JEV_MODELS):
-            raise HTTPException(
-                status_code=400,
-                detail=f"{field}: use a supported Jev ID for gate decisions only",
-            )
-    changed_chat_models = {
-        field: slug for field, slug in changed_models.items() if not is_jev_model(slug)
-    }
     catalogue: OpenRouterCatalogue | None = None
-    if changed_chat_models:
+    if changed_models:
         try:
             catalogue = await fetch_openrouter_catalogue()
         except ProviderUnreachable as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
-        for field, slug in changed_chat_models.items():
+        for field, slug in changed_models.items():
             try:
                 await validate_openrouter_model(slug, catalogue.slugs)
             except ModelSlugRejected as exc:
                 raise HTTPException(status_code=400, detail=f"{field}: {exc}") from exc
+
+    # Build (and so validate) the new Settings BEFORE writing .env: a value
+    # that fails validation must be a 400 with the file untouched, never a
+    # .env that stops the backend from booting. Explicit kwargs beat any
+    # stale GATE_PROVIDER/VERIFY_PROVIDER in the process environment
+    # (mirrors the credentials rebuild); everything else comes from the
+    # current .env, exactly as a rebuild after the write would read it.
+    try:
+        new_settings = Settings(
+            gate_provider=gate_provider,
+            verify_provider=verify_provider,
+            openrouter_gate_model=requested_models["gate_model"],
+            openrouter_verify_model=requested_models["verify_model"],
+            jev_mode=jev_mode,
+        )
+    except ValidationError as exc:
+        messages = "; ".join(error["msg"] for error in exc.errors())
+        raise HTTPException(status_code=400, detail=messages) from exc
 
     env_path = resolve_env_file()
     env_updates = {
         "GATE_PROVIDER": gate_provider,
         "VERIFY_PROVIDER": verify_provider,
     }
-    # Persist only a slug the caller actually changed. Writing both on every
+    # Persist only a value the caller actually changed. Writing both on every
     # stage POST would bake the code defaults into .env for users who never
     # touch OpenRouter, freezing them against future default changes.
     for field, slug in changed_models.items():
         env_updates[_MODEL_ENV_KEYS[field]] = slug
+    if jev_mode != current.jev_mode:
+        env_updates["JEV_MODE"] = jev_mode
     try:
         upsert_env_values(env_path, env_updates)
     except (OSError, ValueError) as exc:
@@ -767,15 +751,6 @@ async def submit_stages(
             detail=f"could not persist stage routing to {env_path}: {exc}",
         ) from exc
 
-    # Explicit kwargs beat any stale GATE_PROVIDER/VERIFY_PROVIDER in the
-    # process environment (mirrors the credentials rebuild).
-    new_settings = Settings(
-        gate_provider=gate_provider,
-        verify_provider=verify_provider,
-        openrouter_gate_model=requested_models["gate_model"],
-        openrouter_extraction_model=requested_models["extraction_model"],
-        openrouter_verify_model=requested_models["verify_model"],
-    )
     if changed_models:
         # The latches are process-wide and outlive this rebuild, so a new
         # model would otherwise inherit the previous one's learned

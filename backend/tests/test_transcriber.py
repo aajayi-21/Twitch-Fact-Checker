@@ -457,3 +457,70 @@ class TestEngineHooks:
         monkeypatch.setattr(transcriber, "load", broken_load)
         with pytest.raises(RuntimeError, match="no such model"):
             transcriber.fall_back_to_cpu()
+
+
+class TestRingBufferSampleExact:
+    """read_all / consume_until: the VAD segmentation pair."""
+
+    def test_read_all_returns_a_copy_and_the_absolute_start(self) -> None:
+        ring = AudioRingBuffer()
+        ring.append(pcm_ramp(1.0))
+        ring.consume(0.25)
+        audio, start = ring.read_all()
+        assert start == 4000
+        assert len(audio) == 12000
+        audio[:] = 0.0  # a copy: the ring is unchanged
+        assert ring.read_all()[0][0] != 0.0
+
+    def test_consume_until_is_exact_and_clamped(self) -> None:
+        ring = AudioRingBuffer()
+        ring.append(pcm_ramp(1.0))
+        assert ring.consume_until(1234) == 1234
+        assert ring.read_all()[1] == 1234
+        assert ring.consume_until(1000) == 0  # already behind: no-op
+        assert ring.consume_until(10**9) == 16000 - 1234  # clamped
+        assert ring.pending_seconds == 0.0
+
+    def test_positions_survive_an_overflow_drop(self) -> None:
+        ring = AudioRingBuffer(max_seconds=3.0, high_wm_s=2.0, low_wm_s=1.0)
+        ring.append(pcm_ramp(1.5))
+        _, planned_base = ring.read_all()
+        ring.append(pcm_ramp(1.0))  # 2.5 s > high watermark: drops to 1.0 s
+        _, base_now = ring.read_all()
+        assert base_now == 24000
+        # A plan made before the drop can only release what is still there.
+        assert ring.consume_until(planned_base + 16000) == 0
+        assert ring.consume_until(base_now + 8000) == 8000
+
+
+class TestNonOverlappingSessions:
+    """VAD utterances never overlap: overlap trim and suffix dedupe are off."""
+
+    def test_overlap_trim_is_skipped(self) -> None:
+        transcriber, fake_model = make_transcriber()
+        fake_model.script = [[raw_segment("old words", start=0.0, end=0.6)]]
+        state = SessionTextState(overlapping=False)
+        segments = transcriber.transcribe_window(AUDIO, 3.0, 3.5, state)
+        assert [s.text for s in segments] == ["old words"]
+
+    def test_repeated_phrase_is_kept(self) -> None:
+        transcriber, fake_model = make_transcriber()
+        fake_model.script = [
+            [raw_segment("the quick brown fox jumps over the lazy dog", end=3.0)],
+            [raw_segment("over the lazy dog", start=0.5, end=1.5)],
+        ]
+        state = SessionTextState(overlapping=False)
+        transcriber.transcribe_window(AUDIO, 0.0, 0.0, state)
+        second = transcriber.transcribe_window(AUDIO, 3.5, 3.0, state)
+        assert [s.text for s in second] == ["over the lazy dog"]
+
+    def test_content_filters_still_apply(self) -> None:
+        transcriber, fake_model = make_transcriber()
+        fake_model.script = [
+            [raw_segment("thanks for watching")],
+            [raw_segment("garbled nonsense", avg_logprob=-1.5)],
+        ]
+        state = SessionTextState(overlapping=False)
+        assert transcriber.transcribe_window(AUDIO, 0.0, 0.0, state) == []
+        assert transcriber.transcribe_window(AUDIO, 1.0, 0.0, state) == []
+        assert state.drop_counts == {"blacklist": 1, "low_confidence": 1}

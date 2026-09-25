@@ -1,31 +1,26 @@
-"""Shared fixtures: offline fakes for both LLM providers plus Whisper.
+"""Shared fixtures: offline fakes for the LLM provider plus the speech engine.
 
-The suite runs FULLY OFFLINE: no API keys, no Whisper model download, no
-network. Tests exercise the real FastAPI app (routes, CORS, pipeline,
-WebSocket endpoint) but its lifespan is replaced with one that installs fakes
-on ``app.state``:
+The suite runs FULLY OFFLINE: no API keys, no model download, no network.
+Tests exercise the real FastAPI app (routes, CORS, pipeline, WebSocket
+endpoint) but its lifespan is replaced with one that installs fakes on
+``app.state``:
 
-- :class:`FakeGenAIClient` covers both google-genai API families the Gemini
-  transport uses — ``client.aio.models.generate_content`` (claim gate +
-  ungrounded extraction) and ``client.aio.interactions.create`` (grounded
-  verify). Responses are scripted per test; an unscripted call fails loudly.
 - :class:`FakeOpenRouterClient` mimics the ``AsyncOpenAI`` surface the
   OpenRouter transport uses (``chat.completions.create`` behind
-  ``with_options``), with the same scriptable-queue contract.
+  ``with_options``) with one scriptable queue — the unit tests in
+  ``tests/test_llm_openrouter.py`` drive it call by call.
+- :class:`FakeLLMClient` is the same surface for whole-app tests, where the
+  gate and verify loops run concurrently: it routes each call to a GATE or a
+  VERIFY queue by the request's ``model`` (the test settings give the two
+  stages different slugs), so a test scripts each stage independently.
 - :class:`FakeTranscriber` returns scripted :class:`TranscriptSegment` lists
-  so the audio pipeline runs without ctranslate2 ever seeing real audio.
+  so the audio pipeline runs without a real speech model.
 
-Responses are built as REAL SDK objects — ``google.genai.interactions.
-Interaction`` and ``openai.types.chat.ChatCompletion`` (``model_validate``
-over a dict) — so citation extraction is tested against the exact object
-shapes each SDK produces. OpenRouter error paths use REAL ``openai``
-exception instances (:func:`make_openrouter_rate_limit_error` and friends)
-so the transport's ``except`` clauses are exercised for real.
-
-The app-level fixtures (``client`` / ``open_test_client``) run the GEMINI
-provider (``llm_provider="gemini"`` in :func:`make_test_settings`) around
-:class:`FakeGenAIClient`; the OpenRouter transport is covered by the unit
-tests in ``tests/test_llm_openrouter.py``.
+Responses are REAL ``openai.types.chat.ChatCompletion`` objects
+(``model_validate`` over a dict) and errors are REAL ``openai`` exception
+instances (:func:`make_openrouter_status_error` and friends), so citation
+extraction and the transport's ``except`` clauses are exercised against the
+exact shapes the SDK produces.
 """
 
 import sys
@@ -51,14 +46,12 @@ import openai
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from google.genai.interactions import Interaction
 from openai.types.chat import ChatCompletion
 
 from app.config import Settings
 from app.db import Database, DayCounter
 from app.events import EventHub
-from app.llm_gemini import GeminiClaimGate, GeminiFactChecker
-from app.llm_provider import LLMRuntime
+from app.llm_provider import LLMRuntime, create_claim_gate, create_fact_checker
 from app.main import create_app
 from app.models import GateClaim, GateResult, TranscriptSegment
 from app.rate_limit import QuotaCooldown, TokenBucket
@@ -117,190 +110,6 @@ async def _resolve_scripted(queue: deque[Any], name: str, call: dict[str, Any]) 
 
 
 # --------------------------------------------------------------------------- #
-# Fake google-genai client
-# --------------------------------------------------------------------------- #
-
-
-class FakeInteractionsError(Exception):
-    """Mimics the Interactions compat error family (carries ``status_code``)."""
-
-    def __init__(
-        self,
-        status_code: int,
-        message: str = "fake interactions error",
-        response: Any = None,
-        body: Any = None,
-    ) -> None:
-        super().__init__(message)
-        self.status_code = status_code
-        self.response = response
-        self.body = body
-
-
-class FakeClassicAPIError(Exception):
-    """Mimics ``google.genai.errors.APIError`` (carries ``code``)."""
-
-    def __init__(self, code: int, message: str = "fake classic api error") -> None:
-        super().__init__(message)
-        self.code = code
-
-
-class _FakeAsyncModels:
-    """Async facade over the scripted ``generate_content`` queue."""
-
-    def __init__(self, client: "FakeGenAIClient") -> None:
-        self._client = client
-
-    async def generate_content(
-        self, *, model: str, contents: str, config: Any = None
-    ) -> Any:
-        call = {"model": model, "contents": contents, "config": config}
-        self._client.generate_calls.append(call)
-        return await self._client._resolve(
-            self._client.generate_results, "generate_content", call
-        )
-
-
-class _FakeAsyncInteractions:
-    """Async facade over the scripted ``interactions.create`` queue."""
-
-    def __init__(self, client: "FakeGenAIClient") -> None:
-        self._client = client
-
-    async def create(
-        self,
-        *,
-        model: str,
-        input: str,
-        tools: Any = None,
-        response_format: Any = None,
-        generation_config: Any = None,
-    ) -> Any:
-        call = {
-            "model": model,
-            "input": input,
-            "tools": tools,
-            "response_format": response_format,
-            "generation_config": generation_config,
-        }
-        self._client.interaction_calls.append(call)
-        return await self._client._resolve(
-            self._client.interaction_results, "interactions.create", call
-        )
-
-
-class _FakeAio:
-    def __init__(self, client: "FakeGenAIClient") -> None:
-        self.models = _FakeAsyncModels(client)
-        self.interactions = _FakeAsyncInteractions(client)
-
-    async def aclose(self) -> None:
-        """Match ``genai.Client.aio.aclose`` so hot-swap close paths work."""
-
-
-class FakeGenAIClient:
-    """Scriptable stand-in for ``genai.Client``.
-
-    Script by appending to :attr:`generate_results` / :attr:`interaction_results`
-    (see :func:`_resolve_scripted` for the queue-item semantics). Every call
-    is recorded in :attr:`generate_calls` / :attr:`interaction_calls`.
-    """
-
-    def __init__(self) -> None:
-        self.generate_results: deque[Any] = deque()
-        self.interaction_results: deque[Any] = deque()
-        self.generate_calls: list[dict[str, Any]] = []
-        self.interaction_calls: list[dict[str, Any]] = []
-        self.aio = _FakeAio(self)
-
-    async def _resolve(self, queue: deque[Any], name: str, call: dict[str, Any]) -> Any:
-        return await _resolve_scripted(queue, f"FakeGenAIClient.{name}", call)
-
-
-# --------------------------------------------------------------------------- #
-# Response builders
-# --------------------------------------------------------------------------- #
-
-
-class FakeGenerateContentResponse:
-    """Just the two attributes the app reads: ``parsed`` and ``text``."""
-
-    def __init__(self, parsed: Any = None, text: str | None = None) -> None:
-        self.parsed = parsed
-        self.text = text
-
-
-def make_gate_response(
-    claims: Sequence[tuple[str, float] | tuple[str, float, str]],
-) -> FakeGenerateContentResponse:
-    """A ``generate_content`` response whose ``parsed`` is a real GateResult.
-
-    Each claim is ``(text, score)`` (topic defaults to ``"other"``) or
-    ``(text, score, topic)``.
-    """
-    result = GateResult(
-        claims=[
-            GateClaim(
-                claim_text=claim[0],
-                check_worthiness=claim[1],
-                topic=claim[2] if len(claim) == 3 else "other",  # type: ignore[arg-type]
-            )
-            for claim in claims
-        ]
-    )
-    return FakeGenerateContentResponse(parsed=result, text=result.model_dump_json())
-
-
-def make_interaction(
-    output_text: str,
-    citations: Sequence[tuple[str, str | None]] = (),
-) -> Interaction:
-    """A REAL SDK ``Interaction`` with one model_output step + url citations."""
-    annotations = [
-        {
-            "type": "url_citation",
-            "url": url,
-            "title": title,
-            "start_index": 0,
-            "end_index": 1,
-        }
-        for url, title in citations
-    ]
-    return Interaction.model_validate(
-        {
-            "id": "fake-interaction",
-            "model": "fake-verify-model",
-            "status": "completed",
-            "steps": [
-                {
-                    "type": "model_output",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": output_text,
-                            "annotations": annotations,
-                        }
-                    ],
-                }
-            ],
-        }
-    )
-
-
-def make_verdict_interaction(
-    label: str,
-    explanation: str,
-    citations: Sequence[tuple[str, str | None]] = (
-        ("https://example.com/source", "Example Source"),
-    ),
-) -> Interaction:
-    """A grounded structured-verify response: flat JSON verdict + citations."""
-    return make_interaction(
-        json.dumps({"label": label, "explanation": explanation}), citations
-    )
-
-
-# --------------------------------------------------------------------------- #
 # Fake OpenRouter (AsyncOpenAI) client
 # --------------------------------------------------------------------------- #
 
@@ -346,6 +155,62 @@ class FakeOpenRouterClient:
         self.with_options_calls.append(options)
         return self
 
+    async def close(self) -> None:
+        """Match ``AsyncOpenAI.close`` so hot-swap close paths work."""
+
+
+#: The whole-app test settings' stage models (see :func:`make_test_settings`).
+TEST_GATE_MODEL = "fake-gate-model"
+TEST_VERIFY_MODEL = "fake-verify-model"
+
+
+class _RoutedChatCompletions:
+    """``chat.completions.create`` that routes by ``model`` to a stage queue."""
+
+    def __init__(self, client: "FakeLLMClient") -> None:
+        self._client = client
+
+    async def create(self, **kwargs: Any) -> Any:
+        if kwargs.get("model") == self._client.gate_model:
+            calls, queue, name = (
+                self._client.gate_calls,
+                self._client.gate_results,
+                "gate",
+            )
+        else:
+            calls, queue, name = (
+                self._client.verify_calls,
+                self._client.verify_results,
+                "verify",
+            )
+        calls.append(kwargs)
+        return await _resolve_scripted(queue, f"FakeLLMClient {name}", kwargs)
+
+
+class _RoutedChat:
+    def __init__(self, client: "FakeLLMClient") -> None:
+        self.completions = _RoutedChatCompletions(client)
+
+
+class FakeLLMClient(FakeOpenRouterClient):
+    """The OpenRouter fake for whole-app tests, with one queue per stage.
+
+    Calls for :data:`TEST_GATE_MODEL` (claim gate, contradiction judge) go
+    to :attr:`gate_results` / :attr:`gate_calls`; everything else (grounded
+    verify, its fallbacks) to :attr:`verify_results` / :attr:`verify_calls`.
+    The gate and verify loops run concurrently, so separate queues keep a
+    test's scripting independent of their interleaving.
+    """
+
+    def __init__(self, gate_model: str = TEST_GATE_MODEL) -> None:
+        super().__init__()
+        self.gate_model = gate_model
+        self.gate_results: deque[Any] = deque()
+        self.verify_results: deque[Any] = deque()
+        self.gate_calls: list[dict[str, Any]] = []
+        self.verify_calls: list[dict[str, Any]] = []
+        self.chat = _RoutedChat(self)
+
 
 def make_chat_completion(
     content: str,
@@ -388,6 +253,45 @@ def make_chat_completion(
                 }
             ],
         }
+    )
+
+
+def make_gate_response(
+    claims: Sequence[tuple[str, float] | tuple[str, float, str]],
+) -> ChatCompletion:
+    """A strict-JSON gate completion: ``{"claims": [...]}``.
+
+    Each claim is ``(text, score)`` (topic defaults to ``"other"``) or
+    ``(text, score, topic)``.
+    """
+    return make_chat_completion(
+        json.dumps(
+            {
+                "claims": [
+                    {
+                        "claim_text": claim[0],
+                        "check_worthiness": claim[1],
+                        "topic": claim[2] if len(claim) == 3 else "other",
+                    }
+                    for claim in claims
+                ]
+            }
+        )
+    )
+
+
+def make_judgement_response(
+    contradicts: bool, confidence: str = "high", explanation: str = "They clash."
+) -> ChatCompletion:
+    """A contradiction-judge completion (rides the gate queue)."""
+    return make_chat_completion(
+        json.dumps(
+            {
+                "contradicts": contradicts,
+                "confidence": confidence,
+                "explanation": explanation,
+            }
+        )
     )
 
 
@@ -565,15 +469,15 @@ class FakeTranscriber:
 def make_test_settings(**overrides: Any) -> Settings:
     """Test-tuned settings; explicit kwargs override any .env/environment."""
     base: dict[str, Any] = {
-        # The app-level fakes are Gemini-shaped (FakeGenAIClient), so the
-        # provider factory must build the Gemini gate/checker around them.
+        # OpenRouter around FakeLLMClient, which routes calls to a gate or a
+        # verify queue by these two DISTINCT model slugs.
         "_env_file": None,
-        "llm_provider": "gemini",
-        "gate_provider": "gemini",
-        "verify_provider": "gemini",
-        "gemini_api_key": "offline-test-key",
-        "gemini_gate_model": "fake-gate-model",
-        "gemini_verify_model": "fake-verify-model",
+        "llm_provider": "openrouter",
+        "gate_provider": "openrouter",
+        "verify_provider": "openrouter",
+        "openrouter_api_key": "offline-test-key",
+        "openrouter_gate_model": TEST_GATE_MODEL,
+        "openrouter_verify_model": TEST_VERIFY_MODEL,
         "whisper_model": "fake-whisper.en",
         "stt_window_s": 1.0,
         "stt_hop_s": 0.5,
@@ -606,12 +510,14 @@ def make_test_settings(**overrides: Any) -> Settings:
 
 
 def make_fake_llm_runtime(
-    settings: Settings, genai_client: FakeGenAIClient, cooldown: QuotaCooldown
+    settings: Settings, llm_client: FakeLLMClient, cooldown: QuotaCooldown
 ) -> LLMRuntime:
-    """An :class:`LLMRuntime` built from fakes (mirrors build_llm_runtime).
+    """An :class:`LLMRuntime` built around a fake client (mirrors build_llm_runtime).
 
-    When ``settings`` is UNCONFIGURED (active provider key empty/placeholder)
-    the runtime is the keyless None-container, exactly like the real factory.
+    The gate and checker come from the REAL provider factories, exactly as
+    the app builds them. When ``settings`` is UNCONFIGURED (key empty or a
+    placeholder) the runtime is the keyless None-container, exactly like the
+    real factory.
     """
     if not settings.is_configured:
         return LLMRuntime(settings=settings)
@@ -619,28 +525,17 @@ def make_fake_llm_runtime(
         settings=settings,
         # Same fake object for both stages (mirrors build_llm_runtime when
         # gate and verify resolve to the same provider).
-        gate_client=genai_client,
-        verify_client=genai_client,
-        gate=GeminiClaimGate(
-            client=genai_client,
-            model=settings.gemini_gate_model,
-            gate_interval_s=settings.gate_interval_s,
-            gate_timeout_s=settings.gate_timeout_s,
-        ),
-        checker=GeminiFactChecker(
-            client=genai_client,
-            verify_model=settings.gemini_verify_model,
-            extraction_model=settings.gemini_gate_model,
-            cooldown=cooldown,
-            verify_timeout_s=settings.verify_timeout_s,
-        ),
+        gate_client=llm_client,
+        verify_client=llm_client,
+        gate=create_claim_gate(settings, llm_client),
+        checker=create_fact_checker(settings, llm_client, cooldown),
     )
 
 
 def _install_fake_state(
     application: FastAPI,
     settings: Settings,
-    genai_client: FakeGenAIClient,
+    llm_client: FakeLLMClient,
     transcriber: FakeTranscriber,
 ) -> None:
     """Swap the real lifespan for one that builds ``app.state`` from fakes."""
@@ -655,7 +550,7 @@ def _install_fake_state(
         )
         # The hot-swappable slot ws.py/debug.py fetch the provider stack
         # through (same contract as the real lifespan).
-        app.state.llm_runtime = make_fake_llm_runtime(settings, genai_client, cooldown)
+        app.state.llm_runtime = make_fake_llm_runtime(settings, llm_client, cooldown)
         # Live-session registry (same contract as the real lifespan). Being
         # per-app is what replaced the old autouse global-reset fixture.
         app.state.sessions = SessionRegistry(
@@ -694,12 +589,12 @@ def _install_fake_state(
 @contextmanager
 def open_test_client(
     settings: Settings,
-    genai_client: FakeGenAIClient,
+    llm_client: FakeLLMClient,
     transcriber: FakeTranscriber,
 ) -> Iterator[TestClient]:
     """Build the real app, install fake state, and run its (fake) lifespan."""
     application = create_app()
-    _install_fake_state(application, settings, genai_client, transcriber)
+    _install_fake_state(application, settings, llm_client, transcriber)
     # The app only trusts localhost Hosts (TrustedHostMiddleware), so the
     # TestClient default "testserver" would 400. The explicit default host
     # header also covers websocket_connect, whose URL is hard-coded to
@@ -762,8 +657,8 @@ def _offline_openrouter_catalogue(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture()
-def fake_genai_client() -> FakeGenAIClient:
-    return FakeGenAIClient()
+def fake_llm_client() -> FakeLLMClient:
+    return FakeLLMClient()
 
 
 @pytest.fixture()
@@ -780,21 +675,6 @@ FakeLocalClient = FakeOpenRouterClient
 @pytest.fixture()
 def fake_local_client() -> FakeLocalClient:
     return FakeLocalClient()
-
-
-def make_judgement_response(
-    contradicts: bool, confidence: str = "high", explanation: str = "They clash."
-) -> "FakeGenerateContentResponse":
-    """A scripted Gemini judge result (rides the generate_results queue)."""
-    from app.models import ContradictionJudgement
-
-    return FakeGenerateContentResponse(
-        parsed=ContradictionJudgement(
-            contradicts=contradicts,
-            confidence=confidence,  # type: ignore[arg-type]
-            explanation=explanation,
-        )
-    )
 
 
 class FakeEmbedder:
@@ -842,10 +722,10 @@ def app_settings() -> Settings:
 @pytest.fixture()
 def client(
     app_settings: Settings,
-    fake_genai_client: FakeGenAIClient,
+    fake_llm_client: FakeLLMClient,
     fake_transcriber: FakeTranscriber,
 ) -> Iterator[TestClient]:
-    with open_test_client(app_settings, fake_genai_client, fake_transcriber) as c:
+    with open_test_client(app_settings, fake_llm_client, fake_transcriber) as c:
         yield c
 
 
@@ -872,6 +752,35 @@ def make_hello(**overrides: Any) -> dict[str, Any]:
 def pcm_silence(seconds: float, sample_rate: int = SAMPLE_RATE) -> bytes:
     """``seconds`` of Int16LE mono silence."""
     return b"\x00\x00" * int(seconds * sample_rate)
+
+
+def pcm_tone(
+    seconds: float, sample_rate: int = SAMPLE_RATE, frequency: float = 220.0
+) -> bytes:
+    """``seconds`` of an Int16LE mono sine tone — "speech" to :func:`energy_spans`."""
+    count = int(seconds * sample_rate)
+    wave = 0.3 * np.sin(2 * np.pi * frequency * np.arange(count) / sample_rate)
+    return (wave * 32767).astype("<i2").tobytes()
+
+
+def energy_spans(audio: np.ndarray, frame: int = 512) -> list[tuple[int, int]]:
+    """Deterministic stand-in for Silero: 512-sample frames with energy.
+
+    Returns buffer-relative ``(start, end)`` sample spans, unpadded, with an
+    open span ending at ``len(audio)`` — the contract VadSegmenter expects.
+    """
+    spans: list[tuple[int, int]] = []
+    start: int | None = None
+    for offset in range(0, len(audio), frame):
+        loud = float(np.abs(audio[offset : offset + frame]).max(initial=0.0)) > 0.01
+        if loud and start is None:
+            start = offset
+        elif not loud and start is not None:
+            spans.append((start, offset))
+            start = None
+    if start is not None:
+        spans.append((start, len(audio)))
+    return spans
 
 
 def pcm_ramp(seconds: float, sample_rate: int = SAMPLE_RATE) -> bytes:

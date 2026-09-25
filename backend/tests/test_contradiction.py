@@ -1,6 +1,6 @@
 """ContradictionDetector: retrieval, judging, degradation, doctrine.
 
-The judge rides a real GeminiClaimGate around FakeGenAIClient (scripted via
+The judge rides a real OpenRouterClaimGate around FakeLLMClient (scripted via
 ``make_judgement_response``); embeddings come from the scripted FakeEmbedder.
 """
 
@@ -9,13 +9,14 @@ import pytest
 
 from app.contradiction import ContradictionDetector
 from app.embeddings import EmbeddingUnavailable
-from app.llm_gemini import GeminiClaimGate
+from app.llm_openrouter import OpenRouterClaimGate
 from app.models import GateClaim
 from tests.conftest import (
-    FakeClassicAPIError,
+    TEST_GATE_MODEL,
     FakeEmbedder,
-    FakeGenAIClient,
+    FakeLLMClient,
     make_judgement_response,
+    make_openrouter_status_error,
 )
 
 # Unit vectors: A/B are near-parallel (cosine ~0.98 > 0.55); C is orthogonal.
@@ -29,8 +30,8 @@ def claim(text: str) -> GateClaim:
 
 
 @pytest.fixture()
-def fake_genai_client() -> FakeGenAIClient:
-    return FakeGenAIClient()
+def fake_llm_client() -> FakeLLMClient:
+    return FakeLLMClient()
 
 
 @pytest.fixture()
@@ -40,12 +41,13 @@ def embedder() -> FakeEmbedder:
 
 @pytest.fixture()
 def detector(
-    fake_genai_client: FakeGenAIClient, embedder: FakeEmbedder
+    fake_llm_client: FakeLLMClient, embedder: FakeEmbedder
 ) -> ContradictionDetector:
-    gate = GeminiClaimGate(
-        client=fake_genai_client,  # type: ignore[arg-type] — duck-typed fake
-        model="fake-gate-model",
+    gate = OpenRouterClaimGate(
+        client=fake_llm_client,  # type: ignore[arg-type] — duck-typed fake
+        model=TEST_GATE_MODEL,
         gate_timeout_s=5.0,
+        reasoning_effort="none",
     )
     return ContradictionDetector(gate=gate, embedder=embedder)  # type: ignore[arg-type]
 
@@ -63,12 +65,12 @@ class TestRetrievalAndJudging:
         self,
         detector: ContradictionDetector,
         embedder: FakeEmbedder,
-        fake_genai_client: FakeGenAIClient,
+        fake_llm_client: FakeLLMClient,
     ) -> None:
         embedder.results.append(VEC_A)
         await detector.add(claim("I have never visited France."))
         embedder.results.append(VEC_B)
-        fake_genai_client.generate_results.append(
+        fake_llm_client.gate_results.append(
             make_judgement_response(True, "high", "Never-visited vs lived there.")
         )
         frame = await detector.add(claim("I lived in Lyon for two years."))
@@ -94,15 +96,13 @@ class TestRetrievalAndJudging:
         self,
         detector: ContradictionDetector,
         embedder: FakeEmbedder,
-        fake_genai_client: FakeGenAIClient,
+        fake_llm_client: FakeLLMClient,
         confidence: str,
     ) -> None:
         embedder.results.append(VEC_A)
         await detector.add(claim("I have never visited France."))
         embedder.results.append(VEC_B)
-        fake_genai_client.generate_results.append(
-            make_judgement_response(True, confidence)
-        )
+        fake_llm_client.gate_results.append(make_judgement_response(True, confidence))
         frame = await detector.add(claim("I lived in Lyon for two years."))
         assert frame is None
 
@@ -110,14 +110,12 @@ class TestRetrievalAndJudging:
         self,
         detector: ContradictionDetector,
         embedder: FakeEmbedder,
-        fake_genai_client: FakeGenAIClient,
+        fake_llm_client: FakeLLMClient,
     ) -> None:
         embedder.results.append(VEC_A)
         await detector.add(claim("I have never visited France."))
         embedder.results.append(VEC_B)
-        fake_genai_client.generate_results.append(
-            make_judgement_response(False, "high")
-        )
+        fake_llm_client.gate_results.append(make_judgement_response(False, "high"))
         frame = await detector.add(claim("I lived in Lyon for two years."))
         assert frame is None
 
@@ -136,13 +134,13 @@ class TestRetrievalAndJudging:
         self,
         detector: ContradictionDetector,
         embedder: FakeEmbedder,
-        fake_genai_client: FakeGenAIClient,
+        fake_llm_client: FakeLLMClient,
     ) -> None:
         embedder.results.append(VEC_A)
         await detector.add(claim("I have never visited France."))
         embedder.results.append(VEC_B)
-        fake_genai_client.generate_results.append(
-            FakeClassicAPIError(500, "judge exploded")
+        fake_llm_client.gate_results.append(
+            make_openrouter_status_error(500, "judge exploded")
         )
         frame = await detector.add(claim("I lived in Lyon for two years."))
         assert frame is None
@@ -174,12 +172,12 @@ class TestDegradation:
         self,
         detector: ContradictionDetector,
         embedder: FakeEmbedder,
-        fake_genai_client: FakeGenAIClient,
+        fake_llm_client: FakeLLMClient,
     ) -> None:
         embedder.results.append(EmbeddingUnavailable("no server"))
         await detector.add(claim("I have never been to Japan."))
         # Lexical mode latched: no further embed attempts...
-        fake_genai_client.generate_results.append(
+        fake_llm_client.gate_results.append(
             make_judgement_response(True, "high", "Never vs twice.")
         )
         # Direct negation scores ~87 on token_set_ratio: inside the lexical
@@ -192,11 +190,12 @@ class TestDegradation:
         assert frame.prior_claim == "I have never been to Japan."
 
     async def test_none_embedder_starts_lexical(
-        self, fake_genai_client: FakeGenAIClient
+        self, fake_llm_client: FakeLLMClient
     ) -> None:
-        gate = GeminiClaimGate(
-            client=fake_genai_client,  # type: ignore[arg-type]
-            model="fake-gate-model",
+        gate = OpenRouterClaimGate(
+            client=fake_llm_client,  # type: ignore[arg-type]
+            model=TEST_GATE_MODEL,
+            reasoning_effort="none",
         )
         detector = ContradictionDetector(gate=gate, embedder=None)
         frame = await detector.add(claim("Anything at all works here."))

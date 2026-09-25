@@ -609,7 +609,6 @@ class TestVerifyGroundedStructured:
         assert system["role"] == "system" and user["role"] == "user"
         assert user["content"] == CLAIM
         assert "Today is" in system["content"]
-        assert "Google Search" not in system["content"]
 
     async def test_zero_citations_downgrades_to_unverified(
         self,
@@ -1210,3 +1209,53 @@ class TestWebEngine:
                 cooldown=cooldown,
                 web_engine="bing",
             )
+
+
+class TestGateReasoningOff:
+    """The gate runs without reasoning by default (OPENROUTER_GATE_REASONING_EFFORT).
+
+    Regression: deepseek/deepseek-v4.1-flash at "low" reasoning spent its whole
+    GATE_MAX_TOKENS budget thinking on claim-heavy batches and returned the
+    unfinished thought as content, dropping half the batches with claims.
+    """
+
+    async def test_none_sends_reasoning_disabled(
+        self, fake_openrouter_client: FakeOpenRouterClient
+    ) -> None:
+        gate = make_gate(fake_openrouter_client, reasoning_effort="none")
+        fake_openrouter_client.completion_results.append(
+            make_chat_completion(GATE_CLAIMS_JSON)
+        )
+        await gate.extract_claims("", "some transcript text")
+        call = fake_openrouter_client.completion_calls[0]
+        assert call["extra_body"]["reasoning"] == {"enabled": False}
+
+    def test_reasoning_body_mapping(self) -> None:
+        from app.llm_openrouter import _reasoning_body
+
+        assert _reasoning_body("none") == {"enabled": False}
+        assert _reasoning_body("NONE") == {"enabled": False}
+        assert _reasoning_body("low") == {"effort": "low"}
+        assert _reasoning_body(None) is None
+
+    async def test_truncated_output_is_a_clear_gate_error(
+        self, gate: OpenRouterClaimGate, fake_openrouter_client: FakeOpenRouterClient
+    ) -> None:
+        truncated = make_chat_completion("We need answer only JSON. Need process")
+        truncated.choices[0].finish_reason = "length"
+        fake_openrouter_client.completion_results.append(truncated)
+        with pytest.raises(GateError, match="max_tokens"):
+            await gate.extract_claims("", "some transcript text")
+
+    def test_factory_uses_the_gate_setting_and_verify_keeps_its_own(self) -> None:
+        from types import SimpleNamespace
+
+        from app.config import Settings
+        from app.llm_provider import create_claim_gate, create_fact_checker
+
+        settings = Settings(_env_file=None, openrouter_api_key="k")
+        assert settings.openrouter_gate_reasoning_effort == "none"
+        gate = create_claim_gate(settings, SimpleNamespace())
+        checker = create_fact_checker(settings, SimpleNamespace(), QuotaCooldown())
+        assert gate._reasoning_effort == "none"
+        assert checker._reasoning_effort == "low"

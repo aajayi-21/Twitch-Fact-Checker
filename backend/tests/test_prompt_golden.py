@@ -1,7 +1,7 @@
 """String-level guards on the prompts (no LLM involved).
 
 Each guard maps to a failure observed in production verdicts: a claim class
-the gate let through, or Gemini-specific wording sent to OpenRouter.
+the gate let through, or search-tool wording the web plugin cannot honor.
 """
 
 from app.prompts import (
@@ -11,9 +11,7 @@ from app.prompts import (
     build_gate_prompt,
     build_verdict_extraction_messages,
     build_verify_fallback_messages,
-    build_verify_fallback_prompt,
     build_verify_messages,
-    build_verify_prompt,
 )
 
 CLAIM = "The Eiffel Tower is 450 meters tall."
@@ -56,7 +54,6 @@ class TestVerifyPrompts:
         system, user = build_verify_messages(CLAIM, "2026-09-06")
         assert user == CLAIM
         assert "Today is 2026-09-06" in system
-        assert "Google Search" not in system
         assert "attached to this request" in system
         assert '"evidence"' in system
 
@@ -64,14 +61,6 @@ class TestVerifyPrompts:
         system, user = build_verify_fallback_messages(CLAIM, "2026-09-06")
         assert user == CLAIM
         assert "EVIDENCE: <strong|partial|none>" in system
-        assert "Google Search" not in system
-
-    def test_gemini_prompt_still_searches_itself(self) -> None:
-        prompt = build_verify_prompt(CLAIM, "2026-09-06")
-        assert "using Google Search" in prompt
-        assert CLAIM in prompt
-        assert VERIFY_LABEL_GUIDANCE.strip() in prompt
-        assert "using Google Search" in build_verify_fallback_prompt(CLAIM, "2026")
 
     def test_calibration_guidance_is_shared(self) -> None:
         assert "Never use it\n  for pedantic precision" in VERIFY_LABEL_GUIDANCE

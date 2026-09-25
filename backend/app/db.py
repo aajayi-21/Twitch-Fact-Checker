@@ -28,8 +28,10 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
+from app.claim_gate import GatePass
 from app.fact_checker import normalize_claim
 from app.models import GateClaim, Verdict, utc_now_iso
+from app.reports import load_labelled_verdicts, source_tier_breakdown
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +79,8 @@ CREATE TABLE IF NOT EXISTS claims (
     gated_at         TEXT NOT NULL,
     outcome          TEXT NOT NULL,
     completed_at     TEXT,
-    has_visual_cue   INTEGER NOT NULL DEFAULT 0
+    has_visual_cue   INTEGER NOT NULL DEFAULT 0,
+    gate_pass_id     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_claims_session ON claims(session_id);
 CREATE INDEX IF NOT EXISTS idx_claims_outcome ON claims(outcome, completed_at);
@@ -113,6 +116,34 @@ CREATE TABLE IF NOT EXISTS feedback (
     note            TEXT,
     created_at      TEXT NOT NULL
 );
+
+-- One row per session gate pass (live + stop flush). The transcript text
+-- (context, new_text) is stored ONLY while the Jev pre-screen is on: it is
+-- what calibrating Jev needs, and otherwise the table holds metadata only.
+CREATE TABLE IF NOT EXISTS gate_passes (
+    id                 TEXT PRIMARY KEY,
+    session_id         TEXT NOT NULL REFERENCES sessions(id),
+    started_at         TEXT NOT NULL,
+    phase              TEXT NOT NULL,
+    context            TEXT,
+    new_text           TEXT,
+    word_count         INTEGER NOT NULL,
+    latency_ms         INTEGER,
+    claims_count       INTEGER,
+    error              TEXT,
+    gate_provider      TEXT NOT NULL,
+    gate_model         TEXT NOT NULL,
+    jev_mode           TEXT NOT NULL DEFAULT 'off',
+    jev_model          TEXT,
+    jev_resolved_model TEXT,
+    jev_probability    REAL,
+    jev_threshold      REAL,
+    jev_route          TEXT,
+    jev_latency_ms     INTEGER,
+    jev_error          TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_gate_passes_session ON gate_passes(session_id);
+CREATE INDEX IF NOT EXISTS idx_gate_passes_jev ON gate_passes(jev_mode, started_at);
 
 CREATE TABLE IF NOT EXISTS contradictions (
     id               TEXT PRIMARY KEY,
@@ -208,6 +239,17 @@ class Database:
             # addressed the claim (strong/partial/none; NULL for providers
             # and fallbacks that do not produce it).
             conn.execute("ALTER TABLE verdicts ADD COLUMN evidence TEXT")
+        claim_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(claims)")
+        }
+        if "gate_pass_id" not in claim_columns:
+            # The gate_passes row that produced the claim. No foreign key on
+            # purpose: pass rows are fire-and-forget, and a failed pass
+            # insert must never cost the claim row.
+            conn.execute("ALTER TABLE claims ADD COLUMN gate_pass_id TEXT")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_claims_gate_pass ON claims(gate_pass_id)"
+        )
 
     async def close(self) -> None:
         """Flush queued work (executor drains), close the connection."""
@@ -342,6 +384,55 @@ class Database:
 
         await self._swallow(_write)
 
+    async def record_gate_pass(
+        self,
+        *,
+        gate_pass: GatePass,
+        session_id: str,
+        phase: str,
+        gate_provider: str,
+        gate_model: str,
+    ) -> None:
+        """One ``gate_passes`` row. Transcript text only when Jev ran."""
+        screen = gate_pass.screen
+        store_text = screen is not None
+
+        def _write() -> None:
+            conn = self._require_conn()
+            conn.execute(
+                "INSERT OR REPLACE INTO gate_passes (id, session_id, started_at,"
+                " phase, context, new_text, word_count, latency_ms, claims_count,"
+                " error, gate_provider, gate_model, jev_mode, jev_model,"
+                " jev_resolved_model, jev_probability, jev_threshold, jev_route,"
+                " jev_latency_ms, jev_error)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    gate_pass.id,
+                    session_id,
+                    gate_pass.started_at,
+                    phase,
+                    gate_pass.context if store_text else None,
+                    gate_pass.new_text if store_text else None,
+                    gate_pass.word_count,
+                    gate_pass.latency_ms,
+                    gate_pass.claims_count,
+                    gate_pass.error,
+                    gate_provider,
+                    gate_model,
+                    screen.mode if screen else "off",
+                    screen.model if screen else None,
+                    screen.resolved_model if screen else None,
+                    screen.probability if screen else None,
+                    screen.threshold if screen else None,
+                    screen.route if screen else None,
+                    screen.latency_ms if screen else None,
+                    screen.error if screen else None,
+                ),
+            )
+            conn.commit()
+
+        await self._swallow(_write)
+
     async def record_claim(
         self,
         *,
@@ -350,6 +441,7 @@ class Database:
         outcome: str,
         has_visual_cue: bool = False,
         stream_time_s: float | None = None,
+        gate_pass_id: str | None = None,
     ) -> None:
         """Upsert one funnel row.
 
@@ -367,14 +459,15 @@ class Database:
             conn.execute(
                 "INSERT INTO claims (id, session_id, text, normalized, topic,"
                 " check_worthiness, stream_time_s, gated_at, outcome,"
-                " completed_at, has_visual_cue)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                " completed_at, has_visual_cue, gate_pass_id)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                 " ON CONFLICT(id) DO UPDATE SET outcome = excluded.outcome,"
                 " completed_at = COALESCE(excluded.completed_at, completed_at),"
                 # Keep the FIRST non-null position: a later terminal write
                 # happens after more audio has been transcribed, so its head
                 # would point past where the claim was actually spoken.
-                " stream_time_s = COALESCE(stream_time_s, excluded.stream_time_s)",
+                " stream_time_s = COALESCE(stream_time_s, excluded.stream_time_s),"
+                " gate_pass_id = COALESCE(gate_pass_id, excluded.gate_pass_id)",
                 (
                     claim.id,
                     session_id,
@@ -387,6 +480,7 @@ class Database:
                     outcome,
                     completed_at,
                     int(has_visual_cue),
+                    gate_pass_id,
                 ),
             )
             conn.commit()
@@ -605,6 +699,9 @@ class Database:
                 "totals": block(None),
                 "today": block(today),
                 "verify_modes": verify_modes,
+                # Lifetime, like verify_modes: how many labelled verdicts rest
+                # only on C/D-tier sources (measured, never enforced here).
+                "source_tiers": source_tier_breakdown(load_labelled_verdicts(conn)),
             }
 
         return await self._run(_read)

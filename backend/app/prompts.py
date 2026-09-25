@@ -37,24 +37,20 @@ philosophers/texts ("Nietzsche wrote X in 1886") is labelled ``history``.
 **Verify prompt.** Anti-hallucination is structural, not rhetorical: the
 model must decide strictly from retrieved sources, ``UNVERIFIED`` is the
 explicit default for weak/inconclusive results, and the requested output is a
-flat object (label + explanation, plus an ``evidence`` rating on OpenRouter)
+flat object (label, evidence rating, explanation)
 — source URLs come exclusively from grounding metadata in code, never from
 model text (models fabricate URLs). The current date is injected because
 live streams discuss current events and the model's training cutoff is
 otherwise ambiguous.
 
-The two providers search differently, so they get different verify layouts:
+OpenRouter does not let the model search. Its ``web`` plugin runs a search
+on the request's USER message before the model runs and injects the results.
+The instructions therefore live in a ``system`` message and the user message
+is the bare claim — anything else in it pollutes the search query
+(``build_verify_messages``). The wording says "the results attached to this
+request", never "search for".
 
-- **OpenRouter** (primary) does not let the model search. Its ``web`` plugin
-  runs a search on the request's USER message before the model runs and
-  injects the results. The instructions therefore live in a ``system``
-  message and the user message is the bare claim — anything else in it
-  pollutes the search query (``build_verify_messages``). The wording says
-  "the results attached to this request", never "search for".
-- **Gemini** searches itself with the Google Search tool, so its prompt is
-  one string that tells it to search (``build_verify_prompt``).
-
-Both share :data:`VERIFY_LABEL_GUIDANCE`, which carries the calibration
+The verify prompts share :data:`VERIFY_LABEL_GUIDANCE`, which carries the calibration
 learned from production verdicts: MISLEADING was being used for pedantry and
 FALSE for near-correct facts.
 """
@@ -273,42 +269,6 @@ results, including the key fact or number. No URLs.>
 """
 
 
-# Gemini (optional secondary): the model runs the Google Search tool itself,
-# so the prompt is one string that tells it to search.
-VERIFY_PROMPT_TEMPLATE = """\
-Fact-check EXACTLY this claim using Google Search. Today is {date}.
-
-CLAIM: "{claim}"
-
-Search for reputable, independent sources and decide STRICTLY from what the
-retrieved sources say — never from memory alone.
-
-{label_guidance}
-Write the explanation as 2-3 plain-language sentences grounded only in the
-retrieved sources, including the key fact or number that decides the verdict.
-Do not put URLs in the explanation text.
-
-Respond with a JSON object with exactly two fields:
-{{"label": "TRUE" | "FALSE" | "MISLEADING" | "UNVERIFIED", "explanation": "..."}}
-"""
-
-
-VERIFY_FALLBACK_PROMPT_TEMPLATE = """\
-Fact-check EXACTLY this claim using Google Search. Today is {date}.
-
-CLAIM: "{claim}"
-
-Search for reputable, independent sources and decide STRICTLY from what the
-retrieved sources say — never from memory alone.
-
-{label_guidance}
-Respond in EXACTLY this two-line format and nothing else:
-LABEL: <TRUE|FALSE|MISLEADING|UNVERIFIED>
-EXPLANATION: <2-3 plain-language sentences grounded only in the retrieved \
-sources, including the key fact or number. No URLs.>
-"""
-
-
 # Appended to verify prompts when a captured stream frame is attached. The
 # frame is context, never evidence: the label and evidence rules stay
 # anchored to the retrieved sources, so a misread frame cannot move a verdict.
@@ -366,12 +326,6 @@ ONLY when the text states how directly the sources addressed the claim;
 otherwise omit "evidence". If no clear label is stated, use "UNVERIFIED".\
 """
 
-VERDICT_EXTRACTION_PROMPT_TEMPLATE = VERDICT_EXTRACTION_INSTRUCTIONS + """
-
-TEXT:
-{raw_text}
-"""
-
 
 def build_gate_prompt(context: str, new_transcript: str) -> str:
     """Render the claim-gate prompt for one drained transcript batch."""
@@ -379,24 +333,6 @@ def build_gate_prompt(context: str, new_transcript: str) -> str:
         context=context.strip() or "(none)",
         new_transcript=new_transcript.strip(),
     )
-
-
-def build_verify_prompt(claim: str, date: str, with_image: bool = False) -> str:
-    """Render the Gemini grounded structured verification prompt (one string)."""
-    prompt = VERIFY_PROMPT_TEMPLATE.format(
-        claim=claim, date=date, label_guidance=VERIFY_LABEL_GUIDANCE
-    )
-    return prompt + VERIFY_IMAGE_NOTE if with_image else prompt
-
-
-def build_verify_fallback_prompt(
-    claim: str, date: str, with_image: bool = False
-) -> str:
-    """Render the Gemini plain-text (LABEL:/EXPLANATION:) fallback prompt."""
-    prompt = VERIFY_FALLBACK_PROMPT_TEMPLATE.format(
-        claim=claim, date=date, label_guidance=VERIFY_LABEL_GUIDANCE
-    )
-    return prompt + VERIFY_IMAGE_NOTE if with_image else prompt
 
 
 def build_verify_messages(
@@ -426,11 +362,6 @@ def build_verify_fallback_messages(
     if with_image:
         system += VERIFY_IMAGE_NOTE
     return system, VERIFY_USER_TEMPLATE.format(claim=claim)
-
-
-def build_verdict_extraction_prompt(raw_text: str) -> str:
-    """Render the last-resort ungrounded structured-extraction prompt."""
-    return VERDICT_EXTRACTION_PROMPT_TEMPLATE.format(raw_text=raw_text.strip())
 
 
 def build_verdict_extraction_messages(raw_text: str) -> tuple[str, str]:
