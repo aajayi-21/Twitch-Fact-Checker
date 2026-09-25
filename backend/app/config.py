@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 SERVER_VERSION: str = "0.1.0"
@@ -25,14 +25,20 @@ SENSITIVITY_THRESHOLDS: dict[str, float] = {"low": 0.75, "medium": 0.55, "high":
 
 _DEFAULT_ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 
-# OpenRouter is the primary provider; these are the shipped model slugs.
-# inception/mercury-2.5-preview: cheap ($0.04/M input) and fast enough for the
-# ~300 gate calls an hour, lists temperature + structured_outputs + reasoning
-# on its endpoint (so strict JSON mode works first time), and produced zero
-# fallback verdicts in production. Override per stage in .env or the options
-# page; slugs are validated against the live catalogue on Apply.
-DEFAULT_OPENROUTER_GATE_MODEL = "inception/mercury-2.5-preview"
+# Jev uses OpenRouter's Decisions API. It cannot generate claim text, so
+# approved batches are rewritten by a separate chat model before verification.
+DEFAULT_OPENROUTER_GATE_MODEL = "~typesafe/jev-latest"
+DEFAULT_OPENROUTER_EXTRACTION_MODEL = "inception/mercury-2.5-preview"
 DEFAULT_OPENROUTER_VERIFY_MODEL = "inception/mercury-2.5-preview"
+JEV_MODELS = frozenset({DEFAULT_OPENROUTER_GATE_MODEL, "typesafe/jev-1.13"})
+
+
+def is_jev_model(model: str) -> bool:
+    """Recognize decisions-only models, including future pinned Jev releases."""
+    return model.strip() == DEFAULT_OPENROUTER_GATE_MODEL or model.strip().startswith(
+        "typesafe/jev-"
+    )
+
 
 # The analytics database lives next to `.env` by default; tests point DB_PATH
 # at temp files instead.
@@ -91,7 +97,11 @@ class Settings(BaseSettings):
 
     openrouter_api_key: str = ""
     openrouter_gate_model: str = DEFAULT_OPENROUTER_GATE_MODEL
+    openrouter_extraction_model: str = DEFAULT_OPENROUTER_EXTRACTION_MODEL
     openrouter_verify_model: str = DEFAULT_OPENROUTER_VERIFY_MODEL
+    jev_min_check_probability: float = Field(
+        default=0.35, ge=0.0, le=1.0, allow_inf_nan=False
+    )
     openrouter_web_max_results: int = 5
     # Web-search engine for the verify call's ``web`` plugin:
     #   exa    (default) — OpenRouter's Exa search, works for EVERY model and
@@ -104,6 +114,33 @@ class Settings(BaseSettings):
     # reasoning-default models). Empty string = never send ``reasoning`` —
     # for models whose providers reject it under require_parameters routing.
     openrouter_reasoning_effort: str = "low"
+
+    @model_validator(mode="after")
+    def validate_generative_models(self) -> "Settings":
+        for field in ("openrouter_extraction_model", "openrouter_verify_model"):
+            if is_jev_model(getattr(self, field)):
+                raise ValueError(f"{field}: Jev can only be used for gate decisions")
+        return self
+
+    @property
+    def uses_jev(self) -> bool:
+        return self.resolved_gate_provider == "openrouter" and is_jev_model(
+            self.openrouter_gate_model
+        )
+
+    @property
+    def active_openrouter_chat_models(self) -> set[str]:
+        """Only generative models belong in the chat capability catalogue."""
+        models: set[str] = set()
+        if self.resolved_gate_provider == "openrouter":
+            models.add(
+                self.openrouter_extraction_model
+                if self.uses_jev
+                else self.openrouter_gate_model
+            )
+        if self.resolved_verify_provider == "openrouter":
+            models.add(self.openrouter_verify_model)
+        return models
 
     @property
     def openrouter_reasoning_effort_or_none(self) -> str | None:

@@ -70,8 +70,10 @@ const gateProviderSelect = document.getElementById("gate-provider-select");
 const verifyProviderSelect = document.getElementById("verify-provider-select");
 const applyStagesButton = document.getElementById("apply-stages-button");
 const gateModelInput = document.getElementById("gate-model-input");
+const extractionModelInput = document.getElementById("extraction-model-input");
 const verifyModelInput = document.getElementById("verify-model-input");
 const gateModelRow = document.querySelector('[data-provider-scope="gate"]');
+const extractionModelRow = document.querySelector('[data-provider-scope="extraction"]');
 const verifyModelRow = document.querySelector('[data-provider-scope="verify"]');
 const stageStatus = document.getElementById("stage-status");
 const backendUrlInput = document.getElementById("backend-url");
@@ -257,15 +259,22 @@ const setStageStatus = (text, stateName) => {
  * says "gemma3:4b" whenever that stage is routed to Ollama.
  *
  * @param {object|null} status
- * @param {"gate"|"verify"} stage
+ * @param {"gate"|"extraction"|"verify"} stage
  * @returns {string}
  */
 const storedSlug = (status, stage) =>
   status?.providers?.openrouter?.[`${stage}_model`] ?? "";
 
+const usesJev = () => {
+  const slug = gateModelInput.value.trim() || storedSlug(lastStatus, "gate");
+  return gateProviderSelect.value === "openrouter" &&
+    (slug === "~typesafe/jev-latest" || slug.startsWith("typesafe/jev-"));
+};
+
 /** Model slug inputs only apply to OpenRouter-routed stages. */
 const syncModelRowVisibility = () => {
   gateModelRow.hidden = gateProviderSelect.value !== "openrouter";
+  extractionModelRow.hidden = !usesJev();
   verifyModelRow.hidden = verifyProviderSelect.value !== "openrouter";
 };
 
@@ -280,6 +289,7 @@ const updateStagesDirty = () => {
     (gateProviderSelect.value !== (lastStatus.gate?.provider ?? "") ||
       verifyProviderSelect.value !== (lastStatus.verify?.provider ?? "") ||
       slugDirty("gate", gateModelInput, gateProviderSelect) ||
+      (usesJev() && slugDirty("extraction", extractionModelInput, gateProviderSelect)) ||
       slugDirty("verify", verifyModelInput, verifyProviderSelect));
   applyStagesButton.disabled = !dirty;
 };
@@ -292,6 +302,7 @@ const renderStageSection = (status) => {
     verifyProviderSelect.value = status.verify.provider;
   }
   gateModelInput.value = storedSlug(status, "gate");
+  extractionModelInput.value = storedSlug(status, "extraction");
   verifyModelInput.value = storedSlug(status, "verify");
   syncModelRowVisibility();
   stageSection.hidden = false;
@@ -576,6 +587,7 @@ const handleApplyStages = async () => {
         // backend to keep whatever slug it already has.
         gate_model:
           gateProvider === "openrouter" ? gateModelInput.value.trim() : "",
+        extraction_model: usesJev() ? extractionModelInput.value.trim() : "",
         verify_model:
           verifyProvider === "openrouter" ? verifyModelInput.value.trim() : "",
       }),
@@ -638,9 +650,10 @@ const wireProviderCard = () => {
       updateStagesDirty();
     });
   }
-  for (const input of [gateModelInput, verifyModelInput]) {
+  for (const input of [gateModelInput, extractionModelInput, verifyModelInput]) {
     input.addEventListener("input", () => {
       setStageStatus("", "setup");
+      syncModelRowVisibility();
       updateStagesDirty();
     });
     // These inputs live inside #provider-form, so a bare Enter would submit

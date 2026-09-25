@@ -4,8 +4,8 @@ A Chrome extension (Manifest V3, named **"Live Stream Fact-Checker"**) plus a lo
 Python backend that fact-checks a live stream in real time. Supported sites: **Twitch,
 YouTube (watch pages and live), Kick, and Rumble**. The extension captures the tab's
 audio and streams it to a local FastAPI server, which transcribes it with
-`faster-whisper`, extracts verifiable claims with an LLM "claim gate", verifies them
-with a web-search-grounded LLM call, and pushes
+`faster-whisper`, screens transcript batches with Jev, extracts verifiable claims
+from approved batches, verifies them with a web-search-grounded LLM, and pushes
 **TRUE / FALSE / MISLEADING / UNVERIFIED** verdicts (with sources) back to a
 Shadow-DOM overlay rendered over the player.
 
@@ -61,7 +61,7 @@ Chrome (extension)                              Local backend (127.0.0.1:8710)
 │ offscreen document              │           ┌───────────────────────────────┐
 │   tabCapture → AudioContext     │  16 kHz   │ FastAPI  /ws/audio            │
 │   → lowpass ×2 → worklet        │  PCM over │  ring buffer → faster-whisper │
-│   → Int16 PCM ─────────────────────WebSocket──→ claim gate (LLM, ungrounded)│
+│   → Int16 PCM ─────────────────────WebSocket──→ Jev → claim extraction    │
 │   ← JSON verdict frames ────────────────────←─ grounded verify (LLM + web  │
 │   │                             │           │     search) → verdict        │
 │ content script (supported sites)│           │  POST /debug/text (test path)│
@@ -349,15 +349,40 @@ have been without it — the no-citations ⇒ UNVERIFIED rule is unchanged.
 
 ## LLM provider, models, costs
 
-**Primary provider: OpenRouter.** Both pipeline stages (claim gate + verification)
-default to `inception/mercury-2.5-preview`: cheap ($0.04/M input tokens) and fast
-enough for the ~300 gate calls an hour, its endpoint publishes `temperature`,
-`structured_outputs` and `reasoning` support (so strict JSON works on the first
-call), and it produced zero fallback verdicts in production. Change models via
-`OPENROUTER_GATE_MODEL` / `OPENROUTER_VERIFY_MODEL` in `.env` or the options page.
+**Primary provider: OpenRouter.** The default gate is `~typesafe/jev-latest`:
+transcript → Jev decision → claim extraction → filters → web-grounded verification.
+Jev uses the [Decisions API](https://openrouter.ai/docs/api/api-reference/alphadecisions/submit-a-decisions-questions-and-answers-request),
+with `{context, new_transcript, current_date}` as its state. The context is the
+previously processed 40-word tail; only assertions completed in the fresh text
+qualify. Its `needs_fact_check` Noul answer is the probability that a checkable
+assertion exists, **not the probability that a statement is true**.
+
+`JEV_MIN_CHECK_PROBABILITY=0.35` is the initial, permissive cutoff: uncertain
+batches can reach extraction, while clear negatives skip both extraction and
+search. This cutoff is a starting policy, not an empirically calibrated optimum.
+Jev cannot write claim text. Approved batches go to
+`OPENROUTER_EXTRACTION_MODEL=inception/mercury-2.5-preview`, which resolves
+references, extracts individual claims, and assigns topics and check-worthiness.
+Existing sensitivity, topic, and duplicate filters still run before web search.
+`OPENROUTER_VERIFY_MODEL` also defaults to `inception/mercury-2.5-preview`.
+Contradiction judgments use the extraction model and only see retained claims.
+
+`GATE_TIMEOUT_S=15` covers the entire Jev + extraction pass. A Jev timeout,
+API error, or malformed answer drops the batch and logs the failure; it does
+not fall back to the generative gate. Logs include probability, route, resolved
+Jev version, and stage latency. `/healthz` exposes the decision/extraction setup
+under `openrouter.decision_gate`. Gate-call analytics still count logical batch
+passes rather than individual HTTP requests.
+
+Set the models in `.env` or the options page. An explicitly configured older
+gate model keeps using the generative gate; choose `~typesafe/jev-latest` to
+switch an existing installation. Gemini and Ollama gate options remain available.
+To evaluate Jev against labeled synthetic transcript examples, explicitly run
+`cd backend && uv run python scripts/eval_jev.py --yes-spend-credits`.
+This spends credits on decisions only; normal tests remain offline.
 
 **Capability-aware requests.** At boot and on every Apply the backend reads each
-active model's `supported_parameters` from OpenRouter's public catalogue
+active generative model's `supported_parameters` from OpenRouter's public catalogue
 (`GET /api/v1/models`, keyless) and builds requests from it: `temperature` and
 `reasoning` are only sent to models that list them, strict `json_schema` mode is only
 attempted when a model lists `structured_outputs` (a model with plain
@@ -385,7 +410,9 @@ $0.007/request, `OPENROUTER_WEB_MAX_RESULTS=5` results), `native` (the model
 provider's own search — pricier, and fails on models without one), or `auto`.
 
 **Choosing specific models.** Each stage's OpenRouter model is a slug you can set
-from the options page (Gate model slug / Verify model slug) or in `.env`. Slugs are
+from the options page (Gate / Claim extraction / Verify model) or in `.env`.
+Documented Jev IDs (`~typesafe/jev-latest`, `typesafe/jev-1.13`) are accepted for
+the gate only, independently of the chat catalogue. Generative model slugs are
 validated against OpenRouter's live catalogue on Apply, so a typo is rejected
 immediately rather than surfacing as a runtime failure mid-stream — and a model works
 the day it launches. A paid model and its `:free` variant are distinct slugs (the
