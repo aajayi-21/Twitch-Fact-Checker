@@ -96,7 +96,9 @@ def main() -> int:
                 for label in ("FALSE", "MISLEADING", "TRUE", "UNVERIFIED")
                 if labels.get(label)
             ]
-            recall = "-" if row["batch_recall"] is None else f"{row['batch_recall']:.3f}"
+            recall = (
+                "-" if row["batch_recall"] is None else f"{row['batch_recall']:.3f}"
+            )
             print(
                 f"{row['threshold']:>6.2f} {row['skip_rate'] * 100:>5.1f}% "
                 f"{row['skipped']:>6} {recall:>7} {row['claims_lost']:>7} "
