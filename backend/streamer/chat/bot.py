@@ -45,6 +45,7 @@ from typing import Any, Callable
 from app.events import EventHub, SessionEvent
 from app.models import Verdict
 from app.sessions import SessionRegistry, channel_key
+from app.source_quality import summarize_sources
 
 from streamer.chat import commands as cmd
 from streamer.chat.consent import consent_failure
@@ -63,7 +64,6 @@ from streamer.chat.policy import (
     PostingPolicy,
     decide,
 )
-from streamer.chat.source_quality import summarize_sources
 from streamer.chat.transport import (
     AuthFailed,
     ChatMessage,

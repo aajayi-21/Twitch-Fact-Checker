@@ -8,8 +8,8 @@ adequate for a private overlay chip, not for a public accusation.
 import pytest
 
 from app.models import Source
-
-from streamer.chat.source_quality import (
+from app.source_quality import (
+    is_recognized_domain,
     registrable_domain,
     summarize_sources,
     tier_for_domain,
@@ -156,3 +156,23 @@ class TestSummarize:
             self_domains=frozenset({"somestreamer.com"}),
         )
         assert summary.has_denylisted is True
+
+
+class TestRecognition:
+    @pytest.mark.parametrize(
+        ("domain", "recognized"),
+        [
+            ("reuters.com", True),  # B by list
+            ("wikipedia.org", True),  # C by list
+            ("en.wikipedia.org", True),  # C by suffix rule
+            ("news.bbc.co.uk", True),  # inherits from a listed parent
+            ("reddit.com", True),  # D by list
+            ("cambridge.org", False),  # C only by default
+            (None, False),
+        ],
+    )
+    def test_listed_vs_default_c(self, domain: str | None, recognized: bool) -> None:
+        assert is_recognized_domain(domain) is recognized
+
+    def test_refactor_keeps_unknown_domains_at_c(self) -> None:
+        assert tier_for_domain("cambridge.org") == "C"

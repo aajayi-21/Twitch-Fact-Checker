@@ -30,6 +30,7 @@ from urllib.parse import urlsplit
 
 from app.fact_checker import normalize_claim
 from app.models import GateClaim, Verdict, utc_now_iso
+from app.reports import load_labelled_verdicts, source_tier_breakdown
 
 logger = logging.getLogger(__name__)
 
@@ -605,6 +606,9 @@ class Database:
                 "totals": block(None),
                 "today": block(today),
                 "verify_modes": verify_modes,
+                # Lifetime, like verify_modes: how many labelled verdicts rest
+                # only on C/D-tier sources (measured, never enforced here).
+                "source_tiers": source_tier_breakdown(load_labelled_verdicts(conn)),
             }
 
         return await self._run(_read)

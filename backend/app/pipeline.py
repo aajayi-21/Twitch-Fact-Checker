@@ -68,6 +68,7 @@ from app.models import (
 )
 from app.rate_limit import QuotaCooldown, TokenBucket
 from app.sessions import ChannelKey, channel_key
+from app.source_quality import summarize_sources
 from app.stt_supervisor import SttEngineFailed, SttSupervisor, SttWindowFailed
 from app.transcriber import AudioRingBuffer, SessionTextState, Transcriber
 
@@ -1129,6 +1130,21 @@ class SessionPipeline:
     async def _record_verdict(
         self, claim: GateClaim, verdict: Verdict, verify_started_at: float
     ) -> None:
+        if verdict.label != "UNVERIFIED":
+            # Source-tier MEASUREMENT (report §6.5): logged and reported on
+            # the dashboard, never used to change the verdict here.
+            summary = summarize_sources(verdict.sources) if verdict.sources else None
+            logger.info(
+                "verdict %s best source tier %s%s: %s",
+                verdict.label,
+                summary.best_tier if summary else "-",
+                (
+                    ""
+                    if summary is None or summary.best_tier in ("A", "B")
+                    else " (an A/B source rule would downgrade this)"
+                ),
+                ", ".join(summary.domains) if summary else "no sources",
+            )
         if self._db is None:
             return
         await self._db.record_verdict(
