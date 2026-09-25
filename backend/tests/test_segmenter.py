@@ -62,6 +62,22 @@ class TestOpenSpeech:
         plan = segmenter((0.0, 12.0)).plan(audio(12.0))
         assert plan == SegmentPlan(s(10.0), (0, s(10.0)))
 
+    def test_forced_cut_seeks_the_longest_pause_before_the_cap(self) -> None:
+        rng = np.random.default_rng(0)
+        speech = (rng.standard_normal(s(12.0)) * 0.2).astype(np.float32)
+        speech[s(7.0) : s(7.3)] = 0.0  # a sentence pause
+        speech[s(9.0) : s(9.06)] = 0.0  # a shorter gap between words
+        plan = segmenter((0.0, 12.0)).plan(speech)
+        assert plan.speech == (0, plan.consume_to)
+        assert s(7.0) <= plan.consume_to <= s(7.3)
+
+    def test_forced_cut_never_before_half_the_cap(self) -> None:
+        rng = np.random.default_rng(1)
+        speech = (rng.standard_normal(s(12.0)) * 0.2).astype(np.float32)
+        speech[s(1.0) : s(2.0)] = 0.0  # long pause, but too early to use
+        plan = segmenter((0.0, 12.0)).plan(speech)
+        assert s(5.0) <= plan.consume_to <= s(10.0)
+
     def test_final_emits_the_open_span(self) -> None:
         plan = segmenter((0.2, 3.0)).plan(audio(3.0), final=True)
         assert plan == SegmentPlan(s(3.0), (s(0.2), s(3.0)))
@@ -138,7 +154,8 @@ class TestSilero:
         assert options.min_silence_duration_ms == 500
         assert options.speech_pad_ms == 200
         assert options.min_speech_duration_ms == 250
-        assert options.max_speech_duration_s == 10.0
+        # Silero never splits long speech itself; the segmenter does.
+        assert options.max_speech_duration_s == float("inf")
         assert seen["rate"] == RATE
 
     def test_real_silero_finds_no_speech_in_silence(self) -> None:

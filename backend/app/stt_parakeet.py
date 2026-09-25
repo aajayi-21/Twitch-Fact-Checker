@@ -41,6 +41,7 @@ import importlib.util
 import logging
 import math
 import time
+import warnings
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -350,6 +351,16 @@ class ParakeetTranscriber(BaseTranscriber):
                 logger.debug("could not quiet the Hugging Face loggers: %s", exc)
             for name in self.NOISY_TRANSFORMERS_LOGGERS:
                 logging.getLogger(name).setLevel(logging.ERROR)
+        # Parakeet's generate() sizes its own output buffer from the encoder
+        # length (ParakeetRNNTGenerationMixin._prepare_generated_length), so
+        # the generic "model-agnostic default max_length" UserWarning is
+        # benign — and, since the length is in the message, it re-fires for
+        # every new input size (i.e. every VAD bucket).
+        warnings.filterwarnings(
+            "ignore",
+            message="Using the model-agnostic default `max_length`",
+            category=UserWarning,
+        )
 
         self._torch = torch
         self._logits_processor_list = LogitsProcessorList

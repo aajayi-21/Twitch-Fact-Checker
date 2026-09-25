@@ -21,6 +21,13 @@ before the end of the buffer; a span still in progress ends exactly AT the
 end of the buffer. Anything ending ``min_silence - pad`` or more before the
 end is therefore complete, and nothing still being spoken can be mistaken
 for complete.
+
+Continuous speech (a streamer talking without a half-second pause) never
+closes a span, so :class:`VadSegmenter` cuts it at ``max_segment_s`` itself —
+at the quietest moment of the last few seconds, not at the exact cap.
+Silero's own long-speech split is left off: it needs a pause of ~100 ms
+under a lowered threshold, which continuous speech does not produce, and it
+otherwise cuts at exactly its limit, i.e. mid-word.
 """
 
 import logging
@@ -55,6 +62,10 @@ class VadSegmenterConfig:
     silence_keep_tail_s: float = 0.5
     #: Complete spans separated by at most this much silence share a clip.
     coalesce_max_gap_s: float = 2.0
+    #: A forced cut (speech still going at ``max_segment_s``) lands at the
+    #: quietest 20 ms frame within this many seconds before the cap — in
+    #: continuous speech, a gap between words — instead of mid-word.
+    cut_search_s: float = 5.0
 
 
 @dataclass(frozen=True)
@@ -98,7 +109,9 @@ def make_silero_span_fn(config: VadSegmenterConfig, threshold: float = 0.5) -> S
     options = VadOptions(
         threshold=threshold,
         min_speech_duration_ms=int(config.min_speech_s * 1000),
-        max_speech_duration_s=config.max_segment_s,
+        # No Silero-side splitting: long speech stays one open span and the
+        # segmenter places the cut at a quiet moment (see module docstring).
+        max_speech_duration_s=float("inf"),
         min_silence_duration_ms=int(config.min_silence_s * 1000),
         speech_pad_ms=int(config.speech_pad_s * 1000),
     )
@@ -126,6 +139,8 @@ class VadSegmenter:
         self._release_slack = int(0.5 * rate)
         self._complete_gap = int((config.min_silence_s - config.speech_pad_s) * rate)
         self._coalesce_gap = int(config.coalesce_max_gap_s * rate)
+        self._cut_search = int(config.cut_search_s * rate)
+        self._cut_frame = max(1, int(0.02 * rate))
 
     @property
     def config(self) -> VadSegmenterConfig:
@@ -158,7 +173,7 @@ class VadSegmenter:
         if not complete:
             open_start = spans[0][0]
             if total - open_start >= self._max_segment:
-                cut = open_start + self._max_segment
+                cut = self._forced_cut(audio, open_start)
                 return SegmentPlan(cut, (open_start, cut))
             if open_start >= self._release_slack:
                 # Release leading non-speech; the span start already
@@ -173,8 +188,50 @@ class VadSegmenter:
             if end - clip_start > self._max_segment:
                 break
             clip_end = end
-        clip_end = min(clip_end, clip_start + self._max_segment)
+        if clip_end - clip_start > self._max_segment:
+            clip_end = self._forced_cut(audio, clip_start)
         return SegmentPlan(clip_end, (clip_start, clip_end))
+
+    def _forced_cut(self, audio: np.ndarray, start: int) -> int:
+        """Where to cut speech that runs past the cap, as a sample index.
+
+        Looks at the ``cut_search_s`` before ``start + max_segment`` (never
+        earlier than half the cap) in 20 ms frames. Frames near the quietest
+        level (within a fifth of the way to the median) form "quiet runs";
+        the LONGEST run wins — a pause between sentences beats a gap between
+        words — with ties going to the latest. The cut lands mid-run, or
+        exactly at the cap when the winning run reaches it. Flat audio (a
+        tone, digital silence: under 10 % spread between the quietest and
+        the median frame) has no pause to find and is cut at the cap.
+        """
+        high = min(len(audio), start + self._max_segment)
+        low = max(start + self._max_segment // 2, high - self._cut_search)
+        frame = self._cut_frame
+        count = (high - low) // frame
+        if count <= 0:
+            return high
+        first = high - count * frame
+        frames = audio[first:high].reshape(count, frame)
+        rms = np.sqrt(np.mean(np.square(frames, dtype=np.float64), axis=1))
+        floor = float(rms.min())
+        median = float(np.median(rms))
+        if median - floor <= 0.1 * median + 1e-6:
+            return high  # flat audio: no pause to find, cut at the cap
+        quiet = rms <= floor + 0.2 * (median - floor) + 1e-4
+        best_start = best_length = -1
+        index = 0
+        while index < count:
+            if not quiet[index]:
+                index += 1
+                continue
+            run_start = index
+            while index < count and quiet[index]:
+                index += 1
+            if index - run_start >= best_length:  # ">=": later runs win ties
+                best_start, best_length = run_start, index - run_start
+        if best_start + best_length == count:
+            return high
+        return first + (best_start * frame) + (best_length * frame) // 2
 
     @staticmethod
     def _clean_spans(

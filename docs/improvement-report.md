@@ -122,8 +122,11 @@ rather than asserting it.
 > path is unchanged and still the default for the Whisper engines. `auto`
 > picks VAD for the new Parakeet backend, where it pays most: Parakeet has no
 > 30 s padding, so variable-length clips are cheap. On the synthetic fixture,
-> Parakeet with VAD scored 7.1 % WER against 21.3 % for the same model on
-> 4 s windows.
+> Parakeet with VAD scored 4.7 % WER against 21.3 % for the same model on
+> 4 s windows. One lesson from the live run: continuous speech rarely has a
+> 500 ms pause, so the length cap does most of the cutting, and cutting at
+> the exact cap lands mid-word. The segmenter now cuts at the longest pause
+> in the second half of the window instead.
 
 **Tier 3 — speech-vs-music discrimination (measure before you build).**
 

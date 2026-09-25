@@ -170,13 +170,14 @@ auto-detects 25 European languages. On the synthetic fixture
 
 | Engine (Intel Arc 140V iGPU unless noted) | WER | STT calls | p50 per call | compute / audio |
 |---|---|---|---|---|
-| `parakeet` + VAD, xpu fp16 | **7.1 %** | 5 | 424 ms | **0.06×** |
+| `parakeet` + VAD, xpu fp16 | **4.7 %** | 6 | ~420 ms | **0.06×** |
 | `parakeet` + 4 s windows | 21.3 % | 13 | 284 ms | 0.08× |
 | `torch` `whisper-small.en` + windows | 23.6 % | 13 | 761 ms | 0.23× |
 | `faster-whisper` `distil-small.en`, CPU int8 | 24.4 % | 13 | 1828 ms | 0.56× |
 
-Most of the windowed engines' errors are words chopped at window boundaries, which
-is what VAD segmentation removes. Pure noise, tones and silence make Parakeet emit
+(Latency on an otherwise idle machine; it roughly triples when other GPU/CPU-heavy
+programs are running.) Most of the windowed engines' errors are words chopped at
+window boundaries, which is what VAD segmentation removes. Pure noise, tones and silence make Parakeet emit
 no tokens at all (no "thanks for watching" hallucinations).
 
 **Segmentation (`STT_SEGMENTATION=auto|window|vad`).** `window` transcribes a fixed
@@ -184,6 +185,9 @@ no tokens at all (no "thanks for watching" hallucinations).
 utterance boundaries instead: Silero VAD finds speech, and a clip is transcribed once
 its speech has ended (`STT_VAD_MIN_SILENCE_MS`, 500 ms of silence) or reaches
 `STT_VAD_MAX_SEGMENT_S` (10 s; must stay ≥ 1 s under `AUDIO_HIGH_WATERMARK_S`).
+Continuous speech that never pauses that long is cut at the longest pause in the
+second half of that window (a sentence break rather than a word gap), never
+mid-word at the exact cap.
 Silence and music cost no STT call, sentences are not chopped mid-clause, and the
 session summary logs `vad skipped=Ns`. `auto` (default) means `vad` for Parakeet and
 `window` for the Whisper engines, whose windowed path is unchanged.
