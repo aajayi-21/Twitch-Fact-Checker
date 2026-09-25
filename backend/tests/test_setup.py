@@ -789,6 +789,10 @@ class TestConfiguredBootFromEnvFile:
             "WHISPER_MODEL",
         ):
             monkeypatch.delenv(variable, raising=False)
+        # The real lifespan opens the analytics database: without this it is
+        # the developer's REAL backend/fact_checker.db, and the hello below
+        # records a session row in it on every suite run.
+        monkeypatch.setenv("DB_PATH", str(tmp_path / "boot.db"))
 
         boot_client = FakeGenAIClient()
 
