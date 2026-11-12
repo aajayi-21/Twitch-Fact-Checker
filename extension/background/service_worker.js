@@ -25,12 +25,13 @@
  *  - persisting the session owner's SESSION_UPDATE state to
  *    chrome.storage.session (offscreen docs cannot access chrome.storage),
  *  - forwarding sync-settings changes to the session owner,
- *  - opening the options page for content scripts (OPEN_OPTIONS),
+ *  - opening the app tab on install, and for content scripts (OPEN_OPTIONS),
  *  - routing the captured tab's ad-break reports (AD_STATE) to the session
  *    owner, which drops audio while an ad plays (shared/ad_pause.js),
  *  - closing the offscreen document on CAPTURE_ENDED.
  */
 
+import {APP_ROUTE, openAppTab} from "../shared/app_tab.js";
 import {HAS_OFFSCREEN_CAPTURE} from "../shared/capabilities.js";
 import {ERR, MSG, TARGET, makeMsg} from "../shared/messages.js";
 import {
@@ -488,8 +489,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         await handleCaptureEnded(message.payload?.reason);
         break;
       case MSG.OPEN_OPTIONS:
-        // Content scripts cannot call chrome.runtime.openOptionsPage().
-        await chrome.runtime.openOptionsPage();
+        // Content scripts cannot open extension pages themselves.
+        await openAppTab(message.payload?.route ?? APP_ROUTE.SETTINGS);
         break;
       case MSG.SUBMIT_FEEDBACK:
         await handleSubmitFeedback(message.payload);
@@ -521,6 +522,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return false;
 });
 
+// First install: open the app on its welcome flow. Updates and browser
+// restarts must NOT pop a tab open.
+chrome.runtime.onInstalled.addListener(({reason}) => {
+  if (reason !== "install") {
+    return;
+  }
+  openAppTab(APP_ROUTE.WELCOME).catch((error) => {
+    console.error("[fact-checker] opening the welcome page failed:", error);
+  });
+});
+
 chrome.tabs.onRemoved.addListener((tabId) => {
   handleTabRemoved(tabId).catch((error) => {
     console.error("[fact-checker] tabs.onRemoved handling failed:", error);
@@ -541,7 +553,7 @@ pageSession.configure({
 });
 
 /**
- * Relay live sensitivity and topic-filter changes from the options page to
+ * Relay live sensitivity and topic-filter changes from the app's Settings to
  * the offscreen document (offscreen docs cannot observe
  * chrome.storage.onChanged), which forwards them as a WS config frame.
  * Topics travel as the enabled-slug array (the OFFSCREEN_CONFIG payload

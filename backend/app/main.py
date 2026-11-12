@@ -184,7 +184,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     if not configured:
         logger.warning(
-            "no API key yet — add one from the extension's options page; "
+            "no API key yet — add one in the extension's app (AI provider); "
             "capture will refuse to start until then"
         )
     try:

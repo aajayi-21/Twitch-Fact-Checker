@@ -680,11 +680,15 @@
   const init = async () => {
     state.settings = await loadStoredSettings();
     state.overlay = new FactCheckOverlay(state.settings);
-    // "Edit topics" in the history-panel footer: content scripts cannot call
-    // chrome.runtime.openOptionsPage(), so ask the service worker.
+    // "Edit topics" in the history-panel footer: content scripts cannot open
+    // extension pages, so ask the service worker to open the app's Settings.
     state.overlay.onEditTopics = () => {
       chrome.runtime
-        .sendMessage({target: "background", type: "OPEN_OPTIONS", payload: {}})
+        .sendMessage({
+          target: "background",
+          type: "OPEN_OPTIONS",
+          payload: {route: "/settings"},
+        })
         .catch((error) => {
           console.debug("[fact-checker] OPEN_OPTIONS send failed:", error);
         });

@@ -20,7 +20,7 @@ echo "Syncing Python environment with uv…"
 uv sync --inexact
 
 echo "Starting Live Stream Fact-Checker backend on http://127.0.0.1:8710 …"
-echo "No API key yet? That's fine — add one from the extension's options page."
+echo "No API key yet? That's fine — add one in the extension's app (AI provider)."
 # --no-sync: the sync above already ran. Without it `uv run` re-syncs and
 # would replace a hand-picked +rocm/+xpu torch wheel with the locked one.
 # --no-access-log: the extension polls /healthz every 3 s, which would

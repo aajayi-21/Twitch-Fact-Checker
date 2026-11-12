@@ -10,6 +10,7 @@
  *   transition, relayed from the offscreen document via SESSION_UPDATE).
  */
 
+import {APP_ROUTE, openAppTab} from "../shared/app_tab.js";
 import {ERR, MSG, TARGET, makeMsg} from "../shared/messages.js";
 import {
   TOPIC_SLUGS,
@@ -76,6 +77,7 @@ const elements = {
   topicsEdit: document.getElementById("topics-edit"),
   setupCard: document.getElementById("setup-card"),
   openSettingsButton: document.getElementById("open-settings-button"),
+  openDashboard: document.getElementById("open-dashboard"),
   costLine: document.getElementById("cost-line"),
 };
 
@@ -255,19 +257,25 @@ const handleStartClick = async () => {
   }
 };
 
-/** Read-only "Topics: N of 9 on" summary; editing lives on the options page. */
+/** Read-only "Topics: N of 9 on" summary; editing lives in the app's Settings. */
 const renderTopicsSummary = (settings) => {
   const enabledCount = getEnabledTopicSlugs(settings.topics).length;
   elements.topicsSummary.textContent =
     `Topics: ${enabledCount} of ${TOPIC_SLUGS.length} on`;
 };
 
-/** Shared by the topics "Edit" link and the setup card's "Open settings". */
-const handleOpenOptionsClick = async () => {
+/**
+ * Open the full-tab app on the given screen and close the popup, so the app
+ * is not left hidden behind it.
+ *
+ * @param {string} route - one of APP_ROUTE
+ */
+const openApp = async (route) => {
   try {
-    await chrome.runtime.openOptionsPage();
+    await openAppTab(route);
+    window.close();
   } catch (error) {
-    console.error("[fact-checker] opening options page failed:", error);
+    console.error("[fact-checker] opening the app failed:", error);
   }
 };
 
@@ -294,16 +302,9 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 
 elements.startButton.addEventListener("click", handleStartClick);
 elements.stopButton.addEventListener("click", handleStopClick);
-elements.topicsEdit.addEventListener("click", () => {
-  handleOpenOptionsClick().catch((error) => {
-    console.error("[fact-checker] edit-topics click failed:", error);
-  });
-});
-elements.openSettingsButton.addEventListener("click", () => {
-  handleOpenOptionsClick().catch((error) => {
-    console.error("[fact-checker] open-settings click failed:", error);
-  });
-});
+elements.topicsEdit.addEventListener("click", () => openApp(APP_ROUTE.SETTINGS));
+elements.openSettingsButton.addEventListener("click", () => openApp(APP_ROUTE.PROVIDERS));
+elements.openDashboard.addEventListener("click", () => openApp(APP_ROUTE.HOME));
 
 const init = async () => {
   const settings = await loadSettings();
