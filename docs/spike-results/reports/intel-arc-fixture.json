@@ -1,0 +1,1225 @@
+{
+  "schema": 1,
+  "environment": {
+    "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.0.0 Safari/537.36",
+    "platform": "Linux",
+    "hardwareConcurrency": 8,
+    "deviceMemoryGb": 32,
+    "crossOriginIsolated": true,
+    "origin": "http:",
+    "timestamp": "2026-11-12T01:27:00.967Z"
+  },
+  "clip": "http://127.0.0.1:35967/fixture/claims_16k.wav",
+  "options": {
+    "forceFallbackAdapter": false,
+    "allowSoftwareGpu": false,
+    "powerPreference": "high-performance",
+    "numThreads": 4
+  },
+  "models": [
+    {
+      "modelId": "moonshine-tiny",
+      "repo": "onnx-community/moonshine-tiny-ONNX",
+      "gpu": {
+        "webgpuAvailable": true,
+        "kind": "hardware",
+        "usable": true,
+        "reason": null,
+        "error": null,
+        "vendor": "intel",
+        "architecture": "xe-2lpg",
+        "device": "",
+        "description": "",
+        "isFallbackAdapter": false,
+        "shaderF16": true,
+        "features": [
+          "atomic-vec2u-min-max",
+          "bgra8unorm-storage",
+          "chromium-experimental-multi-draw-indirect",
+          "chromium-experimental-sampling-resource-table",
+          "chromium-experimental-subgroup-matrix",
+          "chromium-experimental-timestamp-query-inside-passes",
+          "clip-distances",
+          "core-features-and-limits",
+          "depth-clip-control",
+          "depth32float-stencil8",
+          "dual-source-blending",
+          "float32-blendable",
+          "float32-filterable",
+          "indirect-first-instance",
+          "primitive-index",
+          "rg11b10ufloat-renderable",
+          "shader-f16",
+          "subgroup-size-control",
+          "subgroups",
+          "texture-component-swizzle",
+          "texture-compression-bc",
+          "texture-compression-bc-sliced-3d",
+          "texture-compression-etc2",
+          "texture-compression-unaligned",
+          "texture-formats-tier1",
+          "texture-formats-tier2",
+          "timestamp-query"
+        ],
+        "limits": {
+          "maxBufferSize": 4294967292,
+          "maxStorageBufferBindingSize": 4294967292,
+          "maxComputeInvocationsPerWorkgroup": 1024,
+          "maxComputeWorkgroupStorageSize": 49152,
+          "maxStorageBuffersPerShaderStage": 16
+        },
+        "powerPreference": "high-performance",
+        "label": "intel (xe-2lpg)",
+        "cacheKey": "hardware|intel|xe-2lpg|||f16|high-performance"
+      },
+      "skipped": [],
+      "audio": {
+        "seconds": 42.6949375,
+        "segments": 6,
+        "hasReference": true
+      },
+      "thresholds": {
+        "maxRealTimeFactor": 0.5,
+        "maxWordErrorRate": 0.25
+      },
+      "runs": [
+        {
+          "variantId": "wasm-q8",
+          "device": "wasm",
+          "dtype": "q8",
+          "downloadMb": 28,
+          "wordErrorRate": 0.29133858267716534,
+          "ok": true,
+          "error": null,
+          "loadMs": 2838.9499999955297,
+          "warmupMs": 152.48499999940395,
+          "inferenceMs": 1466.1249999925494,
+          "audioSeconds": 44.580000000000005,
+          "realTimeFactor": 0.03288750560772878,
+          "slowestSegmentRtf": 0.03934923928040357,
+          "text": "Welcome back to the stream everyone, we are live. Did you know the iPhone tower is 450 meters tall? \"Looking up, cat. Honestly, this patch is terrible. The developers have no idea what they are doing. I'm going to push to push the left lane and take the tower before their jungler responds. Someone sent the great wall of China's visible front space with the naked eye and had just facts. Messi has won eight melon dormant words no other player is close trust me our team is winning the whole tournament to the 2020, 2020, 2020, 2020, 2020, 2020, 2020, Remember to hit that follow button and use code stream for 10% off",
+          "segments": [
+            {
+              "audioSeconds": 7.23,
+              "inferenceMs": 284.4949999973178,
+              "text": "Welcome back to the stream everyone, we are live. Did you know the iPhone tower is 450 meters tall?"
+            },
+            {
+              "audioSeconds": 7.44,
+              "inferenceMs": 265.1499999985099,
+              "text": "\"Looking up, cat. Honestly, this patch is terrible. The developers have no idea what they are doing. I'm going to push"
+            },
+            {
+              "audioSeconds": 10.41,
+              "inferenceMs": 315.39500000327826,
+              "text": "to push the left lane and take the tower before their jungler responds. Someone sent the great wall of China's visible front space with the naked eye and had just facts."
+            },
+            {
+              "audioSeconds": 7.26,
+              "inferenceMs": 201.19500000029802,
+              "text": "Messi has won eight melon dormant words no other player is close trust me our team is winning the whole tournament to the"
+            },
+            {
+              "audioSeconds": 7.35,
+              "inferenceMs": 280.16499999910593,
+              "text": "2020, 2020, 2020, 2020, 2020, 2020, 2020,"
+            },
+            {
+              "audioSeconds": 4.89,
+              "inferenceMs": 119.72499999403954,
+              "text": "Remember to hit that follow button and use code stream for 10% off"
+            }
+          ],
+          "numThreads": 4,
+          "crossOriginIsolated": true,
+          "workerProbe": null,
+          "sessionGpu": null,
+          "verdict": {
+            "pass": false,
+            "reason": "wrong-output"
+          }
+        },
+        {
+          "variantId": "webgpu-fp32",
+          "device": "webgpu",
+          "dtype": "fp32",
+          "downloadMb": 109,
+          "wordErrorRate": 0.33070866141732286,
+          "ok": true,
+          "error": null,
+          "loadMs": 2375.9049999937415,
+          "warmupMs": 374.38499999791384,
+          "inferenceMs": 3091.9150000065565,
+          "audioSeconds": 44.580000000000005,
+          "realTimeFactor": 0.06935655002257865,
+          "slowestSegmentRtf": 0.09953673469472904,
+          "text": "Welcome back to the stream everyone, we are live. Did you know the iPhone 200 and 50 meters tall? Oh, look it up, cat. Honestly, this patch is terrible. The developers have no idea what they are doing. I'm going to push to push the left lane and take the tower before their jungler responds. Someone sent the right wall of China's visible front space with the Naked eye and have just facts. Messi has won eight melon dormant words no other player is close trust me our team is winning the whole tournament 2020, 2020, 2020, 2020, 2020, 2020, 2020, Remember to hit that follow button and use code 3410% off",
+          "segments": [
+            {
+              "audioSeconds": 7.23,
+              "inferenceMs": 545.9049999937415,
+              "text": "Welcome back to the stream everyone, we are live. Did you know the iPhone 200 and 50 meters tall?"
+            },
+            {
+              "audioSeconds": 7.44,
+              "inferenceMs": 537.554999999702,
+              "text": "Oh, look it up, cat. Honestly, this patch is terrible. The developers have no idea what they are doing. I'm going to push"
+            },
+            {
+              "audioSeconds": 10.41,
+              "inferenceMs": 619.8350000008941,
+              "text": "to push the left lane and take the tower before their jungler responds. Someone sent the right wall of China's visible front space with the Naked eye and have just facts."
+            },
+            {
+              "audioSeconds": 7.26,
+              "inferenceMs": 408.70000000298023,
+              "text": "Messi has won eight melon dormant words no other player is close trust me our team is winning the whole tournament"
+            },
+            {
+              "audioSeconds": 7.35,
+              "inferenceMs": 731.5950000062585,
+              "text": "2020, 2020, 2020, 2020, 2020, 2020, 2020,"
+            },
+            {
+              "audioSeconds": 4.89,
+              "inferenceMs": 248.32500000298023,
+              "text": "Remember to hit that follow button and use code 3410% off"
+            }
+          ],
+          "numThreads": 4,
+          "crossOriginIsolated": true,
+          "workerProbe": {
+            "webgpuAvailable": true,
+            "kind": "hardware",
+            "usable": true,
+            "reason": null,
+            "error": null,
+            "vendor": "intel",
+            "architecture": "xe-2lpg",
+            "device": "",
+            "description": "",
+            "isFallbackAdapter": false,
+            "shaderF16": true,
+            "features": [
+              "atomic-vec2u-min-max",
+              "bgra8unorm-storage",
+              "chromium-experimental-multi-draw-indirect",
+              "chromium-experimental-sampling-resource-table",
+              "chromium-experimental-subgroup-matrix",
+              "chromium-experimental-timestamp-query-inside-passes",
+              "clip-distances",
+              "core-features-and-limits",
+              "depth-clip-control",
+              "depth32float-stencil8",
+              "dual-source-blending",
+              "float32-blendable",
+              "float32-filterable",
+              "indirect-first-instance",
+              "primitive-index",
+              "rg11b10ufloat-renderable",
+              "shader-f16",
+              "subgroup-size-control",
+              "subgroups",
+              "texture-component-swizzle",
+              "texture-compression-bc",
+              "texture-compression-bc-sliced-3d",
+              "texture-compression-etc2",
+              "texture-compression-unaligned",
+              "texture-formats-tier1",
+              "texture-formats-tier2",
+              "timestamp-query"
+            ],
+            "limits": {
+              "maxBufferSize": 4294967292,
+              "maxStorageBufferBindingSize": 4294967292,
+              "maxComputeInvocationsPerWorkgroup": 1024,
+              "maxComputeWorkgroupStorageSize": 49152,
+              "maxStorageBuffersPerShaderStage": 16
+            },
+            "powerPreference": "high-performance"
+          },
+          "sessionGpu": {
+            "vendor": "intel",
+            "architecture": "xe-2lpg",
+            "description": "",
+            "isFallbackAdapter": false,
+            "shaderF16": true
+          },
+          "verdict": {
+            "pass": false,
+            "reason": "wrong-output"
+          }
+        }
+      ],
+      "selected": null
+    },
+    {
+      "modelId": "moonshine-base",
+      "repo": "onnx-community/moonshine-base-ONNX",
+      "gpu": {
+        "webgpuAvailable": true,
+        "kind": "hardware",
+        "usable": true,
+        "reason": null,
+        "error": null,
+        "vendor": "intel",
+        "architecture": "xe-2lpg",
+        "device": "",
+        "description": "",
+        "isFallbackAdapter": false,
+        "shaderF16": true,
+        "features": [
+          "atomic-vec2u-min-max",
+          "bgra8unorm-storage",
+          "chromium-experimental-multi-draw-indirect",
+          "chromium-experimental-sampling-resource-table",
+          "chromium-experimental-subgroup-matrix",
+          "chromium-experimental-timestamp-query-inside-passes",
+          "clip-distances",
+          "core-features-and-limits",
+          "depth-clip-control",
+          "depth32float-stencil8",
+          "dual-source-blending",
+          "float32-blendable",
+          "float32-filterable",
+          "indirect-first-instance",
+          "primitive-index",
+          "rg11b10ufloat-renderable",
+          "shader-f16",
+          "subgroup-size-control",
+          "subgroups",
+          "texture-component-swizzle",
+          "texture-compression-bc",
+          "texture-compression-bc-sliced-3d",
+          "texture-compression-etc2",
+          "texture-compression-unaligned",
+          "texture-formats-tier1",
+          "texture-formats-tier2",
+          "timestamp-query"
+        ],
+        "limits": {
+          "maxBufferSize": 4294967292,
+          "maxStorageBufferBindingSize": 4294967292,
+          "maxComputeInvocationsPerWorkgroup": 1024,
+          "maxComputeWorkgroupStorageSize": 49152,
+          "maxStorageBuffersPerShaderStage": 16
+        },
+        "powerPreference": "high-performance",
+        "label": "intel (xe-2lpg)",
+        "cacheKey": "hardware|intel|xe-2lpg|||f16|high-performance"
+      },
+      "skipped": [],
+      "audio": {
+        "seconds": 42.6949375,
+        "segments": 6,
+        "hasReference": true
+      },
+      "thresholds": {
+        "maxRealTimeFactor": 0.5,
+        "maxWordErrorRate": 0.25
+      },
+      "runs": [
+        {
+          "variantId": "wasm-q8",
+          "device": "wasm",
+          "dtype": "q8",
+          "downloadMb": 63,
+          "wordErrorRate": 0.14960629921259844,
+          "ok": true,
+          "error": null,
+          "loadMs": 2455.125,
+          "warmupMs": 162.17000000178814,
+          "inferenceMs": 2470.405000001192,
+          "audioSeconds": 44.580000000000005,
+          "realTimeFactor": 0.05541509645583651,
+          "slowestSegmentRtf": 0.06333803763432849,
+          "text": "Welcome back to the stream everyone we are live did you know that Eiffel Tower is 450 meters tall Oh, look it up, cat. Honestly this patch is terrible, the developers have no idea what they are doing. I'm going to push to push the left lane and take the tower before their jungler responds. Someone said the Great Wall of China is visible from space with the naked eye and has just facts. Messi has won eight million Dora Awards, no other player is close. Trust me, our team is willing the whole tournament this year. This year easy by the way the speed of light is about 300 000 kilometers per second anyway we're Wait, remember to hit that follow button and use code 3410% off.",
+          "segments": [
+            {
+              "audioSeconds": 7.23,
+              "inferenceMs": 388.08500000089407,
+              "text": "Welcome back to the stream everyone we are live did you know that Eiffel Tower is 450 meters tall"
+            },
+            {
+              "audioSeconds": 7.44,
+              "inferenceMs": 471.23499999940395,
+              "text": "Oh, look it up, cat. Honestly this patch is terrible, the developers have no idea what they are doing. I'm going to push"
+            },
+            {
+              "audioSeconds": 10.41,
+              "inferenceMs": 638.5399999991059,
+              "text": "to push the left lane and take the tower before their jungler responds. Someone said the Great Wall of China is visible from space with the naked eye and has just facts."
+            },
+            {
+              "audioSeconds": 7.26,
+              "inferenceMs": 372.5100000053644,
+              "text": "Messi has won eight million Dora Awards, no other player is close. Trust me, our team is willing the whole tournament this year."
+            },
+            {
+              "audioSeconds": 7.35,
+              "inferenceMs": 361.7399999946356,
+              "text": "This year easy by the way the speed of light is about 300 000 kilometers per second anyway we're"
+            },
+            {
+              "audioSeconds": 4.89,
+              "inferenceMs": 238.29500000178814,
+              "text": "Wait, remember to hit that follow button and use code 3410% off."
+            }
+          ],
+          "numThreads": 4,
+          "crossOriginIsolated": true,
+          "workerProbe": null,
+          "sessionGpu": null,
+          "verdict": {
+            "pass": true,
+            "reason": null
+          }
+        },
+        {
+          "variantId": "webgpu-fp32",
+          "device": "webgpu",
+          "dtype": "fp32",
+          "downloadMb": 247,
+          "wordErrorRate": 0.14173228346456693,
+          "ok": true,
+          "error": null,
+          "loadMs": 5264.960000000894,
+          "warmupMs": 367.76500000059605,
+          "inferenceMs": 6376.434999994934,
+          "audioSeconds": 44.580000000000005,
+          "realTimeFactor": 0.1430335352174727,
+          "slowestSegmentRtf": 0.17750613496987366,
+          "text": "Welcome back to the stream everyone we are live did you know that Eiffel Tower is 450 meters tall Oh, look it up, cat. Honestly this patch is terrible, the developers have no idea what they are doing. I'm going to push to push the left lane and take the tower before their jungler responds. Someone said the Great Wall of China is visible from space with the naked eye and that's just facts. Messi has won eight million Dora Awards no other player is close trust me our team is willing to follow tournament this This year easy by the way the speed of light is about 300 000 kilometers per second anyway Wait, remember to hit that follow button and use code 3410% off.",
+          "segments": [
+            {
+              "audioSeconds": 7.23,
+              "inferenceMs": 519.8499999940395,
+              "text": "Welcome back to the stream everyone we are live did you know that Eiffel Tower is 450 meters tall"
+            },
+            {
+              "audioSeconds": 7.44,
+              "inferenceMs": 863.320000000298,
+              "text": "Oh, look it up, cat. Honestly this patch is terrible, the developers have no idea what they are doing. I'm going to push"
+            },
+            {
+              "audioSeconds": 10.41,
+              "inferenceMs": 1762.6199999973178,
+              "text": "to push the left lane and take the tower before their jungler responds. Someone said the Great Wall of China is visible from space with the naked eye and that's just facts."
+            },
+            {
+              "audioSeconds": 7.26,
+              "inferenceMs": 1122.1150000020862,
+              "text": "Messi has won eight million Dora Awards no other player is close trust me our team is willing to follow tournament this"
+            },
+            {
+              "audioSeconds": 7.35,
+              "inferenceMs": 1240.5249999985099,
+              "text": "This year easy by the way the speed of light is about 300 000 kilometers per second anyway"
+            },
+            {
+              "audioSeconds": 4.89,
+              "inferenceMs": 868.0050000026822,
+              "text": "Wait, remember to hit that follow button and use code 3410% off."
+            }
+          ],
+          "numThreads": 4,
+          "crossOriginIsolated": true,
+          "workerProbe": {
+            "webgpuAvailable": true,
+            "kind": "hardware",
+            "usable": true,
+            "reason": null,
+            "error": null,
+            "vendor": "intel",
+            "architecture": "xe-2lpg",
+            "device": "",
+            "description": "",
+            "isFallbackAdapter": false,
+            "shaderF16": true,
+            "features": [
+              "atomic-vec2u-min-max",
+              "bgra8unorm-storage",
+              "chromium-experimental-multi-draw-indirect",
+              "chromium-experimental-sampling-resource-table",
+              "chromium-experimental-subgroup-matrix",
+              "chromium-experimental-timestamp-query-inside-passes",
+              "clip-distances",
+              "core-features-and-limits",
+              "depth-clip-control",
+              "depth32float-stencil8",
+              "dual-source-blending",
+              "float32-blendable",
+              "float32-filterable",
+              "indirect-first-instance",
+              "primitive-index",
+              "rg11b10ufloat-renderable",
+              "shader-f16",
+              "subgroup-size-control",
+              "subgroups",
+              "texture-component-swizzle",
+              "texture-compression-bc",
+              "texture-compression-bc-sliced-3d",
+              "texture-compression-etc2",
+              "texture-compression-unaligned",
+              "texture-formats-tier1",
+              "texture-formats-tier2",
+              "timestamp-query"
+            ],
+            "limits": {
+              "maxBufferSize": 4294967292,
+              "maxStorageBufferBindingSize": 4294967292,
+              "maxComputeInvocationsPerWorkgroup": 1024,
+              "maxComputeWorkgroupStorageSize": 49152,
+              "maxStorageBuffersPerShaderStage": 16
+            },
+            "powerPreference": "high-performance"
+          },
+          "sessionGpu": {
+            "vendor": "intel",
+            "architecture": "xe-2lpg",
+            "description": "",
+            "isFallbackAdapter": false,
+            "shaderF16": true
+          },
+          "verdict": {
+            "pass": true,
+            "reason": null
+          }
+        }
+      ],
+      "selected": {
+        "variantId": "wasm-q8",
+        "device": "wasm",
+        "dtype": "q8",
+        "requiresShaderF16": false
+      }
+    },
+    {
+      "modelId": "whisper-base.en",
+      "repo": "onnx-community/whisper-base.en",
+      "gpu": {
+        "webgpuAvailable": true,
+        "kind": "hardware",
+        "usable": true,
+        "reason": null,
+        "error": null,
+        "vendor": "intel",
+        "architecture": "xe-2lpg",
+        "device": "",
+        "description": "",
+        "isFallbackAdapter": false,
+        "shaderF16": true,
+        "features": [
+          "atomic-vec2u-min-max",
+          "bgra8unorm-storage",
+          "chromium-experimental-multi-draw-indirect",
+          "chromium-experimental-sampling-resource-table",
+          "chromium-experimental-subgroup-matrix",
+          "chromium-experimental-timestamp-query-inside-passes",
+          "clip-distances",
+          "core-features-and-limits",
+          "depth-clip-control",
+          "depth32float-stencil8",
+          "dual-source-blending",
+          "float32-blendable",
+          "float32-filterable",
+          "indirect-first-instance",
+          "primitive-index",
+          "rg11b10ufloat-renderable",
+          "shader-f16",
+          "subgroup-size-control",
+          "subgroups",
+          "texture-component-swizzle",
+          "texture-compression-bc",
+          "texture-compression-bc-sliced-3d",
+          "texture-compression-etc2",
+          "texture-compression-unaligned",
+          "texture-formats-tier1",
+          "texture-formats-tier2",
+          "timestamp-query"
+        ],
+        "limits": {
+          "maxBufferSize": 4294967292,
+          "maxStorageBufferBindingSize": 4294967292,
+          "maxComputeInvocationsPerWorkgroup": 1024,
+          "maxComputeWorkgroupStorageSize": 49152,
+          "maxStorageBuffersPerShaderStage": 16
+        },
+        "powerPreference": "high-performance",
+        "label": "intel (xe-2lpg)",
+        "cacheKey": "hardware|intel|xe-2lpg|||f16|high-performance"
+      },
+      "skipped": [],
+      "audio": {
+        "seconds": 42.6949375,
+        "segments": 6,
+        "hasReference": true
+      },
+      "thresholds": {
+        "maxRealTimeFactor": 0.5,
+        "maxWordErrorRate": 0.25
+      },
+      "runs": [
+        {
+          "variantId": "webgpu-mixed",
+          "device": "webgpu",
+          "dtype": {
+            "encoder_model": "fp16",
+            "decoder_model_merged": "fp32"
+          },
+          "downloadMb": 250,
+          "wordErrorRate": 0.07874015748031496,
+          "ok": true,
+          "error": null,
+          "loadMs": 5807.85000000149,
+          "warmupMs": 540.515000000596,
+          "inferenceMs": 4500.134999997914,
+          "audioSeconds": 44.580000000000005,
+          "realTimeFactor": 0.1009451547778805,
+          "slowestSegmentRtf": 0.12254907975472312,
+          "text": "Welcome back to the stream everyone, we are live. Did you know the Eiffel Tower is 450 meters tall? Look it up, chat. Honestly this match is terrible, but developers have no idea what they are doing. I'm going to push to push the left lane and take the tower before their jungler responds. Someone said the Great Wall of China is visible from space with the naked eye and that's just facts. Messy has won 8 Ballon dor awards, no other player is close. Trust me, our team is winning the whole tournament this year. This year, easy. By the way, the speed of light is about 300,000 km per second. Anyway, Remember to hit that follow button and use code stream for 10% off.",
+          "segments": [
+            {
+              "audioSeconds": 7.23,
+              "inferenceMs": 634.3350000008941,
+              "text": "Welcome back to the stream everyone, we are live. Did you know the Eiffel Tower is 450 meters tall?"
+            },
+            {
+              "audioSeconds": 7.44,
+              "inferenceMs": 765.7299999967217,
+              "text": "Look it up, chat. Honestly this match is terrible, but developers have no idea what they are doing. I'm going to push"
+            },
+            {
+              "audioSeconds": 10.41,
+              "inferenceMs": 898.375,
+              "text": "to push the left lane and take the tower before their jungler responds. Someone said the Great Wall of China is visible from space with the naked eye and that's just facts."
+            },
+            {
+              "audioSeconds": 7.26,
+              "inferenceMs": 854.2100000008941,
+              "text": "Messy has won 8 Ballon dor awards, no other player is close. Trust me, our team is winning the whole tournament this year."
+            },
+            {
+              "audioSeconds": 7.35,
+              "inferenceMs": 748.2199999988079,
+              "text": "This year, easy. By the way, the speed of light is about 300,000 km per second. Anyway,"
+            },
+            {
+              "audioSeconds": 4.89,
+              "inferenceMs": 599.265000000596,
+              "text": "Remember to hit that follow button and use code stream for 10% off."
+            }
+          ],
+          "numThreads": 4,
+          "crossOriginIsolated": true,
+          "workerProbe": {
+            "webgpuAvailable": true,
+            "kind": "hardware",
+            "usable": true,
+            "reason": null,
+            "error": null,
+            "vendor": "intel",
+            "architecture": "xe-2lpg",
+            "device": "",
+            "description": "",
+            "isFallbackAdapter": false,
+            "shaderF16": true,
+            "features": [
+              "atomic-vec2u-min-max",
+              "bgra8unorm-storage",
+              "chromium-experimental-multi-draw-indirect",
+              "chromium-experimental-sampling-resource-table",
+              "chromium-experimental-subgroup-matrix",
+              "chromium-experimental-timestamp-query-inside-passes",
+              "clip-distances",
+              "core-features-and-limits",
+              "depth-clip-control",
+              "depth32float-stencil8",
+              "dual-source-blending",
+              "float32-blendable",
+              "float32-filterable",
+              "indirect-first-instance",
+              "primitive-index",
+              "rg11b10ufloat-renderable",
+              "shader-f16",
+              "subgroup-size-control",
+              "subgroups",
+              "texture-component-swizzle",
+              "texture-compression-bc",
+              "texture-compression-bc-sliced-3d",
+              "texture-compression-etc2",
+              "texture-compression-unaligned",
+              "texture-formats-tier1",
+              "texture-formats-tier2",
+              "timestamp-query"
+            ],
+            "limits": {
+              "maxBufferSize": 4294967292,
+              "maxStorageBufferBindingSize": 4294967292,
+              "maxComputeInvocationsPerWorkgroup": 1024,
+              "maxComputeWorkgroupStorageSize": 49152,
+              "maxStorageBuffersPerShaderStage": 16
+            },
+            "powerPreference": "high-performance"
+          },
+          "sessionGpu": {
+            "vendor": "intel",
+            "architecture": "xe-2lpg",
+            "description": "",
+            "isFallbackAdapter": false,
+            "shaderF16": true
+          },
+          "verdict": {
+            "pass": true,
+            "reason": null
+          }
+        },
+        {
+          "variantId": "webgpu-fp32",
+          "device": "webgpu",
+          "dtype": "fp32",
+          "downloadMb": 291,
+          "wordErrorRate": 0.07874015748031496,
+          "ok": true,
+          "error": null,
+          "loadMs": 2998.804999999702,
+          "warmupMs": 459.7849999964237,
+          "inferenceMs": 5144.2900000065565,
+          "audioSeconds": 44.580000000000005,
+          "realTimeFactor": 0.11539457155689896,
+          "slowestSegmentRtf": 0.14075460122681102,
+          "text": "Welcome back to the stream everyone, we are live. Did you know the Eiffel Tower is 450 meters tall? Look it up, chat. Honestly this match is terrible, but developers have no idea what they are doing. I'm going to push to push the left lane and take the tower before their jungler responds. Someone said the Great Wall of China is visible from space with the naked eye and that's just facts. Messy has won 8 Ballon dor awards, no other player is close. Trust me, our team is winning the whole tournament this year. This year, easy. By the way, the speed of light is about 300,000 km per second. Anyway, Remember to hit that follow button and use code stream for 10% off.",
+          "segments": [
+            {
+              "audioSeconds": 7.23,
+              "inferenceMs": 833,
+              "text": "Welcome back to the stream everyone, we are live. Did you know the Eiffel Tower is 450 meters tall?"
+            },
+            {
+              "audioSeconds": 7.44,
+              "inferenceMs": 918.8700000047684,
+              "text": "Look it up, chat. Honestly this match is terrible, but developers have no idea what they are doing. I'm going to push"
+            },
+            {
+              "audioSeconds": 10.41,
+              "inferenceMs": 1007.7700000032783,
+              "text": "to push the left lane and take the tower before their jungler responds. Someone said the Great Wall of China is visible from space with the naked eye and that's just facts."
+            },
+            {
+              "audioSeconds": 7.26,
+              "inferenceMs": 924.804999999702,
+              "text": "Messy has won 8 Ballon dor awards, no other player is close. Trust me, our team is winning the whole tournament this year."
+            },
+            {
+              "audioSeconds": 7.35,
+              "inferenceMs": 771.554999999702,
+              "text": "This year, easy. By the way, the speed of light is about 300,000 km per second. Anyway,"
+            },
+            {
+              "audioSeconds": 4.89,
+              "inferenceMs": 688.2899999991059,
+              "text": "Remember to hit that follow button and use code stream for 10% off."
+            }
+          ],
+          "numThreads": 4,
+          "crossOriginIsolated": true,
+          "workerProbe": {
+            "webgpuAvailable": true,
+            "kind": "hardware",
+            "usable": true,
+            "reason": null,
+            "error": null,
+            "vendor": "intel",
+            "architecture": "xe-2lpg",
+            "device": "",
+            "description": "",
+            "isFallbackAdapter": false,
+            "shaderF16": true,
+            "features": [
+              "atomic-vec2u-min-max",
+              "bgra8unorm-storage",
+              "chromium-experimental-multi-draw-indirect",
+              "chromium-experimental-sampling-resource-table",
+              "chromium-experimental-subgroup-matrix",
+              "chromium-experimental-timestamp-query-inside-passes",
+              "clip-distances",
+              "core-features-and-limits",
+              "depth-clip-control",
+              "depth32float-stencil8",
+              "dual-source-blending",
+              "float32-blendable",
+              "float32-filterable",
+              "indirect-first-instance",
+              "primitive-index",
+              "rg11b10ufloat-renderable",
+              "shader-f16",
+              "subgroup-size-control",
+              "subgroups",
+              "texture-component-swizzle",
+              "texture-compression-bc",
+              "texture-compression-bc-sliced-3d",
+              "texture-compression-etc2",
+              "texture-compression-unaligned",
+              "texture-formats-tier1",
+              "texture-formats-tier2",
+              "timestamp-query"
+            ],
+            "limits": {
+              "maxBufferSize": 4294967292,
+              "maxStorageBufferBindingSize": 4294967292,
+              "maxComputeInvocationsPerWorkgroup": 1024,
+              "maxComputeWorkgroupStorageSize": 49152,
+              "maxStorageBuffersPerShaderStage": 16
+            },
+            "powerPreference": "high-performance"
+          },
+          "sessionGpu": {
+            "vendor": "intel",
+            "architecture": "xe-2lpg",
+            "description": "",
+            "isFallbackAdapter": false,
+            "shaderF16": true
+          },
+          "verdict": {
+            "pass": true,
+            "reason": null
+          }
+        },
+        {
+          "variantId": "wasm-q8",
+          "device": "wasm",
+          "dtype": "q8",
+          "downloadMb": 77,
+          "wordErrorRate": 0.09448818897637795,
+          "ok": true,
+          "error": null,
+          "loadMs": 1700.8299999982119,
+          "warmupMs": 1569.789999999106,
+          "inferenceMs": 11081.754999987781,
+          "audioSeconds": 44.580000000000005,
+          "realTimeFactor": 0.24858131449052892,
+          "slowestSegmentRtf": 0.29117893660421995,
+          "text": "Welcome back to the stream everyone, we are live. Did you know the Eiffel Tower is 450 meters tall? Look it up, chat. Honestly this patch is terrible, but developers have no idea what they are doing. I'm going to push. to push the left lane and take the tower before their jungler responds. Someone said the Great Wall of China is visible from space with the naked eye and that just facts. Messy has won 8 Ballon dor rewards, no other player is close. Trust me, our team is winning the whole tournament this year. This year, easy. By the way, a speed of light is about 300,000 km per second. Anyway, Remember to hit that follow button and use code stream for 10% off.",
+          "segments": [
+            {
+              "audioSeconds": 7.23,
+              "inferenceMs": 1937.0249999985099,
+              "text": "Welcome back to the stream everyone, we are live. Did you know the Eiffel Tower is 450 meters tall?"
+            },
+            {
+              "audioSeconds": 7.44,
+              "inferenceMs": 1869.8999999985099,
+              "text": "Look it up, chat. Honestly this patch is terrible, but developers have no idea what they are doing. I'm going to push."
+            },
+            {
+              "audioSeconds": 10.41,
+              "inferenceMs": 2121.5599999949336,
+              "text": "to push the left lane and take the tower before their jungler responds. Someone said the Great Wall of China is visible from space with the naked eye and that just facts."
+            },
+            {
+              "audioSeconds": 7.26,
+              "inferenceMs": 2009.984999999404,
+              "text": "Messy has won 8 Ballon dor rewards, no other player is close. Trust me, our team is winning the whole tournament this year."
+            },
+            {
+              "audioSeconds": 7.35,
+              "inferenceMs": 1719.4200000017881,
+              "text": "This year, easy. By the way, a speed of light is about 300,000 km per second. Anyway,"
+            },
+            {
+              "audioSeconds": 4.89,
+              "inferenceMs": 1423.8649999946356,
+              "text": "Remember to hit that follow button and use code stream for 10% off."
+            }
+          ],
+          "numThreads": 4,
+          "crossOriginIsolated": true,
+          "workerProbe": null,
+          "sessionGpu": null,
+          "verdict": {
+            "pass": true,
+            "reason": null
+          }
+        }
+      ],
+      "selected": {
+        "variantId": "webgpu-mixed",
+        "device": "webgpu",
+        "dtype": {
+          "encoder_model": "fp16",
+          "decoder_model_merged": "fp32"
+        },
+        "requiresShaderF16": true
+      }
+    },
+    {
+      "modelId": "distil-small.en",
+      "repo": "onnx-community/distil-small.en",
+      "gpu": {
+        "webgpuAvailable": true,
+        "kind": "hardware",
+        "usable": true,
+        "reason": null,
+        "error": null,
+        "vendor": "intel",
+        "architecture": "xe-2lpg",
+        "device": "",
+        "description": "",
+        "isFallbackAdapter": false,
+        "shaderF16": true,
+        "features": [
+          "atomic-vec2u-min-max",
+          "bgra8unorm-storage",
+          "chromium-experimental-multi-draw-indirect",
+          "chromium-experimental-sampling-resource-table",
+          "chromium-experimental-subgroup-matrix",
+          "chromium-experimental-timestamp-query-inside-passes",
+          "clip-distances",
+          "core-features-and-limits",
+          "depth-clip-control",
+          "depth32float-stencil8",
+          "dual-source-blending",
+          "float32-blendable",
+          "float32-filterable",
+          "indirect-first-instance",
+          "primitive-index",
+          "rg11b10ufloat-renderable",
+          "shader-f16",
+          "subgroup-size-control",
+          "subgroups",
+          "texture-component-swizzle",
+          "texture-compression-bc",
+          "texture-compression-bc-sliced-3d",
+          "texture-compression-etc2",
+          "texture-compression-unaligned",
+          "texture-formats-tier1",
+          "texture-formats-tier2",
+          "timestamp-query"
+        ],
+        "limits": {
+          "maxBufferSize": 4294967292,
+          "maxStorageBufferBindingSize": 4294967292,
+          "maxComputeInvocationsPerWorkgroup": 1024,
+          "maxComputeWorkgroupStorageSize": 49152,
+          "maxStorageBuffersPerShaderStage": 16
+        },
+        "powerPreference": "high-performance",
+        "label": "intel (xe-2lpg)",
+        "cacheKey": "hardware|intel|xe-2lpg|||f16|high-performance"
+      },
+      "skipped": [],
+      "audio": {
+        "seconds": 42.6949375,
+        "segments": 6,
+        "hasReference": true
+      },
+      "thresholds": {
+        "maxRealTimeFactor": 0.5,
+        "maxWordErrorRate": 0.25
+      },
+      "runs": [
+        {
+          "variantId": "webgpu-mixed",
+          "device": "webgpu",
+          "dtype": {
+            "encoder_model": "fp16",
+            "decoder_model_merged": "fp32"
+          },
+          "downloadMb": 489,
+          "wordErrorRate": 0.11811023622047244,
+          "ok": true,
+          "error": null,
+          "loadMs": 9736.929999999702,
+          "warmupMs": 977.1150000020862,
+          "inferenceMs": 7121.805000007153,
+          "audioSeconds": 44.580000000000005,
+          "realTimeFactor": 0.1597533647377109,
+          "slowestSegmentRtf": 0.2095204498992132,
+          "text": "Welcome back to the stream everyone! We are live! Did you know that Eiffel Tower is 450 meters tall? Look it up, chat. Honestly, this patch is terrible. The developers have no idea what they are doing. I'm going to push. to push the left lane and take the tower before their jungle responds. Someone said the great wall of China is visible from space with the naked eye and that's just facts. Messifas won 8 Ballendor Awards, no other player is close. Trust me, our team is winning the full tournament this. this year easy by the way the speed of light is about 300,000 kilometers per second anyway Remember to it at Fall Buten and use code stream for 10% off.",
+          "segments": [
+            {
+              "audioSeconds": 7.23,
+              "inferenceMs": 1261.7000000029802,
+              "text": "Welcome back to the stream everyone! We are live! Did you know that Eiffel Tower is 450 meters tall?"
+            },
+            {
+              "audioSeconds": 7.44,
+              "inferenceMs": 1281.4200000017881,
+              "text": "Look it up, chat. Honestly, this patch is terrible. The developers have no idea what they are doing. I'm going to push."
+            },
+            {
+              "audioSeconds": 10.41,
+              "inferenceMs": 1356.9200000017881,
+              "text": "to push the left lane and take the tower before their jungle responds. Someone said the great wall of China is visible from space with the naked eye and that's just facts."
+            },
+            {
+              "audioSeconds": 7.26,
+              "inferenceMs": 1207.0849999934435,
+              "text": "Messifas won 8 Ballendor Awards, no other player is close. Trust me, our team is winning the full tournament this."
+            },
+            {
+              "audioSeconds": 7.35,
+              "inferenceMs": 990.125,
+              "text": "this year easy by the way the speed of light is about 300,000 kilometers per second anyway"
+            },
+            {
+              "audioSeconds": 4.89,
+              "inferenceMs": 1024.5550000071526,
+              "text": "Remember to it at Fall Buten and use code stream for 10% off."
+            }
+          ],
+          "numThreads": 4,
+          "crossOriginIsolated": true,
+          "workerProbe": {
+            "webgpuAvailable": true,
+            "kind": "hardware",
+            "usable": true,
+            "reason": null,
+            "error": null,
+            "vendor": "intel",
+            "architecture": "xe-2lpg",
+            "device": "",
+            "description": "",
+            "isFallbackAdapter": false,
+            "shaderF16": true,
+            "features": [
+              "atomic-vec2u-min-max",
+              "bgra8unorm-storage",
+              "chromium-experimental-multi-draw-indirect",
+              "chromium-experimental-sampling-resource-table",
+              "chromium-experimental-subgroup-matrix",
+              "chromium-experimental-timestamp-query-inside-passes",
+              "clip-distances",
+              "core-features-and-limits",
+              "depth-clip-control",
+              "depth32float-stencil8",
+              "dual-source-blending",
+              "float32-blendable",
+              "float32-filterable",
+              "indirect-first-instance",
+              "primitive-index",
+              "rg11b10ufloat-renderable",
+              "shader-f16",
+              "subgroup-size-control",
+              "subgroups",
+              "texture-component-swizzle",
+              "texture-compression-bc",
+              "texture-compression-bc-sliced-3d",
+              "texture-compression-etc2",
+              "texture-compression-unaligned",
+              "texture-formats-tier1",
+              "texture-formats-tier2",
+              "timestamp-query"
+            ],
+            "limits": {
+              "maxBufferSize": 4294967292,
+              "maxStorageBufferBindingSize": 4294967292,
+              "maxComputeInvocationsPerWorkgroup": 1024,
+              "maxComputeWorkgroupStorageSize": 49152,
+              "maxStorageBuffersPerShaderStage": 16
+            },
+            "powerPreference": "high-performance"
+          },
+          "sessionGpu": {
+            "vendor": "intel",
+            "architecture": "xe-2lpg",
+            "description": "",
+            "isFallbackAdapter": false,
+            "shaderF16": true
+          },
+          "verdict": {
+            "pass": true,
+            "reason": null
+          }
+        },
+        {
+          "variantId": "webgpu-fp32",
+          "device": "webgpu",
+          "dtype": "fp32",
+          "downloadMb": 665,
+          "wordErrorRate": 0.11023622047244094,
+          "ok": true,
+          "error": null,
+          "loadMs": 6736.190000005066,
+          "warmupMs": 935.5750000029802,
+          "inferenceMs": 6651.809999987483,
+          "audioSeconds": 44.580000000000005,
+          "realTimeFactor": 0.1492106325703787,
+          "slowestSegmentRtf": 0.21572801635918684,
+          "text": "Welcome back to the stream everyone! We are live! Did you know that Eiffel Tower is 450 meters tall? Look it up, chat. Honestly, this patch is terrible. The developers have no idea what they are doing. I'm going to push. to push the left lane and take the tower before their jungler responds. Someone said the great wall of China is visible from space with the naked eye and that's just facts. Messifas won 8 Ballendor Awards, no other player is close. Trust me, our team is winning the full tournament this. this year easy by the way the speed of light is about 300,000 kilometers per second anyway Remember to it at Fall Buten and use code stream for 10% off.",
+          "segments": [
+            {
+              "audioSeconds": 7.23,
+              "inferenceMs": 1085.1049999967217,
+              "text": "Welcome back to the stream everyone! We are live! Did you know that Eiffel Tower is 450 meters tall?"
+            },
+            {
+              "audioSeconds": 7.44,
+              "inferenceMs": 1136.5849999934435,
+              "text": "Look it up, chat. Honestly, this patch is terrible. The developers have no idea what they are doing. I'm going to push."
+            },
+            {
+              "audioSeconds": 10.41,
+              "inferenceMs": 1277.679999999702,
+              "text": "to push the left lane and take the tower before their jungler responds. Someone said the great wall of China is visible from space with the naked eye and that's just facts."
+            },
+            {
+              "audioSeconds": 7.26,
+              "inferenceMs": 1125.6050000041723,
+              "text": "Messifas won 8 Ballendor Awards, no other player is close. Trust me, our team is winning the full tournament this."
+            },
+            {
+              "audioSeconds": 7.35,
+              "inferenceMs": 971.9249999970198,
+              "text": "this year easy by the way the speed of light is about 300,000 kilometers per second anyway"
+            },
+            {
+              "audioSeconds": 4.89,
+              "inferenceMs": 1054.9099999964237,
+              "text": "Remember to it at Fall Buten and use code stream for 10% off."
+            }
+          ],
+          "numThreads": 4,
+          "crossOriginIsolated": true,
+          "workerProbe": {
+            "webgpuAvailable": true,
+            "kind": "hardware",
+            "usable": true,
+            "reason": null,
+            "error": null,
+            "vendor": "intel",
+            "architecture": "xe-2lpg",
+            "device": "",
+            "description": "",
+            "isFallbackAdapter": false,
+            "shaderF16": true,
+            "features": [
+              "atomic-vec2u-min-max",
+              "bgra8unorm-storage",
+              "chromium-experimental-multi-draw-indirect",
+              "chromium-experimental-sampling-resource-table",
+              "chromium-experimental-subgroup-matrix",
+              "chromium-experimental-timestamp-query-inside-passes",
+              "clip-distances",
+              "core-features-and-limits",
+              "depth-clip-control",
+              "depth32float-stencil8",
+              "dual-source-blending",
+              "float32-blendable",
+              "float32-filterable",
+              "indirect-first-instance",
+              "primitive-index",
+              "rg11b10ufloat-renderable",
+              "shader-f16",
+              "subgroup-size-control",
+              "subgroups",
+              "texture-component-swizzle",
+              "texture-compression-bc",
+              "texture-compression-bc-sliced-3d",
+              "texture-compression-etc2",
+              "texture-compression-unaligned",
+              "texture-formats-tier1",
+              "texture-formats-tier2",
+              "timestamp-query"
+            ],
+            "limits": {
+              "maxBufferSize": 4294967292,
+              "maxStorageBufferBindingSize": 4294967292,
+              "maxComputeInvocationsPerWorkgroup": 1024,
+              "maxComputeWorkgroupStorageSize": 49152,
+              "maxStorageBuffersPerShaderStage": 16
+            },
+            "powerPreference": "high-performance"
+          },
+          "sessionGpu": {
+            "vendor": "intel",
+            "architecture": "xe-2lpg",
+            "description": "",
+            "isFallbackAdapter": false,
+            "shaderF16": true
+          },
+          "verdict": {
+            "pass": true,
+            "reason": null
+          }
+        },
+        {
+          "variantId": "wasm-q8",
+          "device": "wasm",
+          "dtype": "q8",
+          "downloadMb": 172,
+          "wordErrorRate": 0.11023622047244094,
+          "ok": true,
+          "error": null,
+          "loadMs": 3439.390000000596,
+          "warmupMs": 3452.609999999404,
+          "inferenceMs": 20236.02499999106,
+          "audioSeconds": 44.580000000000005,
+          "realTimeFactor": 0.4539260879316074,
+          "slowestSegmentRtf": 0.6218087934551795,
+          "text": "Welcome back to the stream, everyone! We are live! Did you know that Eiffel Tower is 450 meters tall? Look it up, chat. Honestly, this patch is terrible. The developers have no idea what they are doing. I'm going to push. to push the left lane and take the tower before their jungler responds. Someone said the great wall of China is visible from space with the naked eye, and that's just facts. Messifas won 8 Ballendor Awards, no other player is close. Trust me, our team is winning the full tournament this. this year easy by the way the speed of light is about 300,000 kilometers per second anyway Remember to it at Fall Buten and use code stream for 10% off.",
+          "segments": [
+            {
+              "audioSeconds": 7.23,
+              "inferenceMs": 3404.259999997914,
+              "text": "Welcome back to the stream, everyone! We are live! Did you know that Eiffel Tower is 450 meters tall?"
+            },
+            {
+              "audioSeconds": 7.44,
+              "inferenceMs": 3632.8799999952316,
+              "text": "Look it up, chat. Honestly, this patch is terrible. The developers have no idea what they are doing. I'm going to push."
+            },
+            {
+              "audioSeconds": 10.41,
+              "inferenceMs": 3693.804999999702,
+              "text": "to push the left lane and take the tower before their jungler responds. Someone said the great wall of China is visible from space with the naked eye, and that's just facts."
+            },
+            {
+              "audioSeconds": 7.26,
+              "inferenceMs": 3345.0500000044703,
+              "text": "Messifas won 8 Ballendor Awards, no other player is close. Trust me, our team is winning the full tournament this."
+            },
+            {
+              "audioSeconds": 7.35,
+              "inferenceMs": 3119.384999997914,
+              "text": "this year easy by the way the speed of light is about 300,000 kilometers per second anyway"
+            },
+            {
+              "audioSeconds": 4.89,
+              "inferenceMs": 3040.6449999958277,
+              "text": "Remember to it at Fall Buten and use code stream for 10% off."
+            }
+          ],
+          "numThreads": 4,
+          "crossOriginIsolated": true,
+          "workerProbe": null,
+          "sessionGpu": null,
+          "verdict": {
+            "pass": true,
+            "reason": null
+          }
+        }
+      ],
+      "selected": {
+        "variantId": "webgpu-mixed",
+        "device": "webgpu",
+        "dtype": {
+          "encoder_model": "fp16",
+          "decoder_model_merged": "fp32"
+        },
+        "requiresShaderF16": true
+      }
+    }
+  ],
+  "runner": {
+    "label": "intel-arc-fixture",
+    "headless": true,
+    "chromeFlags": [
+      "--enable-features=Vulkan",
+      "--use-angle=vulkan",
+      "--enable-unsafe-webgpu"
+    ],
+    "isolated": true,
+    "chromeVersion": "Chrome/157.0.8103.50"
+  }
+}

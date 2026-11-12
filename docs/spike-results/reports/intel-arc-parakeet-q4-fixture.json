@@ -1,0 +1,217 @@
+{
+  "schema": 1,
+  "environment": {
+    "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.0.0 Safari/537.36",
+    "platform": "Linux",
+    "hardwareConcurrency": 8,
+    "deviceMemoryGb": 32,
+    "crossOriginIsolated": true,
+    "origin": "http:",
+    "timestamp": "2026-11-12T01:40:17.416Z"
+  },
+  "clip": "http://127.0.0.1:44311/fixture/claims_16k.wav",
+  "options": {
+    "forceFallbackAdapter": false,
+    "allowSoftwareGpu": false,
+    "powerPreference": "high-performance",
+    "numThreads": 4
+  },
+  "models": [
+    {
+      "modelId": "parakeet-ctc-0.6b",
+      "repo": "onnx-community/parakeet-ctc-0.6b-ONNX",
+      "gpu": {
+        "webgpuAvailable": true,
+        "kind": "hardware",
+        "usable": true,
+        "reason": null,
+        "error": null,
+        "vendor": "intel",
+        "architecture": "xe-2lpg",
+        "device": "",
+        "description": "",
+        "isFallbackAdapter": false,
+        "shaderF16": true,
+        "features": [
+          "atomic-vec2u-min-max",
+          "bgra8unorm-storage",
+          "chromium-experimental-multi-draw-indirect",
+          "chromium-experimental-sampling-resource-table",
+          "chromium-experimental-subgroup-matrix",
+          "chromium-experimental-timestamp-query-inside-passes",
+          "clip-distances",
+          "core-features-and-limits",
+          "depth-clip-control",
+          "depth32float-stencil8",
+          "dual-source-blending",
+          "float32-blendable",
+          "float32-filterable",
+          "indirect-first-instance",
+          "primitive-index",
+          "rg11b10ufloat-renderable",
+          "shader-f16",
+          "subgroup-size-control",
+          "subgroups",
+          "texture-component-swizzle",
+          "texture-compression-bc",
+          "texture-compression-bc-sliced-3d",
+          "texture-compression-etc2",
+          "texture-compression-unaligned",
+          "texture-formats-tier1",
+          "texture-formats-tier2",
+          "timestamp-query"
+        ],
+        "limits": {
+          "maxBufferSize": 4294967292,
+          "maxStorageBufferBindingSize": 4294967292,
+          "maxComputeInvocationsPerWorkgroup": 1024,
+          "maxComputeWorkgroupStorageSize": 49152,
+          "maxStorageBuffersPerShaderStage": 16
+        },
+        "powerPreference": "high-performance",
+        "label": "intel (xe-2lpg)",
+        "cacheKey": "hardware|intel|xe-2lpg|||f16|high-performance"
+      },
+      "skipped": [],
+      "audio": {
+        "seconds": 42.6949375,
+        "segments": 6,
+        "hasReference": true
+      },
+      "thresholds": {
+        "maxRealTimeFactor": 0.5,
+        "maxWordErrorRate": 0.25
+      },
+      "runs": [
+        {
+          "variantId": "webgpu-q4",
+          "device": "webgpu",
+          "dtype": "q4",
+          "downloadMb": 643,
+          "wordErrorRate": 0.1889763779527559,
+          "ok": true,
+          "error": null,
+          "loadMs": 12444.790000006557,
+          "warmupMs": 580.8000000044703,
+          "inferenceMs": 1095.5449999943376,
+          "audioSeconds": 44.580000000000005,
+          "realTimeFactor": 0.024574809331411786,
+          "slowestSegmentRtf": 0.031477505111864985,
+          "text": "welcome back to the stream everyone we are live did you know the eiffel tower is four hundred and fifty meters tall look it up cat honestly this patch is terririble the developers have no idea what they arere doing i'm going to post to push the left lane and take the tower before their jungle responds someone said the great wall of china is visible from space with the naked eye and that's just fact massif has won eight ballent do awards no other player is close trust me our team is winning the wholeal tournament this this year easy away the stam of life is about three hundred thousand kilometers per second any rememember to h that follow mon and you donld stream for ten percent off",
+          "segments": [
+            {
+              "audioSeconds": 7.23,
+              "inferenceMs": 178.3449999988079,
+              "text": "welcome back to the stream everyone we are live did you know the eiffel tower is four hundred and fifty meters tall"
+            },
+            {
+              "audioSeconds": 7.44,
+              "inferenceMs": 174.80499999970198,
+              "text": "look it up cat honestly this patch is terririble the developers have no idea what they arere doing i'm going to post"
+            },
+            {
+              "audioSeconds": 10.41,
+              "inferenceMs": 219.20500000566244,
+              "text": "to push the left lane and take the tower before their jungle responds someone said the great wall of china is visible from space with the naked eye and that's just fact"
+            },
+            {
+              "audioSeconds": 7.26,
+              "inferenceMs": 182.3699999973178,
+              "text": "massif has won eight ballent do awards no other player is close trust me our team is winning the wholeal tournament this"
+            },
+            {
+              "audioSeconds": 7.35,
+              "inferenceMs": 186.89499999582767,
+              "text": "this year easy away the stam of life is about three hundred thousand kilometers per second any"
+            },
+            {
+              "audioSeconds": 4.89,
+              "inferenceMs": 153.92499999701977,
+              "text": "rememember to h that follow mon and you donld stream for ten percent off"
+            }
+          ],
+          "numThreads": 4,
+          "crossOriginIsolated": true,
+          "workerProbe": {
+            "webgpuAvailable": true,
+            "kind": "hardware",
+            "usable": true,
+            "reason": null,
+            "error": null,
+            "vendor": "intel",
+            "architecture": "xe-2lpg",
+            "device": "",
+            "description": "",
+            "isFallbackAdapter": false,
+            "shaderF16": true,
+            "features": [
+              "atomic-vec2u-min-max",
+              "bgra8unorm-storage",
+              "chromium-experimental-multi-draw-indirect",
+              "chromium-experimental-sampling-resource-table",
+              "chromium-experimental-subgroup-matrix",
+              "chromium-experimental-timestamp-query-inside-passes",
+              "clip-distances",
+              "core-features-and-limits",
+              "depth-clip-control",
+              "depth32float-stencil8",
+              "dual-source-blending",
+              "float32-blendable",
+              "float32-filterable",
+              "indirect-first-instance",
+              "primitive-index",
+              "rg11b10ufloat-renderable",
+              "shader-f16",
+              "subgroup-size-control",
+              "subgroups",
+              "texture-component-swizzle",
+              "texture-compression-bc",
+              "texture-compression-bc-sliced-3d",
+              "texture-compression-etc2",
+              "texture-compression-unaligned",
+              "texture-formats-tier1",
+              "texture-formats-tier2",
+              "timestamp-query"
+            ],
+            "limits": {
+              "maxBufferSize": 4294967292,
+              "maxStorageBufferBindingSize": 4294967292,
+              "maxComputeInvocationsPerWorkgroup": 1024,
+              "maxComputeWorkgroupStorageSize": 49152,
+              "maxStorageBuffersPerShaderStage": 16
+            },
+            "powerPreference": "high-performance"
+          },
+          "sessionGpu": {
+            "vendor": "intel",
+            "architecture": "xe-2lpg",
+            "description": "",
+            "isFallbackAdapter": false,
+            "shaderF16": true
+          },
+          "verdict": {
+            "pass": true,
+            "reason": null
+          }
+        }
+      ],
+      "selected": {
+        "variantId": "webgpu-q4",
+        "device": "webgpu",
+        "dtype": "q4",
+        "requiresShaderF16": false
+      }
+    }
+  ],
+  "runner": {
+    "label": "intel-arc-parakeet-q4-fixture",
+    "headless": true,
+    "chromeFlags": [
+      "--enable-features=Vulkan",
+      "--use-angle=vulkan",
+      "--enable-unsafe-webgpu"
+    ],
+    "isolated": true,
+    "chromeVersion": "Chrome/157.0.8103.50"
+  }
+}

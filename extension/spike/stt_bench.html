@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Speech benchmark — Live Stream Fact-Checker</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f6f7f9;
+        --panel: #ffffff;
+        --text: #16181d;
+        --muted: #5d6470;
+        --border: #d9dde3;
+        --accent: #2f6fed;
+        --pass: #17803d;
+        --fail: #c0392b;
+        --warn: #a15c00;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #111318;
+          --panel: #1a1d24;
+          --text: #e8eaee;
+          --muted: #9aa2af;
+          --border: #2c313b;
+          --accent: #6b9bff;
+          --pass: #4cc47a;
+          --fail: #ff7b6b;
+          --warn: #e0a341;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        padding: 24px 16px 48px;
+        background: var(--bg);
+        color: var(--text);
+        font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      main {
+        max-width: 1040px;
+        margin: 0 auto;
+        display: grid;
+        gap: 16px;
+      }
+      h1 {
+        margin: 0;
+        font-size: 20px;
+      }
+      h2 {
+        margin: 0 0 10px;
+        font-size: 14px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--muted);
+      }
+      p {
+        margin: 0;
+      }
+      .lede {
+        color: var(--muted);
+        max-width: 70ch;
+      }
+      section {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 16px;
+      }
+      dl {
+        display: grid;
+        grid-template-columns: max-content 1fr;
+        gap: 4px 16px;
+        margin: 0;
+      }
+      dt {
+        color: var(--muted);
+      }
+      dd {
+        margin: 0;
+        overflow-wrap: anywhere;
+      }
+      fieldset {
+        border: 0;
+        padding: 0;
+        margin: 0 0 12px;
+      }
+      legend {
+        padding: 0;
+        margin-bottom: 4px;
+        font-weight: 600;
+      }
+      label {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        margin: 2px 14px 2px 0;
+      }
+      .hint {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      button {
+        font: inherit;
+        padding: 8px 14px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        background: var(--panel);
+        color: var(--text);
+        cursor: pointer;
+      }
+      button.primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #fff;
+        font-weight: 600;
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 10px;
+      }
+      .table-wrap {
+        overflow-x: auto;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-variant-numeric: tabular-nums;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 6px 10px;
+        border-bottom: 1px solid var(--border);
+        white-space: nowrap;
+      }
+      th {
+        color: var(--muted);
+        font-weight: 600;
+      }
+      td.num,
+      th.num {
+        text-align: right;
+      }
+      td.wrap {
+        white-space: normal;
+        min-width: 260px;
+        color: var(--muted);
+      }
+      .pass {
+        color: var(--pass);
+        font-weight: 600;
+      }
+      .fail {
+        color: var(--fail);
+        font-weight: 600;
+      }
+      .skip {
+        color: var(--warn);
+      }
+      .chosen td {
+        background: color-mix(in srgb, var(--pass) 10%, transparent);
+      }
+      #status {
+        color: var(--muted);
+        min-height: 1.5em;
+      }
+      #summary {
+        display: grid;
+        gap: 6px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Speech-to-text benchmark</h1>
+        <p class="lede">
+          Measures whether this machine can transcribe live audio locally, on its GPU
+          (WebGPU) or CPU, and which configuration it should use. Audio is processed on
+          this device; only model files are downloaded.
+        </p>
+      </header>
+
+      <section aria-labelledby="machine-heading">
+        <h2 id="machine-heading">This machine</h2>
+        <dl id="machine"></dl>
+      </section>
+
+      <section aria-labelledby="setup-heading">
+        <h2 id="setup-heading">Benchmark</h2>
+        <fieldset>
+          <legend>Models</legend>
+          <div id="model-choices"></div>
+        </fieldset>
+        <fieldset>
+          <legend>Audio</legend>
+          <label><input type="radio" name="clip" value="jfk" checked /> Built-in clip (11 s, real speech)</label>
+          <label><input type="radio" name="clip" value="file" /> My own 16 kHz mono WAV</label>
+          <input type="file" id="clip-file" accept=".wav,audio/wav" hidden />
+          <p class="hint" id="clip-hint">
+            Your own file is timed but not checked for correctness unless you paste its
+            transcript below.
+          </p>
+          <textarea id="clip-reference" rows="2" hidden placeholder="Transcript of your file (optional)" style="width: 100%; margin-top: 6px; font: inherit"></textarea>
+        </fieldset>
+        <fieldset>
+          <legend>Test options</legend>
+          <label><input type="checkbox" id="opt-fallback" /> Simulate a machine with no usable GPU (force the software adapter)</label>
+          <label><input type="checkbox" id="opt-allow-software" /> Also run WebGPU on the software adapter</label>
+          <label><input type="checkbox" id="opt-low-power" /> Prefer the low-power GPU</label>
+          <label><input type="checkbox" id="opt-stop-first" /> Stop at the first passing configuration (what the app will do)</label>
+        </fieldset>
+        <div class="actions">
+          <button class="primary" id="run-button">Run benchmark</button>
+          <button id="copy-button" disabled>Copy report (JSON)</button>
+          <span id="status" role="status" aria-live="polite"></span>
+        </div>
+      </section>
+
+      <section aria-labelledby="results-heading">
+        <h2 id="results-heading">Results</h2>
+        <div id="summary"></div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Model</th>
+                <th>Configuration</th>
+                <th>Result</th>
+                <th class="num">Speed</th>
+                <th class="num">Word errors</th>
+                <th class="num">Load</th>
+                <th class="num">First run</th>
+                <th class="num">Download</th>
+                <th>Transcript / error</th>
+              </tr>
+            </thead>
+            <tbody id="results"></tbody>
+          </table>
+        </div>
+        <p class="hint" style="margin-top: 10px">
+          Speed is how many times faster than real time the clip was transcribed (higher
+          is better; the app needs at least 2×). "First run" is the one-off warm-up after
+          loading. Load time includes the download the first time a model is used.
+        </p>
+      </section>
+    </main>
+    <script type="module" src="stt_bench.mjs"></script>
+  </body>
+</html>

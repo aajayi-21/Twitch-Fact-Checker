@@ -16,3 +16,9 @@ backend/.pytest_cache/
 
 # Generated test fixtures (scripts/make_fixture_wav.py)
 backend/tests/fixtures/*.wav
+
+# In-browser speech runtime (scripts/vendor_stt_runtime.py; ~28 MB of WASM)
+extension/vendor/transformers/
+
+# Speech benchmark reports from this machine (scripts/run_stt_bench.mjs)
+docs/spike-results/raw/

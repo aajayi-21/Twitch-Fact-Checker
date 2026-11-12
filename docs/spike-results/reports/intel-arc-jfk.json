@@ -1,0 +1,1130 @@
+{
+  "schema": 1,
+  "environment": {
+    "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.0.0 Safari/537.36",
+    "platform": "Linux",
+    "hardwareConcurrency": 8,
+    "deviceMemoryGb": 32,
+    "crossOriginIsolated": true,
+    "origin": "http:",
+    "timestamp": "2026-11-12T01:28:28.811Z"
+  },
+  "clip": "built-in clip",
+  "options": {
+    "forceFallbackAdapter": false,
+    "allowSoftwareGpu": false,
+    "powerPreference": "high-performance",
+    "numThreads": 4
+  },
+  "models": [
+    {
+      "modelId": "moonshine-tiny",
+      "repo": "onnx-community/moonshine-tiny-ONNX",
+      "gpu": {
+        "webgpuAvailable": true,
+        "kind": "hardware",
+        "usable": true,
+        "reason": null,
+        "error": null,
+        "vendor": "intel",
+        "architecture": "xe-2lpg",
+        "device": "",
+        "description": "",
+        "isFallbackAdapter": false,
+        "shaderF16": true,
+        "features": [
+          "atomic-vec2u-min-max",
+          "bgra8unorm-storage",
+          "chromium-experimental-multi-draw-indirect",
+          "chromium-experimental-sampling-resource-table",
+          "chromium-experimental-subgroup-matrix",
+          "chromium-experimental-timestamp-query-inside-passes",
+          "clip-distances",
+          "core-features-and-limits",
+          "depth-clip-control",
+          "depth32float-stencil8",
+          "dual-source-blending",
+          "float32-blendable",
+          "float32-filterable",
+          "indirect-first-instance",
+          "primitive-index",
+          "rg11b10ufloat-renderable",
+          "shader-f16",
+          "subgroup-size-control",
+          "subgroups",
+          "texture-component-swizzle",
+          "texture-compression-bc",
+          "texture-compression-bc-sliced-3d",
+          "texture-compression-etc2",
+          "texture-compression-unaligned",
+          "texture-formats-tier1",
+          "texture-formats-tier2",
+          "timestamp-query"
+        ],
+        "limits": {
+          "maxBufferSize": 4294967292,
+          "maxStorageBufferBindingSize": 4294967292,
+          "maxComputeInvocationsPerWorkgroup": 1024,
+          "maxComputeWorkgroupStorageSize": 49152,
+          "maxStorageBuffersPerShaderStage": 16
+        },
+        "powerPreference": "high-performance",
+        "label": "intel (xe-2lpg)",
+        "cacheKey": "hardware|intel|xe-2lpg|||f16|high-performance"
+      },
+      "skipped": [],
+      "audio": {
+        "seconds": 11,
+        "segments": 4,
+        "hasReference": true
+      },
+      "thresholds": {
+        "maxRealTimeFactor": 0.5,
+        "maxWordErrorRate": 0.25
+      },
+      "runs": [
+        {
+          "variantId": "wasm-q8",
+          "device": "wasm",
+          "dtype": "q8",
+          "downloadMb": 28,
+          "wordErrorRate": 0.045454545454545456,
+          "ok": true,
+          "error": null,
+          "loadMs": 2826.1749999970198,
+          "warmupMs": 194.5649999976158,
+          "inferenceMs": 462.79499999433756,
+          "audioSeconds": 9.27,
+          "realTimeFactor": 0.04992394821945389,
+          "slowestSegmentRtf": 0.06928603603496208,
+          "text": "And so my fellow-americans. As not. What your country can do for you? Ask what you can do for your country.",
+          "segments": [
+            {
+              "audioSeconds": 2.22,
+              "inferenceMs": 153.8149999976158,
+              "text": "And so my fellow-americans."
+            },
+            {
+              "audioSeconds": 1.47,
+              "inferenceMs": 53.40500000119209,
+              "text": "As not."
+            },
+            {
+              "audioSeconds": 2.58,
+              "inferenceMs": 127.29999999701977,
+              "text": "What your country can do for you?"
+            },
+            {
+              "audioSeconds": 3,
+              "inferenceMs": 128.27499999850988,
+              "text": "Ask what you can do for your country."
+            }
+          ],
+          "numThreads": 4,
+          "crossOriginIsolated": true,
+          "workerProbe": null,
+          "sessionGpu": null,
+          "verdict": {
+            "pass": true,
+            "reason": null
+          }
+        },
+        {
+          "variantId": "webgpu-fp32",
+          "device": "webgpu",
+          "dtype": "fp32",
+          "downloadMb": 109,
+          "wordErrorRate": 0.09090909090909091,
+          "ok": true,
+          "error": null,
+          "loadMs": 2600.0349999964237,
+          "warmupMs": 417.48499999940395,
+          "inferenceMs": 605.7200000062585,
+          "audioSeconds": 9.27,
+          "realTimeFactor": 0.06534196332322098,
+          "slowestSegmentRtf": 0.0779819819841299,
+          "text": "And so, my fellow-american, As not. What your country can do for you? Ask what you can do for your country.",
+          "segments": [
+            {
+              "audioSeconds": 2.22,
+              "inferenceMs": 173.12000000476837,
+              "text": "And so, my fellow-american,"
+            },
+            {
+              "audioSeconds": 1.47,
+              "inferenceMs": 86.49499999731779,
+              "text": "As not."
+            },
+            {
+              "audioSeconds": 2.58,
+              "inferenceMs": 171.5600000023842,
+              "text": "What your country can do for you?"
+            },
+            {
+              "audioSeconds": 3,
+              "inferenceMs": 174.54500000178814,
+              "text": "Ask what you can do for your country."
+            }
+          ],
+          "numThreads": 4,
+          "crossOriginIsolated": true,
+          "workerProbe": {
+            "webgpuAvailable": true,
+            "kind": "hardware",
+            "usable": true,
+            "reason": null,
+            "error": null,
+            "vendor": "intel",
+            "architecture": "xe-2lpg",
+            "device": "",
+            "description": "",
+            "isFallbackAdapter": false,
+            "shaderF16": true,
+            "features": [
+              "atomic-vec2u-min-max",
+              "bgra8unorm-storage",
+              "chromium-experimental-multi-draw-indirect",
+              "chromium-experimental-sampling-resource-table",
+              "chromium-experimental-subgroup-matrix",
+              "chromium-experimental-timestamp-query-inside-passes",
+              "clip-distances",
+              "core-features-and-limits",
+              "depth-clip-control",
+              "depth32float-stencil8",
+              "dual-source-blending",
+              "float32-blendable",
+              "float32-filterable",
+              "indirect-first-instance",
+              "primitive-index",
+              "rg11b10ufloat-renderable",
+              "shader-f16",
+              "subgroup-size-control",
+              "subgroups",
+              "texture-component-swizzle",
+              "texture-compression-bc",
+              "texture-compression-bc-sliced-3d",
+              "texture-compression-etc2",
+              "texture-compression-unaligned",
+              "texture-formats-tier1",
+              "texture-formats-tier2",
+              "timestamp-query"
+            ],
+            "limits": {
+              "maxBufferSize": 4294967292,
+              "maxStorageBufferBindingSize": 4294967292,
+              "maxComputeInvocationsPerWorkgroup": 1024,
+              "maxComputeWorkgroupStorageSize": 49152,
+              "maxStorageBuffersPerShaderStage": 16
+            },
+            "powerPreference": "high-performance"
+          },
+          "sessionGpu": {
+            "vendor": "intel",
+            "architecture": "xe-2lpg",
+            "description": "",
+            "isFallbackAdapter": false,
+            "shaderF16": true
+          },
+          "verdict": {
+            "pass": true,
+            "reason": null
+          }
+        }
+      ],
+      "selected": {
+        "variantId": "wasm-q8",
+        "device": "wasm",
+        "dtype": "q8",
+        "requiresShaderF16": false
+      }
+    },
+    {
+      "modelId": "moonshine-base",
+      "repo": "onnx-community/moonshine-base-ONNX",
+      "gpu": {
+        "webgpuAvailable": true,
+        "kind": "hardware",
+        "usable": true,
+        "reason": null,
+        "error": null,
+        "vendor": "intel",
+        "architecture": "xe-2lpg",
+        "device": "",
+        "description": "",
+        "isFallbackAdapter": false,
+        "shaderF16": true,
+        "features": [
+          "atomic-vec2u-min-max",
+          "bgra8unorm-storage",
+          "chromium-experimental-multi-draw-indirect",
+          "chromium-experimental-sampling-resource-table",
+          "chromium-experimental-subgroup-matrix",
+          "chromium-experimental-timestamp-query-inside-passes",
+          "clip-distances",
+          "core-features-and-limits",
+          "depth-clip-control",
+          "depth32float-stencil8",
+          "dual-source-blending",
+          "float32-blendable",
+          "float32-filterable",
+          "indirect-first-instance",
+          "primitive-index",
+          "rg11b10ufloat-renderable",
+          "shader-f16",
+          "subgroup-size-control",
+          "subgroups",
+          "texture-component-swizzle",
+          "texture-compression-bc",
+          "texture-compression-bc-sliced-3d",
+          "texture-compression-etc2",
+          "texture-compression-unaligned",
+          "texture-formats-tier1",
+          "texture-formats-tier2",
+          "timestamp-query"
+        ],
+        "limits": {
+          "maxBufferSize": 4294967292,
+          "maxStorageBufferBindingSize": 4294967292,
+          "maxComputeInvocationsPerWorkgroup": 1024,
+          "maxComputeWorkgroupStorageSize": 49152,
+          "maxStorageBuffersPerShaderStage": 16
+        },
+        "powerPreference": "high-performance",
+        "label": "intel (xe-2lpg)",
+        "cacheKey": "hardware|intel|xe-2lpg|||f16|high-performance"
+      },
+      "skipped": [],
+      "audio": {
+        "seconds": 11,
+        "segments": 4,
+        "hasReference": true
+      },
+      "thresholds": {
+        "maxRealTimeFactor": 0.5,
+        "maxWordErrorRate": 0.25
+      },
+      "runs": [
+        {
+          "variantId": "wasm-q8",
+          "device": "wasm",
+          "dtype": "q8",
+          "downloadMb": 63,
+          "wordErrorRate": 0,
+          "ok": true,
+          "error": null,
+          "loadMs": 2567.2450000047684,
+          "warmupMs": 146.34000000357628,
+          "inferenceMs": 666.6849999949336,
+          "audioSeconds": 9.27,
+          "realTimeFactor": 0.07191855447626037,
+          "slowestSegmentRtf": 0.08195155038563318,
+          "text": "And so my fellow Americans. Ask not. What your country can do for you? Ask what you can do for your country.",
+          "segments": [
+            {
+              "audioSeconds": 2.22,
+              "inferenceMs": 124.65999999642372,
+              "text": "And so my fellow Americans."
+            },
+            {
+              "audioSeconds": 1.47,
+              "inferenceMs": 91.13000000268221,
+              "text": "Ask not."
+            },
+            {
+              "audioSeconds": 2.58,
+              "inferenceMs": 211.4349999949336,
+              "text": "What your country can do for you?"
+            },
+            {
+              "audioSeconds": 3,
+              "inferenceMs": 239.46000000089407,
+              "text": "Ask what you can do for your country."
+            }
+          ],
+          "numThreads": 4,
+          "crossOriginIsolated": true,
+          "workerProbe": null,
+          "sessionGpu": null,
+          "verdict": {
+            "pass": true,
+            "reason": null
+          }
+        },
+        {
+          "variantId": "webgpu-fp32",
+          "device": "webgpu",
+          "dtype": "fp32",
+          "downloadMb": 247,
+          "wordErrorRate": 0,
+          "ok": true,
+          "error": null,
+          "loadMs": 6177.195000000298,
+          "warmupMs": 656.5299999937415,
+          "inferenceMs": 1166.7699999958277,
+          "audioSeconds": 9.27,
+          "realTimeFactor": 0.1258651564181044,
+          "slowestSegmentRtf": 0.14163963963856568,
+          "text": "And so my fellow Americans. Ask not. What your country can do for you? Ask what you can do for your country.",
+          "segments": [
+            {
+              "audioSeconds": 2.22,
+              "inferenceMs": 314.4399999976158,
+              "text": "And so my fellow Americans."
+            },
+            {
+              "audioSeconds": 1.47,
+              "inferenceMs": 168.60000000149012,
+              "text": "Ask not."
+            },
+            {
+              "audioSeconds": 2.58,
+              "inferenceMs": 334.3099999949336,
+              "text": "What your country can do for you?"
+            },
+            {
+              "audioSeconds": 3,
+              "inferenceMs": 349.42000000178814,
+              "text": "Ask what you can do for your country."
+            }
+          ],
+          "numThreads": 4,
+          "crossOriginIsolated": true,
+          "workerProbe": {
+            "webgpuAvailable": true,
+            "kind": "hardware",
+            "usable": true,
+            "reason": null,
+            "error": null,
+            "vendor": "intel",
+            "architecture": "xe-2lpg",
+            "device": "",
+            "description": "",
+            "isFallbackAdapter": false,
+            "shaderF16": true,
+            "features": [
+              "atomic-vec2u-min-max",
+              "bgra8unorm-storage",
+              "chromium-experimental-multi-draw-indirect",
+              "chromium-experimental-sampling-resource-table",
+              "chromium-experimental-subgroup-matrix",
+              "chromium-experimental-timestamp-query-inside-passes",
+              "clip-distances",
+              "core-features-and-limits",
+              "depth-clip-control",
+              "depth32float-stencil8",
+              "dual-source-blending",
+              "float32-blendable",
+              "float32-filterable",
+              "indirect-first-instance",
+              "primitive-index",
+              "rg11b10ufloat-renderable",
+              "shader-f16",
+              "subgroup-size-control",
+              "subgroups",
+              "texture-component-swizzle",
+              "texture-compression-bc",
+              "texture-compression-bc-sliced-3d",
+              "texture-compression-etc2",
+              "texture-compression-unaligned",
+              "texture-formats-tier1",
+              "texture-formats-tier2",
+              "timestamp-query"
+            ],
+            "limits": {
+              "maxBufferSize": 4294967292,
+              "maxStorageBufferBindingSize": 4294967292,
+              "maxComputeInvocationsPerWorkgroup": 1024,
+              "maxComputeWorkgroupStorageSize": 49152,
+              "maxStorageBuffersPerShaderStage": 16
+            },
+            "powerPreference": "high-performance"
+          },
+          "sessionGpu": {
+            "vendor": "intel",
+            "architecture": "xe-2lpg",
+            "description": "",
+            "isFallbackAdapter": false,
+            "shaderF16": true
+          },
+          "verdict": {
+            "pass": true,
+            "reason": null
+          }
+        }
+      ],
+      "selected": {
+        "variantId": "wasm-q8",
+        "device": "wasm",
+        "dtype": "q8",
+        "requiresShaderF16": false
+      }
+    },
+    {
+      "modelId": "whisper-base.en",
+      "repo": "onnx-community/whisper-base.en",
+      "gpu": {
+        "webgpuAvailable": true,
+        "kind": "hardware",
+        "usable": true,
+        "reason": null,
+        "error": null,
+        "vendor": "intel",
+        "architecture": "xe-2lpg",
+        "device": "",
+        "description": "",
+        "isFallbackAdapter": false,
+        "shaderF16": true,
+        "features": [
+          "atomic-vec2u-min-max",
+          "bgra8unorm-storage",
+          "chromium-experimental-multi-draw-indirect",
+          "chromium-experimental-sampling-resource-table",
+          "chromium-experimental-subgroup-matrix",
+          "chromium-experimental-timestamp-query-inside-passes",
+          "clip-distances",
+          "core-features-and-limits",
+          "depth-clip-control",
+          "depth32float-stencil8",
+          "dual-source-blending",
+          "float32-blendable",
+          "float32-filterable",
+          "indirect-first-instance",
+          "primitive-index",
+          "rg11b10ufloat-renderable",
+          "shader-f16",
+          "subgroup-size-control",
+          "subgroups",
+          "texture-component-swizzle",
+          "texture-compression-bc",
+          "texture-compression-bc-sliced-3d",
+          "texture-compression-etc2",
+          "texture-compression-unaligned",
+          "texture-formats-tier1",
+          "texture-formats-tier2",
+          "timestamp-query"
+        ],
+        "limits": {
+          "maxBufferSize": 4294967292,
+          "maxStorageBufferBindingSize": 4294967292,
+          "maxComputeInvocationsPerWorkgroup": 1024,
+          "maxComputeWorkgroupStorageSize": 49152,
+          "maxStorageBuffersPerShaderStage": 16
+        },
+        "powerPreference": "high-performance",
+        "label": "intel (xe-2lpg)",
+        "cacheKey": "hardware|intel|xe-2lpg|||f16|high-performance"
+      },
+      "skipped": [],
+      "audio": {
+        "seconds": 11,
+        "segments": 4,
+        "hasReference": true
+      },
+      "thresholds": {
+        "maxRealTimeFactor": 0.5,
+        "maxWordErrorRate": 0.25
+      },
+      "runs": [
+        {
+          "variantId": "webgpu-mixed",
+          "device": "webgpu",
+          "dtype": {
+            "encoder_model": "fp16",
+            "decoder_model_merged": "fp32"
+          },
+          "downloadMb": 250,
+          "wordErrorRate": 0,
+          "ok": true,
+          "error": null,
+          "loadMs": 5853.909999996424,
+          "warmupMs": 928.4249999970198,
+          "inferenceMs": 2775.8249999955297,
+          "audioSeconds": 9.27,
+          "realTimeFactor": 0.29944174757233327,
+          "slowestSegmentRtf": 0.3986972789121728,
+          "text": "and so my fellow Americans. Ask not! What your country can do for you. Ask what you can do for your country.",
+          "segments": [
+            {
+              "audioSeconds": 2.22,
+              "inferenceMs": 682.7899999991059,
+              "text": "and so my fellow Americans."
+            },
+            {
+              "audioSeconds": 1.47,
+              "inferenceMs": 586.0850000008941,
+              "text": "Ask not!"
+            },
+            {
+              "audioSeconds": 2.58,
+              "inferenceMs": 733.429999999702,
+              "text": "What your country can do for you."
+            },
+            {
+              "audioSeconds": 3,
+              "inferenceMs": 773.5199999958277,
+              "text": "Ask what you can do for your country."
+            }
+          ],
+          "numThreads": 4,
+          "crossOriginIsolated": true,
+          "workerProbe": {
+            "webgpuAvailable": true,
+            "kind": "hardware",
+            "usable": true,
+            "reason": null,
+            "error": null,
+            "vendor": "intel",
+            "architecture": "xe-2lpg",
+            "device": "",
+            "description": "",
+            "isFallbackAdapter": false,
+            "shaderF16": true,
+            "features": [
+              "atomic-vec2u-min-max",
+              "bgra8unorm-storage",
+              "chromium-experimental-multi-draw-indirect",
+              "chromium-experimental-sampling-resource-table",
+              "chromium-experimental-subgroup-matrix",
+              "chromium-experimental-timestamp-query-inside-passes",
+              "clip-distances",
+              "core-features-and-limits",
+              "depth-clip-control",
+              "depth32float-stencil8",
+              "dual-source-blending",
+              "float32-blendable",
+              "float32-filterable",
+              "indirect-first-instance",
+              "primitive-index",
+              "rg11b10ufloat-renderable",
+              "shader-f16",
+              "subgroup-size-control",
+              "subgroups",
+              "texture-component-swizzle",
+              "texture-compression-bc",
+              "texture-compression-bc-sliced-3d",
+              "texture-compression-etc2",
+              "texture-compression-unaligned",
+              "texture-formats-tier1",
+              "texture-formats-tier2",
+              "timestamp-query"
+            ],
+            "limits": {
+              "maxBufferSize": 4294967292,
+              "maxStorageBufferBindingSize": 4294967292,
+              "maxComputeInvocationsPerWorkgroup": 1024,
+              "maxComputeWorkgroupStorageSize": 49152,
+              "maxStorageBuffersPerShaderStage": 16
+            },
+            "powerPreference": "high-performance"
+          },
+          "sessionGpu": {
+            "vendor": "intel",
+            "architecture": "xe-2lpg",
+            "description": "",
+            "isFallbackAdapter": false,
+            "shaderF16": true
+          },
+          "verdict": {
+            "pass": true,
+            "reason": null
+          }
+        },
+        {
+          "variantId": "webgpu-fp32",
+          "device": "webgpu",
+          "dtype": "fp32",
+          "downloadMb": 291,
+          "wordErrorRate": 0,
+          "ok": true,
+          "error": null,
+          "loadMs": 2938.945000000298,
+          "warmupMs": 923.1150000020862,
+          "inferenceMs": 2590.164999999106,
+          "audioSeconds": 9.27,
+          "realTimeFactor": 0.27941370010777844,
+          "slowestSegmentRtf": 0.45093537414965984,
+          "text": "and so my fellow Americans. Ask not! What your country can do for you. Ask what you can do for your country.",
+          "segments": [
+            {
+              "audioSeconds": 2.22,
+              "inferenceMs": 873.2049999982119,
+              "text": "and so my fellow Americans."
+            },
+            {
+              "audioSeconds": 1.47,
+              "inferenceMs": 662.875,
+              "text": "Ask not!"
+            },
+            {
+              "audioSeconds": 2.58,
+              "inferenceMs": 551.8250000029802,
+              "text": "What your country can do for you."
+            },
+            {
+              "audioSeconds": 3,
+              "inferenceMs": 502.25999999791384,
+              "text": "Ask what you can do for your country."
+            }
+          ],
+          "numThreads": 4,
+          "crossOriginIsolated": true,
+          "workerProbe": {
+            "webgpuAvailable": true,
+            "kind": "hardware",
+            "usable": true,
+            "reason": null,
+            "error": null,
+            "vendor": "intel",
+            "architecture": "xe-2lpg",
+            "device": "",
+            "description": "",
+            "isFallbackAdapter": false,
+            "shaderF16": true,
+            "features": [
+              "atomic-vec2u-min-max",
+              "bgra8unorm-storage",
+              "chromium-experimental-multi-draw-indirect",
+              "chromium-experimental-sampling-resource-table",
+              "chromium-experimental-subgroup-matrix",
+              "chromium-experimental-timestamp-query-inside-passes",
+              "clip-distances",
+              "core-features-and-limits",
+              "depth-clip-control",
+              "depth32float-stencil8",
+              "dual-source-blending",
+              "float32-blendable",
+              "float32-filterable",
+              "indirect-first-instance",
+              "primitive-index",
+              "rg11b10ufloat-renderable",
+              "shader-f16",
+              "subgroup-size-control",
+              "subgroups",
+              "texture-component-swizzle",
+              "texture-compression-bc",
+              "texture-compression-bc-sliced-3d",
+              "texture-compression-etc2",
+              "texture-compression-unaligned",
+              "texture-formats-tier1",
+              "texture-formats-tier2",
+              "timestamp-query"
+            ],
+            "limits": {
+              "maxBufferSize": 4294967292,
+              "maxStorageBufferBindingSize": 4294967292,
+              "maxComputeInvocationsPerWorkgroup": 1024,
+              "maxComputeWorkgroupStorageSize": 49152,
+              "maxStorageBuffersPerShaderStage": 16
+            },
+            "powerPreference": "high-performance"
+          },
+          "sessionGpu": {
+            "vendor": "intel",
+            "architecture": "xe-2lpg",
+            "description": "",
+            "isFallbackAdapter": false,
+            "shaderF16": true
+          },
+          "verdict": {
+            "pass": true,
+            "reason": null
+          }
+        },
+        {
+          "variantId": "wasm-q8",
+          "device": "wasm",
+          "dtype": "q8",
+          "downloadMb": 77,
+          "wordErrorRate": 0,
+          "ok": true,
+          "error": null,
+          "loadMs": 1633.9399999976158,
+          "warmupMs": 1514.4499999955297,
+          "inferenceMs": 5649.67499999702,
+          "audioSeconds": 9.27,
+          "realTimeFactor": 0.6094579288022675,
+          "slowestSegmentRtf": 0.9559421768703428,
+          "text": "and so my fellow Americans. Ask not! What your country can do for you. Ask what you can do for your country.",
+          "segments": [
+            {
+              "audioSeconds": 2.22,
+              "inferenceMs": 1392.75,
+              "text": "and so my fellow Americans."
+            },
+            {
+              "audioSeconds": 1.47,
+              "inferenceMs": 1405.234999999404,
+              "text": "Ask not!"
+            },
+            {
+              "audioSeconds": 2.58,
+              "inferenceMs": 1491.3549999967217,
+              "text": "What your country can do for you."
+            },
+            {
+              "audioSeconds": 3,
+              "inferenceMs": 1360.335000000894,
+              "text": "Ask what you can do for your country."
+            }
+          ],
+          "numThreads": 4,
+          "crossOriginIsolated": true,
+          "workerProbe": null,
+          "sessionGpu": null,
+          "verdict": {
+            "pass": false,
+            "reason": "too-slow"
+          }
+        }
+      ],
+      "selected": {
+        "variantId": "webgpu-mixed",
+        "device": "webgpu",
+        "dtype": {
+          "encoder_model": "fp16",
+          "decoder_model_merged": "fp32"
+        },
+        "requiresShaderF16": true
+      }
+    },
+    {
+      "modelId": "distil-small.en",
+      "repo": "onnx-community/distil-small.en",
+      "gpu": {
+        "webgpuAvailable": true,
+        "kind": "hardware",
+        "usable": true,
+        "reason": null,
+        "error": null,
+        "vendor": "intel",
+        "architecture": "xe-2lpg",
+        "device": "",
+        "description": "",
+        "isFallbackAdapter": false,
+        "shaderF16": true,
+        "features": [
+          "atomic-vec2u-min-max",
+          "bgra8unorm-storage",
+          "chromium-experimental-multi-draw-indirect",
+          "chromium-experimental-sampling-resource-table",
+          "chromium-experimental-subgroup-matrix",
+          "chromium-experimental-timestamp-query-inside-passes",
+          "clip-distances",
+          "core-features-and-limits",
+          "depth-clip-control",
+          "depth32float-stencil8",
+          "dual-source-blending",
+          "float32-blendable",
+          "float32-filterable",
+          "indirect-first-instance",
+          "primitive-index",
+          "rg11b10ufloat-renderable",
+          "shader-f16",
+          "subgroup-size-control",
+          "subgroups",
+          "texture-component-swizzle",
+          "texture-compression-bc",
+          "texture-compression-bc-sliced-3d",
+          "texture-compression-etc2",
+          "texture-compression-unaligned",
+          "texture-formats-tier1",
+          "texture-formats-tier2",
+          "timestamp-query"
+        ],
+        "limits": {
+          "maxBufferSize": 4294967292,
+          "maxStorageBufferBindingSize": 4294967292,
+          "maxComputeInvocationsPerWorkgroup": 1024,
+          "maxComputeWorkgroupStorageSize": 49152,
+          "maxStorageBuffersPerShaderStage": 16
+        },
+        "powerPreference": "high-performance",
+        "label": "intel (xe-2lpg)",
+        "cacheKey": "hardware|intel|xe-2lpg|||f16|high-performance"
+      },
+      "skipped": [],
+      "audio": {
+        "seconds": 11,
+        "segments": 4,
+        "hasReference": true
+      },
+      "thresholds": {
+        "maxRealTimeFactor": 0.5,
+        "maxWordErrorRate": 0.25
+      },
+      "runs": [
+        {
+          "variantId": "webgpu-mixed",
+          "device": "webgpu",
+          "dtype": {
+            "encoder_model": "fp16",
+            "decoder_model_merged": "fp32"
+          },
+          "downloadMb": 489,
+          "wordErrorRate": 0,
+          "ok": true,
+          "error": null,
+          "loadMs": 9505.60000000149,
+          "warmupMs": 833.9699999988079,
+          "inferenceMs": 3112.9000000059605,
+          "audioSeconds": 9.27,
+          "realTimeFactor": 0.3358036677460583,
+          "slowestSegmentRtf": 0.4969183673461278,
+          "text": "And so my fellow Americans. Ask not! What your country can do for you? Ask what you can do for your country.",
+          "segments": [
+            {
+              "audioSeconds": 2.22,
+              "inferenceMs": 707.3150000050664,
+              "text": "And so my fellow Americans."
+            },
+            {
+              "audioSeconds": 1.47,
+              "inferenceMs": 730.4699999988079,
+              "text": "Ask not!"
+            },
+            {
+              "audioSeconds": 2.58,
+              "inferenceMs": 814.8449999988079,
+              "text": "What your country can do for you?"
+            },
+            {
+              "audioSeconds": 3,
+              "inferenceMs": 860.2700000032783,
+              "text": "Ask what you can do for your country."
+            }
+          ],
+          "numThreads": 4,
+          "crossOriginIsolated": true,
+          "workerProbe": {
+            "webgpuAvailable": true,
+            "kind": "hardware",
+            "usable": true,
+            "reason": null,
+            "error": null,
+            "vendor": "intel",
+            "architecture": "xe-2lpg",
+            "device": "",
+            "description": "",
+            "isFallbackAdapter": false,
+            "shaderF16": true,
+            "features": [
+              "atomic-vec2u-min-max",
+              "bgra8unorm-storage",
+              "chromium-experimental-multi-draw-indirect",
+              "chromium-experimental-sampling-resource-table",
+              "chromium-experimental-subgroup-matrix",
+              "chromium-experimental-timestamp-query-inside-passes",
+              "clip-distances",
+              "core-features-and-limits",
+              "depth-clip-control",
+              "depth32float-stencil8",
+              "dual-source-blending",
+              "float32-blendable",
+              "float32-filterable",
+              "indirect-first-instance",
+              "primitive-index",
+              "rg11b10ufloat-renderable",
+              "shader-f16",
+              "subgroup-size-control",
+              "subgroups",
+              "texture-component-swizzle",
+              "texture-compression-bc",
+              "texture-compression-bc-sliced-3d",
+              "texture-compression-etc2",
+              "texture-compression-unaligned",
+              "texture-formats-tier1",
+              "texture-formats-tier2",
+              "timestamp-query"
+            ],
+            "limits": {
+              "maxBufferSize": 4294967292,
+              "maxStorageBufferBindingSize": 4294967292,
+              "maxComputeInvocationsPerWorkgroup": 1024,
+              "maxComputeWorkgroupStorageSize": 49152,
+              "maxStorageBuffersPerShaderStage": 16
+            },
+            "powerPreference": "high-performance"
+          },
+          "sessionGpu": {
+            "vendor": "intel",
+            "architecture": "xe-2lpg",
+            "description": "",
+            "isFallbackAdapter": false,
+            "shaderF16": true
+          },
+          "verdict": {
+            "pass": true,
+            "reason": null
+          }
+        },
+        {
+          "variantId": "webgpu-fp32",
+          "device": "webgpu",
+          "dtype": "fp32",
+          "downloadMb": 665,
+          "wordErrorRate": 0,
+          "ok": true,
+          "error": null,
+          "loadMs": 6657.815000005066,
+          "warmupMs": 867.3249999955297,
+          "inferenceMs": 2918.47500000149,
+          "audioSeconds": 9.27,
+          "realTimeFactor": 0.3148300970875394,
+          "slowestSegmentRtf": 0.43186394558066415,
+          "text": "And so my fellow Americans. Ask not! What your country can do for you? Ask what you can do for your country.",
+          "segments": [
+            {
+              "audioSeconds": 2.22,
+              "inferenceMs": 721.1850000023842,
+              "text": "And so my fellow Americans."
+            },
+            {
+              "audioSeconds": 1.47,
+              "inferenceMs": 634.8400000035763,
+              "text": "Ask not!"
+            },
+            {
+              "audioSeconds": 2.58,
+              "inferenceMs": 750.6349999979138,
+              "text": "What your country can do for you?"
+            },
+            {
+              "audioSeconds": 3,
+              "inferenceMs": 811.8149999976158,
+              "text": "Ask what you can do for your country."
+            }
+          ],
+          "numThreads": 4,
+          "crossOriginIsolated": true,
+          "workerProbe": {
+            "webgpuAvailable": true,
+            "kind": "hardware",
+            "usable": true,
+            "reason": null,
+            "error": null,
+            "vendor": "intel",
+            "architecture": "xe-2lpg",
+            "device": "",
+            "description": "",
+            "isFallbackAdapter": false,
+            "shaderF16": true,
+            "features": [
+              "atomic-vec2u-min-max",
+              "bgra8unorm-storage",
+              "chromium-experimental-multi-draw-indirect",
+              "chromium-experimental-sampling-resource-table",
+              "chromium-experimental-subgroup-matrix",
+              "chromium-experimental-timestamp-query-inside-passes",
+              "clip-distances",
+              "core-features-and-limits",
+              "depth-clip-control",
+              "depth32float-stencil8",
+              "dual-source-blending",
+              "float32-blendable",
+              "float32-filterable",
+              "indirect-first-instance",
+              "primitive-index",
+              "rg11b10ufloat-renderable",
+              "shader-f16",
+              "subgroup-size-control",
+              "subgroups",
+              "texture-component-swizzle",
+              "texture-compression-bc",
+              "texture-compression-bc-sliced-3d",
+              "texture-compression-etc2",
+              "texture-compression-unaligned",
+              "texture-formats-tier1",
+              "texture-formats-tier2",
+              "timestamp-query"
+            ],
+            "limits": {
+              "maxBufferSize": 4294967292,
+              "maxStorageBufferBindingSize": 4294967292,
+              "maxComputeInvocationsPerWorkgroup": 1024,
+              "maxComputeWorkgroupStorageSize": 49152,
+              "maxStorageBuffersPerShaderStage": 16
+            },
+            "powerPreference": "high-performance"
+          },
+          "sessionGpu": {
+            "vendor": "intel",
+            "architecture": "xe-2lpg",
+            "description": "",
+            "isFallbackAdapter": false,
+            "shaderF16": true
+          },
+          "verdict": {
+            "pass": true,
+            "reason": null
+          }
+        },
+        {
+          "variantId": "wasm-q8",
+          "device": "wasm",
+          "dtype": "q8",
+          "downloadMb": 172,
+          "wordErrorRate": 0,
+          "ok": true,
+          "error": null,
+          "loadMs": 3985.064999997616,
+          "warmupMs": 3054.6450000032783,
+          "inferenceMs": 11414.740000002086,
+          "audioSeconds": 9.27,
+          "realTimeFactor": 1.2313635382958021,
+          "slowestSegmentRtf": 1.8677040816316395,
+          "text": "And so my fellow Americans. Ask not! What your country can do for you? Ask what you can do for your country.",
+          "segments": [
+            {
+              "audioSeconds": 2.22,
+              "inferenceMs": 2914.6750000044703,
+              "text": "And so my fellow Americans."
+            },
+            {
+              "audioSeconds": 1.47,
+              "inferenceMs": 2745.52499999851,
+              "text": "Ask not!"
+            },
+            {
+              "audioSeconds": 2.58,
+              "inferenceMs": 2859.920000001788,
+              "text": "What your country can do for you?"
+            },
+            {
+              "audioSeconds": 3,
+              "inferenceMs": 2894.619999997318,
+              "text": "Ask what you can do for your country."
+            }
+          ],
+          "numThreads": 4,
+          "crossOriginIsolated": true,
+          "workerProbe": null,
+          "sessionGpu": null,
+          "verdict": {
+            "pass": false,
+            "reason": "too-slow"
+          }
+        }
+      ],
+      "selected": {
+        "variantId": "webgpu-mixed",
+        "device": "webgpu",
+        "dtype": {
+          "encoder_model": "fp16",
+          "decoder_model_merged": "fp32"
+        },
+        "requiresShaderF16": true
+      }
+    }
+  ],
+  "runner": {
+    "label": "intel-arc-jfk",
+    "headless": true,
+    "chromeFlags": [
+      "--enable-features=Vulkan",
+      "--use-angle=vulkan",
+      "--enable-unsafe-webgpu"
+    ],
+    "isolated": true,
+    "chromeVersion": "Chrome/157.0.8103.50"
+  }
+}
