@@ -32,6 +32,7 @@ const IDLE_SESSION = Object.freeze({
   wsState: "closed",
   reconnectAttempt: 0,
   lastError: null,
+  adPaused: false,
 });
 
 /** One line of copy per error code, each with an action hint. */
@@ -145,6 +146,9 @@ const render = () => {
   let statusText = STATUS_LABEL[session.status] ?? session.status;
   if (session.status === "reconnecting" && session.reconnectAttempt > 0) {
     statusText = `Reconnecting to backend… (attempt ${session.reconnectAttempt})`;
+  }
+  if (session.status === "capturing" && session.adPaused) {
+    statusText = "Paused — ad break on the stream";
   }
   if (capturingElsewhere) {
     statusText = "Capturing in another tab";

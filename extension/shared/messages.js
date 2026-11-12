@@ -25,6 +25,9 @@ export const MSG = Object.freeze({
   OFFSCREEN_START: "OFFSCREEN_START",
   OFFSCREEN_STOP: "OFFSCREEN_STOP",
   OFFSCREEN_CONFIG: "OFFSCREEN_CONFIG",
+  // Ad break started/ended on the captured tab ({active}); the offscreen
+  // document drops audio while it lasts (see shared/ad_pause.js).
+  OFFSCREEN_AD_STATE: "OFFSCREEN_AD_STATE",
   // offscreen -> service worker
   BACKEND_EVENT: "BACKEND_EVENT",
   CAPTURE_ENDED: "CAPTURE_ENDED",
@@ -43,6 +46,10 @@ export const MSG = Object.freeze({
   // content script -> service worker: 👍/👎 on a verdict; the SW POSTs it
   // to the backend's /feedback endpoint (fire-and-forget).
   SUBMIT_FEEDBACK: "SUBMIT_FEEDBACK",
+  // content script -> service worker: the player is showing an ad ({active}).
+  // Sent on every change and re-sent as a heartbeat while an ad lasts; the
+  // service worker routes it to whichever context owns the session.
+  AD_STATE: "AD_STATE",
   // Firefox capture path: audio/video payloads from the content script to
   // the background page's WebSocket. PCM travels base64-encoded because
   // runtime messaging is JSON-serialized in both browsers (an ArrayBuffer

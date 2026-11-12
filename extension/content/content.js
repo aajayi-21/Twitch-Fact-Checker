@@ -21,6 +21,13 @@
  *    shadow host, re-parent the host into it; if a bare <video> element is
  *    fullscreened (no DOM overlay possible), suppress toasts while verdicts
  *    keep accumulating in the history panel;
+ *  - watch the player for ad breaks (per-host `isAdPlaying`): report them
+ *    to the service worker as AD_STATE so the session owner stops feeding
+ *    the backend ad audio, and hide the overlay for the duration;
+ *  - hide the overlay while it has no business being on screen at all: the
+ *    video is popped out into picture-in-picture, or the player is shrunk
+ *    to the platform's mini-player (per-host `isMiniPlayer`). Fact-checking
+ *    keeps running in both cases — verdicts collect in the history panel;
  *  - re-attach across SPA navigations (debounced MutationObserver) and
  *    resync session state on URL changes;
  *  - CONTENT_READY handshake with the service worker on mount;
@@ -42,6 +49,14 @@
   const HISTORY_LIMIT = 100;
   const REMOUNT_DEBOUNCE_MS = 500;
   const URL_POLL_INTERVAL_MS = 1000;
+  // An ad counts as over only once its markers have been gone this long:
+  // resuming a moment late costs a second of stream speech, resuming early
+  // (markers flicker between the ads of one break) leaks ad audio.
+  const AD_CLEAR_HOLD_MS = 2000;
+  // While an ad lasts, AD_STATE is re-sent this often. The session owner
+  // lets a pause lapse unless it is re-asserted (shared/ad_pause.js,
+  // AD_PAUSE_TTL_MS = 20 s), so this must stay well below that.
+  const AD_HEARTBEAT_INTERVAL_MS = 5000;
 
   // Kick paths that are single top-level segments but NOT channel pages.
   // VERIFIED routes only: on Kick any unreserved single segment is a real
@@ -105,6 +120,12 @@
    * announces while idle — the URL poller re-evaluates after every SPA
    * navigation). Kick additionally gets `findFallbackTarget` (see above)
    * and `allowsBodyFallback` (structural no-player guard).
+   *
+   * Optional playback-state probes (absent = "never"):
+   *  - `isAdPlaying()` — the player is showing an ad right now, so the tab's
+   *    audio is advertising rather than the stream;
+   *  - `isMiniPlayer(overlayHost)` — the player holding the overlay has been
+   *    shrunk to the platform's corner mini-player.
    */
   const PLATFORM_ADAPTERS = Object.freeze({
     "twitch.tv": {
@@ -112,9 +133,23 @@
       // Any /<channel> path may host a player (Twitch even autoplays one on
       // the homepage) — mount everywhere, matching the original behavior.
       isPlayerPage: () => true,
+      // Pre-roll and mid-roll breaks render an "Ad (0:25)" countdown and a
+      // "right after this ad break" banner inside the player for the whole
+      // break, and remove both when the stream returns.
+      isAdPlaying: () =>
+        document.querySelector(
+          '[data-a-target="video-ad-countdown"], [data-a-target="video-ad-label"]'
+        ) !== null,
+      // Browsing away from a channel keeps the stream playing in a ~280 px
+      // corner player: same DOM node, flagged on its persistent wrapper.
+      isMiniPlayer: (overlayHost) =>
+        overlayHost.closest('[data-a-player-state="mini"]') !== null,
     },
     "youtube.com": {
       playerSelectors: ["#movie_player", "ytd-player"],
+      // The player element carries .ad-showing for the length of an ad.
+      isAdPlaying: () =>
+        document.querySelector("#movie_player.ad-showing") !== null,
       // /watch, /live/<id>, /@<channel>/live, and the channel-scoped live
       // permalinks /channel/<id>/live, /c/<name>/live, /user/<name>/live all
       // serve the watch page at their own URL (no redirect); /embed/* iframes
@@ -215,6 +250,10 @@
     // PageAudioCapture instance on the Firefox path only (Chrome captures
     // the tab from an offscreen document and leaves this null).
     capture: null,
+    // Ad-break tracking (see detectAdBreak / reportAdState).
+    adActive: false,
+    adMarkersGoneSinceMs: null,
+    lastAdReportAtMs: 0,
   };
 
   const loadStoredSettings = async () => {
@@ -312,19 +351,115 @@
     }
   };
 
+  /* ------------------------------------------------------------------ */
+  /* Ads, picture-in-picture and mini-players                            */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * Debounced ad state: true from the moment the adapter sees ad markers
+   * until they have been gone for AD_CLEAR_HOLD_MS.
+   *
+   * @param {number} nowMs
+   * @returns {boolean}
+   */
+  const detectAdBreak = (nowMs) => {
+    if (adapter.isAdPlaying?.()) {
+      state.adMarkersGoneSinceMs = null;
+      return true;
+    }
+    if (!state.adActive) {
+      return false;
+    }
+    state.adMarkersGoneSinceMs ??= nowMs;
+    return nowMs - state.adMarkersGoneSinceMs < AD_CLEAR_HOLD_MS;
+  };
+
+  /**
+   * Tell the service worker whether this tab is in an ad break. Only while
+   * a session runs here (the worker ignores other tabs anyway). `force`
+   * sends unconditionally — on every change, and whenever the session is
+   * (re)confirmed running, which also clears a stale pause after a page
+   * reload. Otherwise this only re-sends an ACTIVE ad as a heartbeat.
+   */
+  const reportAdState = ({force = false} = {}) => {
+    if (!state.running) {
+      return;
+    }
+    const nowMs = Date.now();
+    const heartbeatDue =
+      state.adActive &&
+      nowMs - state.lastAdReportAtMs >= AD_HEARTBEAT_INTERVAL_MS;
+    if (!force && !heartbeatDue) {
+      return;
+    }
+    state.lastAdReportAtMs = nowMs;
+    chrome.runtime
+      .sendMessage({
+        target: "background",
+        type: "AD_STATE",
+        payload: {active: state.adActive},
+      })
+      .catch((error) => {
+        console.debug("[fact-checker] AD_STATE send failed:", error);
+      });
+  };
+
+  /**
+   * True while the video plays in a browser picture-in-picture window — the
+   * standard element API, or a Document Picture-in-Picture window opened by
+   * the page. The in-page player is then only a placeholder.
+   */
+  const isPictureInPicture = () =>
+    Boolean(document.pictureInPictureElement) ||
+    Boolean(globalThis.documentPictureInPicture?.window);
+
+  const isMiniPlayer = () => {
+    const host = state.overlay.hostElement;
+    return Boolean(host?.isConnected && adapter.isMiniPlayer?.(host));
+  };
+
+  /**
+   * Hide the overlay while an ad plays, the video is in picture-in-picture,
+   * or the player is a mini-player; suppress toasts for the same stretches
+   * and under a fullscreened bare <video> (no DOM overlay can render inside
+   * it) — verdicts still accumulate in the history panel.
+   */
+  const applyOverlayVisibility = () => {
+    const hidden = state.adActive || isPictureInPicture() || isMiniPlayer();
+    const bareVideoFullscreen =
+      document.fullscreenElement?.tagName === "VIDEO";
+    state.overlay.setHidden(hidden);
+    state.overlay.setToastsSuppressed(hidden || bareVideoFullscreen);
+  };
+
+  /**
+   * Re-evaluate everything that depends on what the player is doing right
+   * now. Cheap (a couple of selector lookups) and idempotent, so it runs on
+   * every trigger: DOM mutations, the 1 s poller, fullscreen and
+   * picture-in-picture events.
+   */
+  const syncPlaybackState = () => {
+    const adActive = detectAdBreak(Date.now());
+    const adChanged = adActive !== state.adActive;
+    state.adActive = adActive;
+    if (adChanged) {
+      console.info(
+        `[fact-checker] ad break ${adActive ? "detected" : "over"} on this page`
+      );
+    }
+    reportAdState({force: adChanged});
+    applyOverlayVisibility();
+  };
+
   /**
    * Universal fullscreen rule: if the fullscreened element does not contain
-   * the shadow host, re-parent the host into it; if the fullscreened node is
-   * a bare <video> (no DOM overlay can render inside it), suppress toasts —
-   * verdicts still accumulate in the history panel. Both re-parent and
-   * suppression are undone on fullscreen exit.
+   * the shadow host, re-parent the host into it; a fullscreened bare <video>
+   * suppresses toasts instead (see applyOverlayVisibility). Both are undone
+   * on fullscreen exit.
    */
   const handleFullscreenChange = () => {
-    const fullscreenElement = document.fullscreenElement;
-    state.overlay.setToastsSuppressed(
-      Boolean(fullscreenElement && fullscreenElement.tagName === "VIDEO")
-    );
     ensureMounted();
+    syncPlaybackState();
   };
 
   const scheduleRemountCheck = () => {
@@ -335,12 +470,15 @@
     setTimeout(() => {
       state.remountScheduled = false;
       ensureMounted();
+      syncPlaybackState();
     }, REMOUNT_DEBOUNCE_MS);
   };
 
   const setRunning = (running) => {
     state.running = Boolean(running);
     state.overlay.setConnectionState(state.running);
+    // A (re)started session knows nothing about this tab's ads — tell it.
+    reportAdState({force: true});
   };
 
   /**
@@ -514,6 +652,11 @@
    * debounced MutationObserver re-attaches the host when it is orphaned,
    * and a platform-agnostic URL poller resyncs session state on channel /
    * video changes. Non-player URLs never mount or announce.
+   *
+   * Both also drive syncPlaybackState: the observer catches ad markers the
+   * moment they are inserted, and the poller covers attribute-only changes
+   * (YouTube's .ad-showing, Twitch's mini-player flag), the end-of-ad hold,
+   * and the ad heartbeat.
    */
   const watchForNavigation = () => {
     const observer = new MutationObserver(scheduleRemountCheck);
@@ -522,6 +665,7 @@
       subtree: true,
     });
     setInterval(() => {
+      syncPlaybackState();
       if (location.href === state.lastUrl) {
         return;
       }
@@ -580,7 +724,13 @@
         });
     };
     ensureMounted(); // no-ops quietly on non-player pages
+    syncPlaybackState();
     document.addEventListener("fullscreenchange", handleFullscreenChange);
+    // Both events fire on the <video> and bubble; capture phase so a page
+    // handler that stops propagation cannot hide them from us.
+    for (const pipEvent of ["enterpictureinpicture", "leavepictureinpicture"]) {
+      document.addEventListener(pipEvent, syncPlaybackState, true);
+    }
     // Firefox path only: a full navigation destroys this script (and with it
     // the audio tap), so end the session rather than leave the backend
     // socket open with nothing feeding it. SPA route changes do NOT fire

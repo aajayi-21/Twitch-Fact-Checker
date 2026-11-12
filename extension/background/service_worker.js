@@ -26,6 +26,8 @@
  *    chrome.storage.session (offscreen docs cannot access chrome.storage),
  *  - forwarding sync-settings changes to the session owner,
  *  - opening the options page for content scripts (OPEN_OPTIONS),
+ *  - routing the captured tab's ad-break reports (AD_STATE) to the session
+ *    owner, which drops audio while an ad plays (shared/ad_pause.js),
  *  - closing the offscreen document on CAPTURE_ENDED.
  */
 
@@ -66,6 +68,7 @@ const IDLE_SESSION = Object.freeze({
   wsState: "closed",
   reconnectAttempt: 0,
   lastError: null,
+  adPaused: false,
 });
 
 const getCapturedTabId = async () => {
@@ -237,6 +240,7 @@ const handleCaptureStart = async (tabId) => {
     wsState: "connecting",
     reconnectAttempt: 0,
     lastError: null,
+    adPaused: false,
   });
   const settings = await loadSettings();
   // Identity is best-effort: a tabs.get failure must not abort the start.
@@ -405,6 +409,35 @@ const handleSubmitFeedback = async (payload) => {
   }
 };
 
+/**
+ * AD_STATE from a content script: forward to the session owner, but only
+ * for the tab actually being captured — every supported tab runs the
+ * content script, and an ad in some other tab says nothing about this
+ * session's audio.
+ */
+const handleAdState = async (sender, payload) => {
+  const capturedTabId = await getCapturedTabId();
+  if (capturedTabId === null || sender.tab?.id !== capturedTabId) {
+    return;
+  }
+  const active = Boolean(payload?.active);
+  if (!HAS_OFFSCREEN_CAPTURE) {
+    pageSession.setAdActive(active);
+    return;
+  }
+  if (!(await chrome.offscreen.hasDocument())) {
+    return;
+  }
+  try {
+    await chrome.runtime.sendMessage(
+      makeMsg(TARGET.OFFSCREEN, MSG.OFFSCREEN_AD_STATE, {active})
+    );
+  } catch (error) {
+    // The document can close between hasDocument() and delivery.
+    console.debug("[fact-checker] OFFSCREEN_AD_STATE not delivered:", error);
+  }
+};
+
 const buildSessionStateReply = async (sender) => {
   const capturedTabId = await getCapturedTabId();
   const session = await readCaptureSession();
@@ -460,6 +493,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         break;
       case MSG.SUBMIT_FEEDBACK:
         await handleSubmitFeedback(message.payload);
+        break;
+      case MSG.AD_STATE:
+        await handleAdState(sender, message.payload);
         break;
       // Firefox capture path (content script -> this page's WebSocket).
       case MSG.AUDIO_CHUNK:
