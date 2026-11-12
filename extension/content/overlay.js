@@ -108,6 +108,7 @@ class FactCheckOverlay {
   #transcriptTimerId = null;
   #topicSkipCount = 0;
   #toastsSuppressed = false;
+  #hidden = false;
 
   /**
    * Called when the user clicks "Edit topics" in the history-panel footer.
@@ -190,6 +191,7 @@ class FactCheckOverlay {
       inset: "0",
       zIndex: "2147483646",
       pointerEvents: "none",
+      display: this.#hidden ? "none" : "",
     });
     if (this.#host.parentElement !== parentElement) {
       parentElement.appendChild(this.#host);
@@ -198,14 +200,43 @@ class FactCheckOverlay {
 
   /** Detach the host and cancel every pending timer. mount() re-attaches. */
   unmount() {
+    this.#clearTransientUi();
+    if (this.#host) {
+      this.#host.remove();
+    }
+  }
+
+  /**
+   * Hide (or re-show) the entire overlay without unmounting it. content.js
+   * hides it while the player shows an ad, is popped out into
+   * picture-in-picture, or is shrunk to a mini-player — nothing here belongs
+   * on top of any of those. Hiding also clears the transient UI (toasts,
+   * chip, notice, transcript) so nothing stale reappears afterwards; the
+   * history panel and its open/closed state are kept.
+   *
+   * @param {boolean} hidden
+   */
+  setHidden(hidden) {
+    const nextHidden = Boolean(hidden);
+    if (nextHidden === this.#hidden) {
+      return;
+    }
+    this.#hidden = nextHidden;
+    if (nextHidden) {
+      this.#clearTransientUi();
+    }
+    if (this.#host) {
+      this.#host.style.display = nextHidden ? "none" : "";
+    }
+  }
+
+  /** Dismiss toasts and the chip/notice/transcript, cancelling their timers. */
+  #clearTransientUi() {
     this.hideChecking();
     this.#hideNotice();
     this.#hideTranscript();
     for (const toast of [...this.#activeToasts]) {
       this.#dismissToast(toast, {immediate: true});
-    }
-    if (this.#host) {
-      this.#host.remove();
     }
   }
 
@@ -262,7 +293,7 @@ class FactCheckOverlay {
     }
     this.hideChecking();
     if (this.#toastsSuppressed) {
-      return; // fullscreened bare <video>: history still records the verdict
+      return; // overlay not visible: history still records the verdict
     }
     while (this.#activeToasts.length >= FactCheckOverlay.MAX_STACKED_TOASTS) {
       this.#dismissToast(this.#activeToasts[0], {immediate: true});
@@ -353,8 +384,9 @@ class FactCheckOverlay {
   /**
    * Suppress (or re-allow) verdict toasts. content.js enables this while a
    * bare <video> element is fullscreened — no DOM overlay can render over it
-   * — so verdicts accumulate silently in the history panel instead of
-   * bursting as stale toasts on fullscreen exit.
+   * — and while the overlay is hidden (see setHidden), so verdicts
+   * accumulate silently in the history panel instead of bursting as stale
+   * toasts afterwards.
    *
    * @param {boolean} suppressed
    */

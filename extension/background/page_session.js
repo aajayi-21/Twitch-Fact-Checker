@@ -18,9 +18,13 @@
  *   capturing ──Stop / tab closed──> stopping ──cleanup──> idle
  *
  * The event page stays alive for the session's duration because the content
- * script messages it four times a second; no keepalive hack needed.
+ * script messages it four times a second; no keepalive hack needed. That
+ * includes ad breaks: the content script keeps sending PCM and the frames
+ * are dropped HERE (see shared/ad_pause.js), precisely so the page is not
+ * left idle long enough to be suspended mid-session.
  */
 
+import {AdPauseGate, buildBoundarySilenceFrames} from "../shared/ad_pause.js";
 import { ERR } from "../shared/messages.js";
 import { BackendSocket } from "../offscreen/ws_client.js";
 
@@ -29,6 +33,9 @@ const AUDIO_SAMPLE_RATE = 16000;
 let socket = null;
 let sessionSettings = null;
 let activeTabId = null;
+const adPause = new AdPauseGate();
+/** Mirrors the gate into captureSession.adPaused (for the popup). */
+let adPausedReported = false;
 /** Hooks into the service worker's session/tab plumbing (see configure). */
 let hooks = {
   onSessionPatch: async () => {},
@@ -73,13 +80,31 @@ const teardown = () => {
   }
 };
 
+/** Record the ad-pause state for the popup (no-op when unchanged). */
+const reportAdPaused = (paused) => {
+  if (adPausedReported === paused) {
+    return;
+  }
+  adPausedReported = paused;
+  hooks.onSessionPatch({adPaused: paused}).catch((error) => {
+    console.error("[fact-checker] ad-state persistence failed:", error);
+  });
+};
+
+const clearAdPause = () => {
+  adPause.resume();
+  adPausedReported = false;
+};
+
 const endSessionWithError = async (lastError, reason) => {
   teardown();
+  clearAdPause();
   await hooks.onSessionPatch({
     status: "error",
     wsState: "closed",
     reconnectAttempt: 0,
     lastError,
+    adPaused: false,
   });
   activeTabId = null;
   sessionSettings = null;
@@ -156,6 +181,9 @@ export const start = async (tabId, settings) => {
   }
   activeTabId = tabId;
   sessionSettings = {...settings};
+  // A new session never inherits a pause; the content script re-reports the
+  // tab's ad state as soon as it learns the session is running.
+  clearAdPause();
   await hooks.onSessionPatch({
     status: "starting",
     tabId,
@@ -163,6 +191,7 @@ export const start = async (tabId, settings) => {
     wsState: "connecting",
     reconnectAttempt: 0,
     lastError: null,
+    adPaused: false,
   });
   socket = new BackendSocket({
     url: sessionSettings.backendUrl,
@@ -218,6 +247,7 @@ export const stop = async (reason = "user_stop") => {
   }
   activeTabId = null;
   sessionSettings = null;
+  clearAdPause();
   await hooks.onSessionPatch({
     status: "idle",
     tabId: null,
@@ -225,6 +255,7 @@ export const stop = async (reason = "user_stop") => {
     wsState: "closed",
     reconnectAttempt: 0,
     lastError: reason === "tab_closed" ? ERR.ERR_TAB_CLOSED : null,
+    adPaused: false,
   });
   await hooks.onEnded(reason);
 };
@@ -239,6 +270,15 @@ export const stop = async (reason = "user_stop") => {
 export const submitAudio = (pcmB64) => {
   if (!socket || typeof pcmB64 !== "string") {
     return;
+  }
+  if (adPause.isPaused()) {
+    return; // ad break: the page's audio is the ad, not the stream
+  }
+  if (adPausedReported) {
+    // The pause lapsed without an explicit "ad over" — the content script
+    // stopped re-asserting it.
+    console.warn("[fact-checker] ad pause lapsed; resuming fact-checking");
+    reportAdPaused(false);
   }
   const binary = atob(pcmB64);
   const bytes = new Uint8Array(binary.length);
@@ -255,11 +295,42 @@ export const submitAudio = (pcmB64) => {
  * @param {{imageB64: string, capturedAtMs: number}} frame
  */
 export const submitVideoFrame = ({imageB64, capturedAtMs}) => {
+  if (adPause.isPaused()) {
+    return;
+  }
   socket?.sendJson({
     type: "frame",
     image_b64: imageB64,
     captured_at_ms: capturedAtMs,
   });
+};
+
+/**
+ * The captured tab started or finished an ad break (content script AD_STATE).
+ * Repeated `active: true` calls are heartbeats that keep the pause alive; the
+ * first one also sends a second of silence so the backend's VAD closes the
+ * streamer's last utterance rather than splicing it onto post-ad speech.
+ *
+ * @param {boolean} active
+ */
+export const setAdActive = (active) => {
+  if (!socket) {
+    return; // no session — nothing to pause
+  }
+  const paused = Boolean(active);
+  if (!paused) {
+    adPause.resume();
+  } else if (adPause.pause()) {
+    for (const silenceFrame of buildBoundarySilenceFrames()) {
+      socket.sendAudio(silenceFrame);
+    }
+  }
+  if (adPausedReported !== paused) {
+    console.info(
+      `[fact-checker] ad break ${paused ? "started; pausing" : "ended; resuming"}`
+    );
+  }
+  reportAdPaused(paused);
 };
 
 /** True while the socket can accept frames (the content script's gate). */

@@ -18,8 +18,15 @@
  * object; the service worker persists it. sendMessage wakes a dead service
  * worker, so popup status survives service-worker death with zero keepalive
  * hacks.
+ *
+ * Ad breaks: the content script reports ads on the captured tab
+ * (OFFSCREEN_AD_STATE, relayed by the service worker). While one lasts the
+ * session stays "capturing" but every audio and video frame is dropped
+ * instead of sent — see shared/ad_pause.js. `session.adPaused` mirrors the
+ * gate for the popup.
  */
 
+import {AdPauseGate, buildBoundarySilenceFrames} from "../shared/ad_pause.js";
 import {ERR, MSG, TARGET, makeMsg} from "../shared/messages.js";
 import {AudioCapture} from "./audio_capture.js";
 import {BackendSocket} from "./ws_client.js";
@@ -29,6 +36,7 @@ const AUDIO_SAMPLE_RATE = 16000;
 let capture = null;
 let socket = null;
 let sessionSettings = null;
+const adPause = new AdPauseGate();
 
 let session = {
   status: "idle",
@@ -37,6 +45,7 @@ let session = {
   wsState: "closed",
   reconnectAttempt: 0,
   lastError: null,
+  adPaused: false,
 };
 
 /**
@@ -116,17 +125,60 @@ const teardown = async () => {
 /** Session-fatal path: tear down, record the error, tell the service worker. */
 const endSessionWithError = async (lastError, reason) => {
   await teardown();
+  adPause.resume();
   await writeSession({
     status: "error",
     wsState: "closed",
     reconnectAttempt: 0,
     lastError,
+    adPaused: false,
   });
   await sendCaptureEnded(reason);
 };
 
 const handleAudioFrame = (pcmFrame) => {
+  if (adPause.isPaused()) {
+    return; // ad break: the tab's audio is the ad, not the stream
+  }
+  if (session.adPaused) {
+    // The pause lapsed without an explicit "ad over" — the content script
+    // stopped re-asserting it (tab navigated away, extension reloaded).
+    console.warn("[fact-checker] ad pause lapsed; resuming fact-checking");
+    writeSession({adPaused: false}).catch((error) => {
+      console.error("[fact-checker] ad-state persistence failed:", error);
+    });
+  }
   socket?.sendAudio(pcmFrame);
+};
+
+/**
+ * OFFSCREEN_AD_STATE: the captured tab started or finished an ad break.
+ * Repeated `active: true` messages are heartbeats that keep the pause alive
+ * (it lapses on its own otherwise — see shared/ad_pause.js). The first one
+ * also sends a second of silence so the backend's VAD closes the streamer's
+ * last utterance rather than splicing it onto post-ad speech.
+ */
+const handleAdState = ({active} = {}) => {
+  if (!capture) {
+    return; // no session — nothing to pause
+  }
+  const paused = Boolean(active);
+  if (!paused) {
+    adPause.resume();
+  } else if (adPause.pause()) {
+    for (const silenceFrame of buildBoundarySilenceFrames()) {
+      socket?.sendAudio(silenceFrame);
+    }
+  }
+  if (session.adPaused === paused) {
+    return;
+  }
+  console.info(
+    `[fact-checker] ad break ${paused ? "started; pausing" : "ended; resuming"}`
+  );
+  writeSession({adPaused: paused}).catch((error) => {
+    console.error("[fact-checker] ad-state persistence failed:", error);
+  });
 };
 
 const handleCaptureLost = (reason) => {
@@ -217,6 +269,9 @@ const handleStart = async ({streamId, tabId, settings}) => {
     await teardown();
   }
   sessionSettings = {...settings};
+  // A new session never inherits a pause; the content script re-reports the
+  // tab's ad state as soon as it learns the session is running.
+  adPause.resume();
   capture = new AudioCapture({
     onFrame: handleAudioFrame,
     onEnded: handleCaptureLost,
@@ -229,7 +284,7 @@ const handleStart = async ({streamId, tabId, settings}) => {
         captured_at_ms: capturedAtMs,
       });
     },
-    shouldSendFrame: () => socket?.isOpen === true,
+    shouldSendFrame: () => socket?.isOpen === true && !adPause.isPaused(),
   });
   // Issue getUserMedia in this tick; persist the transition while it runs.
   const captureStarted = capture.start(streamId, {
@@ -242,6 +297,7 @@ const handleStart = async ({streamId, tabId, settings}) => {
     wsState: "connecting",
     reconnectAttempt: 0,
     lastError: null,
+    adPaused: false,
   });
   try {
     await captureStarted;
@@ -291,6 +347,7 @@ const handleStop = async ({reason = "user_stop"} = {}) => {
   const activeCapture = capture;
   socket = null;
   capture = null;
+  adPause.resume();
   if (activeCapture) {
     activeCapture.onFrame = null;
     activeCapture.onEnded = null;
@@ -328,6 +385,7 @@ const handleStop = async ({reason = "user_stop"} = {}) => {
     wsState: "closed",
     reconnectAttempt: 0,
     lastError: reason === "tab_closed" ? ERR.ERR_TAB_CLOSED : null,
+    adPaused: false,
   });
   await sendCaptureEnded(reason);
 };
@@ -389,6 +447,9 @@ chrome.runtime.onMessage.addListener((message) => {
       break;
     case MSG.OFFSCREEN_CONFIG:
       handleConfigChange(message.payload ?? {});
+      break;
+    case MSG.OFFSCREEN_AD_STATE:
+      handleAdState(message.payload ?? {});
       break;
     default:
       break;
