@@ -1,0 +1,222 @@
+{
+  "schema": 1,
+  "modelId": "whisper-base.en",
+  "variantId": "webgpu-mixed",
+  "device": "webgpu",
+  "extensionId": "bkdmidiaaipkifgbgdcbeagfnefkecbo",
+  "controllerIsolated": false,
+  "environment": {
+    "crossOriginIsolated": false,
+    "hardwareConcurrency": 8,
+    "gpu": {
+      "webgpuAvailable": true,
+      "kind": "hardware",
+      "usable": true,
+      "reason": null,
+      "error": null,
+      "vendor": "intel",
+      "architecture": "xe-2lpg",
+      "device": "",
+      "description": "",
+      "isFallbackAdapter": false,
+      "shaderF16": true,
+      "features": [
+        "atomic-vec2u-min-max",
+        "bgra8unorm-storage",
+        "chromium-experimental-multi-draw-indirect",
+        "chromium-experimental-sampling-resource-table",
+        "chromium-experimental-subgroup-matrix",
+        "chromium-experimental-timestamp-query-inside-passes",
+        "clip-distances",
+        "core-features-and-limits",
+        "depth-clip-control",
+        "depth32float-stencil8",
+        "dual-source-blending",
+        "float32-blendable",
+        "float32-filterable",
+        "indirect-first-instance",
+        "primitive-index",
+        "rg11b10ufloat-renderable",
+        "shader-f16",
+        "subgroup-size-control",
+        "subgroups",
+        "texture-component-swizzle",
+        "texture-compression-bc",
+        "texture-compression-bc-sliced-3d",
+        "texture-compression-etc2",
+        "texture-compression-unaligned",
+        "texture-formats-tier1",
+        "texture-formats-tier2",
+        "timestamp-query"
+      ],
+      "limits": {
+        "maxBufferSize": 4294967292,
+        "maxStorageBufferBindingSize": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupStorageSize": 49152,
+        "maxStorageBuffersPerShaderStage": 16
+      },
+      "powerPreference": "high-performance",
+      "label": "intel (xe-2lpg)"
+    },
+    "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.0.0 Safari/537.36"
+  },
+  "load": {
+    "loadMs": 1439.2999999970198,
+    "warmupMs": 365.8999999985099,
+    "numThreads": 1,
+    "crossOriginIsolated": false,
+    "workerProbe": {
+      "webgpuAvailable": true,
+      "kind": "hardware",
+      "usable": true,
+      "reason": null,
+      "error": null,
+      "vendor": "intel",
+      "architecture": "xe-2lpg",
+      "device": "",
+      "description": "",
+      "isFallbackAdapter": false,
+      "shaderF16": true,
+      "features": [
+        "atomic-vec2u-min-max",
+        "bgra8unorm-storage",
+        "chromium-experimental-multi-draw-indirect",
+        "chromium-experimental-sampling-resource-table",
+        "chromium-experimental-subgroup-matrix",
+        "chromium-experimental-timestamp-query-inside-passes",
+        "clip-distances",
+        "core-features-and-limits",
+        "depth-clip-control",
+        "depth32float-stencil8",
+        "dual-source-blending",
+        "float32-blendable",
+        "float32-filterable",
+        "indirect-first-instance",
+        "primitive-index",
+        "rg11b10ufloat-renderable",
+        "shader-f16",
+        "subgroup-size-control",
+        "subgroups",
+        "texture-component-swizzle",
+        "texture-compression-bc",
+        "texture-compression-bc-sliced-3d",
+        "texture-compression-etc2",
+        "texture-compression-unaligned",
+        "texture-formats-tier1",
+        "texture-formats-tier2",
+        "timestamp-query"
+      ],
+      "limits": {
+        "maxBufferSize": 4294967292,
+        "maxStorageBufferBindingSize": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupStorageSize": 49152,
+        "maxStorageBuffersPerShaderStage": 16
+      },
+      "powerPreference": "high-performance"
+    },
+    "sessionGpu": {
+      "vendor": "intel",
+      "architecture": "xe-2lpg",
+      "description": "",
+      "isFallbackAdapter": false,
+      "shaderF16": true
+    }
+  },
+  "capture": {
+    "capturedSeconds": 44.57139999999851,
+    "receivedSeconds": 44.25,
+    "maxFrameGapMs": 258.70000000298023,
+    "lateFrames": 0,
+    "endReason": null
+  },
+  "stats": {
+    "framesReceived": 177,
+    "samplesReceived": 708000,
+    "segmentsClosed": 6,
+    "segmentsTranscribed": 6,
+    "segmentsDropped": 0,
+    "droppedSeconds": 0,
+    "utteranceErrors": 0,
+    "inferenceMs": 4569,
+    "transcribedSeconds": 42.54,
+    "maxLagMs": 1111.2000000029802,
+    "maxBacklogS": 9.99
+  },
+  "realTimeFactor": 0.10740479548660084,
+  "medianLagMs": 762.1000000014901,
+  "maxLagMs": 1111.2000000029802,
+  "wordErrorRate": 0.10236220472440945,
+  "text": "Welcome back to the stream everyone, we are live. Did you know the Eiffel Tower is 450 meters tall? Look it up, chat. Honestly this patch is terrible, but developers have no idea what they are doing. I'm going to Push the left lane and take the tower before their dungler responds. Someone sent the great wall of china is visible from space with the naked eye and that's just facts. Messy as one 8-gallon door rewards, no other player is close. Trust me, our team is winning the whole tournament. this year, easy. By the way, the speed on light in about 300,000 km per second. Anyway, Remember to hit that follow button and use code stream for 10% off.",
+  "transcripts": [
+    {
+      "text": "Welcome back to the stream everyone, we are live. Did you know the Eiffel Tower is 450 meters tall?",
+      "startS": 0,
+      "endS": 7.08,
+      "inferenceMs": 637.5,
+      "waitMs": 0.10000000149011612,
+      "lagMs": 637.8999999985099,
+      "forced": true
+    },
+    {
+      "text": "Look it up, chat. Honestly this patch is terrible, but developers have no idea what they are doing. I'm going to",
+      "startS": 7.08,
+      "endS": 14.1,
+      "inferenceMs": 703.7000000029802,
+      "waitMs": 0,
+      "lagMs": 704,
+      "forced": true
+    },
+    {
+      "text": "Push the left lane and take the tower before their dungler responds. Someone sent the great wall of china is visible from space with the naked eye and that's just facts.",
+      "startS": 14.1,
+      "endS": 24.09,
+      "inferenceMs": 1111,
+      "waitMs": 0,
+      "lagMs": 1111.2000000029802,
+      "forced": true
+    },
+    {
+      "text": "Messy as one 8-gallon door rewards, no other player is close. Trust me, our team is winning the whole tournament.",
+      "startS": 24.09,
+      "endS": 30.93,
+      "inferenceMs": 761.8999999985099,
+      "waitMs": 0,
+      "lagMs": 762.1000000014901,
+      "forced": true
+    },
+    {
+      "text": "this year, easy. By the way, the speed on light in about 300,000 km per second. Anyway,",
+      "startS": 30.93,
+      "endS": 37.86,
+      "inferenceMs": 832.7999999970198,
+      "waitMs": 0,
+      "lagMs": 833,
+      "forced": true
+    },
+    {
+      "text": "Remember to hit that follow button and use code stream for 10% off.",
+      "startS": 37.86,
+      "endS": 42.54,
+      "inferenceMs": 522.1000000014901,
+      "waitMs": 0.10000000149011612,
+      "lagMs": 522.6999999955297,
+      "forced": false
+    }
+  ],
+  "runner": {
+    "label": "live-csp-whisper-gpu",
+    "mode": "live",
+    "manifest": "csp",
+    "headless": true,
+    "chromeFlags": [
+      "--enable-unsafe-extension-debugging",
+      "--allowlisted-extension-id=bkdmidiaaipkifgbgdcbeagfnefkecbo",
+      "--enable-features=Vulkan",
+      "--use-angle=vulkan",
+      "--enable-unsafe-webgpu"
+    ],
+    "chromeVersion": "Chrome/157.0.8103.50"
+  }
+}

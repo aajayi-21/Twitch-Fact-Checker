@@ -20,7 +20,9 @@
  * hands one 8000-byte ArrayBuffer per 250 ms to `onFrame`.
  */
 
-const WORKLET_MODULE_PATH = "pcm_worklet.js"; // relative to offscreen.html
+// Resolved against THIS module, not the document, so the capture class works
+// from any extension page that imports it (not only offscreen.html).
+const WORKLET_MODULE_PATH = new URL("./pcm_worklet.js", import.meta.url).href;
 const CONTEXT_SAMPLE_RATE = 48000;
 const FRAME_SAMPLES = 4000; // 250 ms at 16 kHz — one binary WebSocket frame
 const ANTI_ALIAS_CUTOFF_HZ = 7000;

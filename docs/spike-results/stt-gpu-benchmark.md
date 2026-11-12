@@ -184,9 +184,8 @@ node --test "extension/tests/*.test.mjs"
 node scripts/run_stt_bench.mjs --headed --label my-machine
 ```
 
-Without `--headed`, Chrome runs headless and has no GPU unless you add
-`--chrome-flag=--enable-features=Vulkan --chrome-flag=--use-angle=vulkan
---chrome-flag=--enable-unsafe-webgpu` (Linux).
+Without `--headed`, Chrome runs headless and has no GPU; add `--gpu` to expose it
+(Linux). Chrome profiles with downloaded models go to `.stt-bench/` (git-ignored).
 
 ## 6. Collecting results from other GPUs
 
@@ -212,10 +211,8 @@ correct output, does Parakeet pass, and what is the speed on short utterances.
 
 ## 7. Not covered by this spike
 
-- **Running inside the extension.** Everything ran from a local server. The extension
-  needs `'wasm-unsafe-eval'` in its content security policy, and the worker has to
-  coexist with tab capture in the offscreen document. That is spike S3; Chrome 157 would
-  not load an unpacked extension from the command line, so it needs a manual check.
+- **Running inside the extension.** Everything here ran from a local server. Since
+  covered by spike S3 — see [`stt-in-extension.md`](stt-in-extension.md).
 - **Real stream audio.** Both clips are clean speech. Music, crosstalk and game audio
   will raise error rates for every model; the backend's fixture set is the place to
   compare.
