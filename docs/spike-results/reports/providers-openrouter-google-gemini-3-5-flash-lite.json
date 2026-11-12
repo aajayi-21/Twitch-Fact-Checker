@@ -1,0 +1,218 @@
+{
+  "schema": 1,
+  "extensionId": "gfgjaloajgbhommfligfaekjnihpdmmo",
+  "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.0.0 Safari/537.36",
+  "timestamp": "2026-11-12T02:44:59.569Z",
+  "providers": [
+    {
+      "providerId": "openrouter",
+      "models": {
+        "gate": "google/gemini-3.5-flash-lite",
+        "verify": "google/gemini-3.5-flash-lite"
+      },
+      "hostPermissionGranted": false,
+      "validateKey": {
+        "ok": true,
+        "ms": 70.70000000298023,
+        "error": null
+      },
+      "wrongKey": {
+        "rejected": true,
+        "kind": "auth",
+        "status": 401
+      },
+      "gate": {
+        "ok": true,
+        "ms": 1394.7999999970198,
+        "usage": {
+          "inputTokens": 1982,
+          "cachedInputTokens": 0,
+          "outputTokens": 201,
+          "webSearches": 0,
+          "costUsd": 0.0010971,
+          "calls": 1
+        },
+        "claims": [
+          {
+            "claim_text": "The Eiffel Tower is four hundred and fifty meters tall.",
+            "check_worthiness": 0.8,
+            "topic": "other"
+          },
+          {
+            "claim_text": "The Great Wall of China is visible from space with the naked eye.",
+            "check_worthiness": 0.8,
+            "topic": "science_tech"
+          },
+          {
+            "claim_text": "Lionel Messi has won eight Ballon d'Or awards.",
+            "check_worthiness": 0.8,
+            "topic": "sports"
+          },
+          {
+            "claim_text": "The speed of light is about three hundred thousand kilometers per second.",
+            "check_worthiness": 0.8,
+            "topic": "science_tech"
+          }
+        ],
+        "expectedFound": [
+          "eiffel",
+          "great wall",
+          "ballon",
+          "speed of light"
+        ],
+        "excludedLeaked": []
+      },
+      "verify": [
+        {
+          "claim": "The Eiffel Tower is 450 meters tall.",
+          "expected": "FALSE",
+          "requestedMode": null,
+          "ms": 1609.1000000014901,
+          "ok": true,
+          "mode": "single",
+          "label": "FALSE",
+          "matchesExpected": true,
+          "evidence": "strong",
+          "explanation": "Official sources and records state that the Eiffel Tower is 330 meters tall, not 450 meters.",
+          "sources": [
+            {
+              "url": "https://www.toureiffel.paris/en/the-monument/key-figures",
+              "title": "Eiffel Tower information : facts, height in feet, weight, ..."
+            },
+            {
+              "url": "https://en.wikipedia.org/wiki/Eiffel_Tower",
+              "title": "Eiffel Tower"
+            },
+            {
+              "url": "https://www.toureiffel.paris/en/news/history-and-culture/300-330-meters-story-towers-height",
+              "title": "From 300 to 330 meters : the story of the Tower’s height - The Eiffel Tower"
+            },
+            {
+              "url": "https://www.toureiffel.paris/en/news/events/eiffel-tower-grows-330-meters-tall",
+              "title": "The Eiffel Tower grows again : 330 meters high - The Eiffel Tower"
+            },
+            {
+              "url": "https://www.toureiffel.paris/en/news/history-and-culture/15-essential-things-know-about-eiffel-tower",
+              "title": "15 essential things to know about the Eiffel Tower"
+            }
+          ],
+          "usage": {
+            "inputTokens": 2979,
+            "cachedInputTokens": 0,
+            "outputTokens": 49,
+            "webSearches": 1,
+            "costUsd": 0.0080162,
+            "calls": 1
+          }
+        },
+        {
+          "claim": "The speed of light is approximately 300,000 kilometers per second.",
+          "expected": "TRUE",
+          "requestedMode": null,
+          "ms": 2118,
+          "ok": true,
+          "mode": "single",
+          "label": "TRUE",
+          "matchesExpected": true,
+          "evidence": "strong",
+          "explanation": "Reputable sources confirm that the speed of light in a vacuum is approximately 300,000 kilometers per second (or 186,000 miles per second).",
+          "sources": [
+            {
+              "url": "https://coolcosmos.ipac.caltech.edu/ask/297-What-is-a-light-year-",
+              "title": "What is a light-year? | Cool Cosmos"
+            },
+            {
+              "url": "https://www.livescience.com/space/cosmology/what-is-the-speed-of-light",
+              "title": "What is the speed of light? | Live Science"
+            },
+            {
+              "url": "https://www.has.org.nz/article-speed-of-light",
+              "title": "Article - Speed of Light — Hamilton Astronomical Society"
+            },
+            {
+              "url": "https://chandra.harvard.edu/graphics/resources/handouts/lithos/light_handout_4page.pdf",
+              "title": "Light in the Universe"
+            },
+            {
+              "url": "https://www.grc.nasa.gov/www/k-12/Numbers/Math/Mathematical_Thinking/how_fast_is_the_speed.htm",
+              "title": "How \"Fast\" is the Speed of Light?"
+            }
+          ],
+          "usage": {
+            "inputTokens": 2264,
+            "cachedInputTokens": 0,
+            "outputTokens": 65,
+            "webSearches": 1,
+            "costUsd": 0.0078417,
+            "calls": 1
+          }
+        },
+        {
+          "claim": "Police are arresting protesters at the port of Dover right now.",
+          "expected": "UNVERIFIED",
+          "requestedMode": null,
+          "ms": 1718.5,
+          "ok": true,
+          "mode": "single",
+          "label": "UNVERIFIED",
+          "matchesExpected": true,
+          "evidence": "none",
+          "explanation": "Published reports confirm that a protest took place at the Port of Dover, but claims about ongoing arrests happening right now cannot be verified through static web search results.",
+          "sources": [
+            {
+              "url": "https://www.bbc.co.uk/news/articles/cgk53rvydx5o",
+              "title": "Kent Police defend response to Port of Dover protest - BBC News"
+            },
+            {
+              "url": "https://www.bbc.co.uk/news/live/cmwyzxlzxpzgt",
+              "title": "Port of Dover delays: Disruption as masked 'stop the boats' protesters block roads - BBC News"
+            },
+            {
+              "url": "https://www.bbc.com/news/articles/cz0zymj93rno",
+              "title": "Kent Police warned of Dover protests the day before, force says"
+            },
+            {
+              "url": "https://www.bbc.com/news/articles/cy8znyzgkjjo",
+              "title": "Masked protesters block access at Port of Dover"
+            },
+            {
+              "url": "https://www.theguardian.com/uk-news/2026/sep/08/far-right-port-protests-police-intelligence-gathering-dover-portsmouth",
+              "title": "Far-right port protests: police told to improve intelligence gathering | Police | The Guardian"
+            }
+          ],
+          "usage": {
+            "inputTokens": 3197,
+            "cachedInputTokens": 0,
+            "outputTokens": 49,
+            "webSearches": 1,
+            "costUsd": 0.0080816,
+            "calls": 1
+          }
+        }
+      ]
+    },
+    {
+      "providerId": "anthropic",
+      "skipped": "no key supplied"
+    },
+    {
+      "providerId": "openai",
+      "skipped": "no key supplied"
+    },
+    {
+      "providerId": "gemini",
+      "skipped": "no key supplied"
+    }
+  ],
+  "runner": {
+    "label": "providers-openrouter-google-gemini-3-5-flash-lite",
+    "mode": "providers",
+    "manifest": "plain",
+    "headless": true,
+    "chromeFlags": [
+      "--enable-unsafe-extension-debugging",
+      "--allowlisted-extension-id=gfgjaloajgbhommfligfaekjnihpdmmo"
+    ],
+    "chromeVersion": "Chrome/157.0.8103.50"
+  }
+}
