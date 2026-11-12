@@ -146,8 +146,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 f"{settings.active_verify_model}",
             ),
         ]
+        if "anthropic" in {
+            settings.resolved_gate_provider,
+            settings.resolved_verify_provider,
+        }:
+            auth = {
+                "api_key": "ANTHROPIC_API_KEY",
+                "sign_in": "ant auth login (SDK credentials)",
+            }.get(settings.anthropic_auth_method or "", "none")
+            rows.append(("anthropic auth", auth))
     else:
-        rows.append(("gate/verify", "NOT CONFIGURED — add an API key"))
+        rows.append(
+            (
+                "gate/verify",
+                "NOT CONFIGURED — run `ant auth login` or add an API key",
+            )
+        )
     checks_today = app.state.verify_counter.value
     rows += [
         ("sensitivity", f"gate every {settings.gate_interval_s:.0f}s"),

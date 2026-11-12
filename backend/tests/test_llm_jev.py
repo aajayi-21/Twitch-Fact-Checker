@@ -362,7 +362,12 @@ class TestGateSurface:
 class TestFactoryAndHealth:
     @pytest.mark.parametrize("mode", ["shadow", "screen"])
     def test_factory_wraps_the_openrouter_gate(self, mode) -> None:
-        settings = Settings(_env_file=None, jev_mode=mode, openrouter_api_key="test")
+        settings = Settings(
+            _env_file=None,
+            llm_provider="openrouter",
+            jev_mode=mode,
+            openrouter_api_key="test",
+        )
         gate = create_claim_gate(settings, MagicMock())
         assert isinstance(gate, JevScreenedGate)
         assert gate.mode == mode
@@ -374,7 +379,7 @@ class TestFactoryAndHealth:
         assert DEFAULT_JEV_MODEL not in health["capabilities"]
 
     def test_off_is_the_plain_gate(self) -> None:
-        settings = Settings(_env_file=None)
+        settings = Settings(_env_file=None, llm_provider="openrouter")
         assert settings.jev_mode == "off"
         assert isinstance(create_claim_gate(settings, MagicMock()), OpenRouterClaimGate)
         assert _openrouter_health(settings)["decision_gate"]["mode"] == "off"

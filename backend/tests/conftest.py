@@ -159,6 +159,164 @@ class FakeOpenRouterClient:
         """Match ``AsyncOpenAI.close`` so hot-swap close paths work."""
 
 
+# --------------------------------------------------------------------------- #
+# Fake Anthropic (AsyncAnthropic) client
+# --------------------------------------------------------------------------- #
+
+
+class _FakeAnthropicMessages:
+    """Async facade over the scripted ``messages.create`` queue."""
+
+    def __init__(self, client: "FakeAnthropicClient") -> None:
+        self._client = client
+
+    async def create(self, **kwargs: Any) -> Any:
+        self._client.message_calls.append(kwargs)
+        return await _resolve_scripted(
+            self._client.message_results,
+            "FakeAnthropicClient.messages.create",
+            kwargs,
+        )
+
+
+class FakeAnthropicClient:
+    """Scriptable stand-in for ``anthropic.AsyncAnthropic``.
+
+    Mirrors the call surface ``app.llm_anthropic`` uses:
+    ``client.with_options(timeout=...).messages.create(**kwargs)``. Script by
+    appending REAL ``anthropic.types.Message`` objects (see
+    :func:`make_anthropic_message`) or SDK exceptions to
+    :attr:`message_results`; every call's kwargs land in
+    :attr:`message_calls`.
+    """
+
+    def __init__(self) -> None:
+        self.message_results: deque[Any] = deque()
+        self.message_calls: list[dict[str, Any]] = []
+        self.with_options_calls: list[dict[str, Any]] = []
+        self.messages = _FakeAnthropicMessages(self)
+
+    def with_options(self, **options: Any) -> "FakeAnthropicClient":
+        self.with_options_calls.append(options)
+        return self
+
+    async def close(self) -> None:
+        """Match ``AsyncAnthropic.close`` so hot-swap close paths work."""
+
+
+def make_anthropic_message(
+    content: Sequence[dict[str, Any]],
+    stop_reason: str = "end_turn",
+    web_search_requests: int = 0,
+) -> Any:
+    """A REAL ``anthropic.types.Message`` with the given content blocks."""
+    from anthropic.types import Message
+
+    return Message.model_validate(
+        {
+            "id": f"msg_{uuid4().hex[:12]}",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-haiku-5-5",
+            "content": list(content),
+            "stop_reason": stop_reason,
+            "stop_sequence": None,
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "cache_read_input_tokens": 0,
+                "server_tool_use": {
+                    "web_search_requests": web_search_requests,
+                    "web_fetch_requests": 0,
+                },
+            },
+        }
+    )
+
+
+def anthropic_text_block(
+    text: str, citations: Sequence[tuple[str, str]] = ()
+) -> dict[str, Any]:
+    """A text content block, optionally with web_search_result_location citations."""
+    block: dict[str, Any] = {"type": "text", "text": text}
+    if citations:
+        block["citations"] = [
+            {
+                "type": "web_search_result_location",
+                "url": url,
+                "title": title,
+                "encrypted_index": "idx",
+                "cited_text": "cited",
+            }
+            for url, title in citations
+        ]
+    return block
+
+
+def anthropic_search_blocks(
+    results: Sequence[tuple[str, str]],
+    query: str = "claim",
+    tool_id: str = "srvtoolu_1",
+) -> list[dict[str, Any]]:
+    """A ``server_tool_use`` + ``web_search_tool_result`` pair."""
+    return [
+        {
+            "type": "server_tool_use",
+            "id": tool_id,
+            "name": "web_search",
+            "input": {"query": query},
+        },
+        {
+            "type": "web_search_tool_result",
+            "tool_use_id": tool_id,
+            "content": [
+                {
+                    "type": "web_search_result",
+                    "url": url,
+                    "title": title,
+                    "encrypted_content": "enc",
+                    "page_age": None,
+                }
+                for url, title in results
+            ],
+        },
+    ]
+
+
+_ANTHROPIC_ERROR_FACTORY: Any = None
+
+
+def make_anthropic_status_error(
+    status_code: int,
+    message: str = "error",
+    error_type: str = "invalid_request_error",
+    headers: dict[str, str] | None = None,
+    error_code: str | None = None,
+) -> Any:
+    """A REAL ``anthropic`` status exception, built by the SDK's own factory
+    so the subclass (RateLimitError, OverloadedError, ...) matches what the
+    transport would see."""
+    import anthropic
+    import httpx2
+
+    global _ANTHROPIC_ERROR_FACTORY
+    if _ANTHROPIC_ERROR_FACTORY is None:
+        _ANTHROPIC_ERROR_FACTORY = anthropic.AsyncAnthropic(
+            api_key="sk-ant-offline-test", max_retries=0
+        )
+    error: dict[str, Any] = {"type": error_type, "message": message}
+    if error_code is not None:
+        error["details"] = {"error_code": error_code}
+    request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+    response = httpx2.Response(
+        status_code,
+        json={"type": "error", "error": error},
+        headers=headers or {},
+        request=request,
+    )
+    return _ANTHROPIC_ERROR_FACTORY._make_status_error_from_response(response)
+
+
 #: The whole-app test settings' stage models (see :func:`make_test_settings`).
 TEST_GATE_MODEL = "fake-gate-model"
 TEST_VERIFY_MODEL = "fake-verify-model"
@@ -615,6 +773,7 @@ def _reset_llm_process_latches() -> Iterator[None]:
     rebuilds) needs a reset here.
     """
     from app import openrouter_catalogue
+    from app.llm_anthropic import reset_anthropic_capability_latches
     from app.llm_local import LocalClaimGate
     from app.llm_openrouter import (
         _WARNED_FALLBACK_MODELS,
@@ -624,6 +783,7 @@ def _reset_llm_process_latches() -> Iterator[None]:
     )
 
     def reset() -> None:
+        reset_anthropic_capability_latches()
         OpenRouterClaimGate._json_schema_unsupported = False
         OpenRouterClaimGate._consecutive_strict_503s = 0
         OpenRouterClaimGate._json_schema_retry_at = 0.0
@@ -636,6 +796,37 @@ def _reset_llm_process_latches() -> Iterator[None]:
     reset()
     yield
     reset()
+
+
+#: Environment variables through which the Anthropic SDK finds credentials.
+_ANTHROPIC_CREDENTIAL_ENV = (
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_PROFILE",
+    "ANTHROPIC_FEDERATION_RULE_ID",
+    "ANTHROPIC_ORGANIZATION_ID",
+    "ANTHROPIC_SERVICE_ACCOUNT_ID",
+    "ANTHROPIC_IDENTITY_TOKEN",
+    "ANTHROPIC_IDENTITY_TOKEN_FILE",
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_anthropic_credentials(
+    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """Never let the developer's real Anthropic credentials into a test.
+
+    Points ANTHROPIC_CONFIG_DIR at an empty temp dir (so a real
+    ``ant auth login`` profile is invisible) and clears every credential
+    environment variable. Tests that need a sign-in create the profile files
+    themselves.
+    """
+    for name in _ANTHROPIC_CREDENTIAL_ENV:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(
+        "ANTHROPIC_CONFIG_DIR", str(tmp_path_factory.mktemp("anthropic-config"))
+    )
 
 
 @pytest.fixture(autouse=True)

@@ -19,6 +19,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from app import setup as setup_api
 from app.config import (
+    DEFAULT_ANTHROPIC_MODEL,
     DEFAULT_JEV_MODEL,
     DEFAULT_OPENROUTER_GATE_MODEL,
     DEFAULT_OPENROUTER_VERIFY_MODEL,
@@ -81,6 +82,16 @@ BASE_ENV = (
     # Settings is rebuilt from this file.
     "OLLAMA_BASE_URL=http://127.0.0.1:1/v1\n"
 )
+
+#: The anthropic block of /setup/status when no Anthropic credential exists
+#: (the conftest isolates ANTHROPIC_CONFIG_DIR, so there is no sign-in).
+ANTHROPIC_STATUS_UNCONFIGURED = {
+    "configured": False,
+    "auth_method": None,
+    "key_hint": None,
+    "gate_model": DEFAULT_ANTHROPIC_MODEL,
+    "verify_model": DEFAULT_ANTHROPIC_MODEL,
+}
 
 NOT_CONFIGURED_WS_MESSAGE = (
     "Backend has no API key yet — add one in the extension options."
@@ -275,6 +286,7 @@ class TestUnconfiguredSurface:
                 "configured": False,
             },
             "providers": {
+                "anthropic": ANTHROPIC_STATUS_UNCONFIGURED,
                 "openrouter": {
                     "configured": False,
                     "key_hint": None,
@@ -326,7 +338,7 @@ class TestCredentialsValidation:
     @pytest.mark.parametrize(
         "body",
         [
-            {"provider": "anthropic", "api_key": "sk-something"},
+            {"provider": "mistral", "api_key": "sk-something"},
             {"provider": "", "api_key": "sk-something"},
             {"api_key": "sk-something"},  # provider missing entirely
         ],
@@ -407,7 +419,7 @@ class TestCredentialsValidation:
         )
         assert response.status_code == 400
         assert response.json() == {
-            "detail": "provider must be one of: openrouter, ollama"
+            "detail": "provider must be one of: anthropic, openrouter, ollama"
         }
         assert temp_env_file.read_text(encoding="utf-8") == BASE_ENV
         assert unconfigured_client.get("/healthz").json()["configured"] is False
@@ -456,6 +468,7 @@ class TestCredentialsSuccess:
                 "configured": True,
             },
             "providers": {
+                "anthropic": ANTHROPIC_STATUS_UNCONFIGURED,
                 "openrouter": {
                     "configured": True,
                     "key_hint": "…wxyz",
@@ -539,8 +552,8 @@ class TestCredentialsSuccess:
             "configured": True,
         }
         assert body["verify"]["provider"] == "openrouter"
-        # OpenRouter is the only keyed provider; Ollama is the keyless one.
-        assert set(body["providers"]) == {"openrouter", "ollama"}
+        # Anthropic and OpenRouter are keyed; Ollama is the keyless one.
+        assert set(body["providers"]) == {"anthropic", "openrouter", "ollama"}
         openrouter_status = body["providers"]["openrouter"]
         assert openrouter_status["key_hint"] == "…wxyz"
         assert openrouter_status["credits"] == {"total": 10.0, "usage": 1.25}
@@ -1085,11 +1098,11 @@ class TestSetupStages:
     ) -> None:
         response = configured_client.post(
             "/setup/stages",
-            json={"gate_provider": "anthropic", "verify_provider": "openrouter"},
+            json={"gate_provider": "mistral", "verify_provider": "openrouter"},
         )
         assert response.status_code == 400
         assert response.json() == {
-            "detail": "gate_provider must be one of: openrouter, ollama"
+            "detail": "gate_provider must be one of: anthropic, openrouter, ollama"
         }
         assert stages_env_file.read_text(encoding="utf-8") == STAGES_ENV
 
@@ -1649,3 +1662,337 @@ class TestCatalogueParsing:
             await setup_api.fetch_openrouter_model_slugs(
                 transport=httpx.MockTransport(handler)
             )
+
+
+# --------------------------------------------------------------------------- #
+# Anthropic: key or `ant auth login` sign-in, stage routing, model checks
+# --------------------------------------------------------------------------- #
+
+ANTHROPIC_KEY = "sk-ant-api03-test-key-1234"
+
+
+def _write_anthropic_sign_in() -> None:
+    """An `ant auth login`-shaped profile in the conftest-isolated config dir."""
+    config_dir = Path(os.environ["ANTHROPIC_CONFIG_DIR"])
+    for sub in ("configs", "credentials"):
+        (config_dir / sub).mkdir(parents=True, exist_ok=True)
+        (config_dir / sub / "default.json").write_text("{}", encoding="utf-8")
+
+
+def _record_anthropic_credentials(
+    monkeypatch: pytest.MonkeyPatch, record: list[str | None]
+) -> None:
+    async def probe(api_key: str | None) -> None:
+        record.append(api_key)
+
+    monkeypatch.setattr(setup_api, "validate_anthropic_credentials", probe)
+
+
+class TestAnthropicCredentials:
+    def test_key_is_validated_persisted_and_hinted(
+        self,
+        unconfigured_client: TestClient,
+        temp_env_file: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        probed: list[str | None] = []
+        _record_anthropic_credentials(monkeypatch, probed)
+        _install_fake_runtime_builder(monkeypatch, FakeLLMClient())
+
+        response = unconfigured_client.post(
+            "/setup/credentials",
+            json={"provider": "anthropic", "api_key": ANTHROPIC_KEY},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert probed == [ANTHROPIC_KEY]
+        assert body["configured"] is True
+        assert body["gate"] == {
+            "provider": "anthropic",
+            "model": DEFAULT_ANTHROPIC_MODEL,
+            "configured": True,
+        }
+        assert body["verify"]["provider"] == "anthropic"
+        assert body["providers"]["anthropic"] == {
+            "configured": True,
+            "auth_method": "api_key",
+            "key_hint": "…1234",
+            "gate_model": DEFAULT_ANTHROPIC_MODEL,
+            "verify_model": DEFAULT_ANTHROPIC_MODEL,
+        }
+        content = temp_env_file.read_text(encoding="utf-8")
+        assert content == (
+            BASE_ENV.replace("LLM_PROVIDER=openrouter", "LLM_PROVIDER=anthropic")
+            + f"ANTHROPIC_API_KEY={ANTHROPIC_KEY}\n"
+        )
+        assert ANTHROPIC_KEY not in response.text
+        health = unconfigured_client.get("/healthz").json()
+        assert health["llm_provider"] == "anthropic"
+        assert health["verify_model"] == DEFAULT_ANTHROPIC_MODEL
+
+    def test_empty_key_uses_the_sign_in_and_clears_a_stored_key(
+        self,
+        unconfigured_client: TestClient,
+        temp_env_file: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        temp_env_file.write_text(
+            BASE_ENV + "ANTHROPIC_API_KEY=sk-ant-old-stored-key\n", encoding="utf-8"
+        )
+        _write_anthropic_sign_in()
+        probed: list[str | None] = []
+        _record_anthropic_credentials(monkeypatch, probed)
+        _install_fake_runtime_builder(monkeypatch, FakeLLMClient())
+
+        response = unconfigured_client.post(
+            "/setup/credentials", json={"provider": "anthropic", "api_key": ""}
+        )
+        assert response.status_code == 200
+        assert probed == [None]  # the SDK credential chain was probed
+        anthropic_status = response.json()["providers"]["anthropic"]
+        assert anthropic_status["auth_method"] == "sign_in"
+        assert anthropic_status["key_hint"] is None
+        content = temp_env_file.read_text(encoding="utf-8")
+        assert "ANTHROPIC_API_KEY=\n" in content
+        assert "sk-ant-old-stored-key" not in content
+        assert "LLM_PROVIDER=anthropic\n" in content
+
+    def test_rejected_sign_in_is_401_and_nothing_persisted(
+        self,
+        unconfigured_client: TestClient,
+        temp_env_file: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        async def reject(api_key: str | None) -> None:
+            raise ProviderKeyRejected("No Anthropic credentials found")
+
+        monkeypatch.setattr(setup_api, "validate_anthropic_credentials", reject)
+        response = unconfigured_client.post(
+            "/setup/credentials", json={"provider": "anthropic"}
+        )
+        assert response.status_code == 401
+        assert temp_env_file.read_text(encoding="utf-8") == BASE_ENV
+
+    def test_openrouter_still_requires_a_key(
+        self, unconfigured_client: TestClient
+    ) -> None:
+        response = unconfigured_client.post(
+            "/setup/credentials", json={"provider": "openrouter", "api_key": ""}
+        )
+        assert response.status_code == 400
+
+
+class TestAnthropicStages:
+    @pytest.fixture()
+    def configured_client(
+        self,
+        stages_env_file: Path,
+        fake_llm_client: FakeLLMClient,
+        fake_transcriber: FakeTranscriber,
+    ) -> Iterator[TestClient]:
+        settings = make_stages_settings()
+        with open_test_client(settings, fake_llm_client, fake_transcriber) as client:
+            yield client
+
+    def test_route_both_stages_to_anthropic_and_change_one_model(
+        self,
+        configured_client: TestClient,
+        stages_env_file: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "token-offline-test")
+        checked: list[tuple[str, bool]] = []
+
+        async def fake_validate(
+            model_id: str, settings: Settings, needs_web_search: bool
+        ) -> None:
+            checked.append((model_id, needs_web_search))
+
+        monkeypatch.setattr(setup_api, "validate_anthropic_model", fake_validate)
+        _install_fake_runtime_builder(monkeypatch, FakeLLMClient())
+
+        response = configured_client.post(
+            "/setup/stages",
+            json={
+                "gate_provider": "anthropic",
+                "verify_provider": "anthropic",
+                "gate_model": "claude-gate-test",
+                # Unchanged (the stored default): never re-validated.
+                "verify_model": DEFAULT_ANTHROPIC_MODEL,
+            },
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["gate"] == {
+            "provider": "anthropic",
+            "model": "claude-gate-test",
+            "configured": True,
+        }
+        assert body["verify"]["model"] == DEFAULT_ANTHROPIC_MODEL
+        assert checked == [("claude-gate-test", False)]
+        assert stages_env_file.read_text(encoding="utf-8") == (
+            STAGES_ENV
+            + "GATE_PROVIDER=anthropic\n"
+            + "VERIFY_PROVIDER=anthropic\n"
+            + "ANTHROPIC_GATE_MODEL=claude-gate-test\n"
+        )
+
+    def test_changed_verify_model_is_checked_for_web_search(
+        self,
+        configured_client: TestClient,
+        stages_env_file: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "token-offline-test")
+
+        async def reject(
+            model_id: str, settings: Settings, needs_web_search: bool
+        ) -> None:
+            assert needs_web_search is True
+            raise setup_api.ModelSlugRejected("no web search")
+
+        monkeypatch.setattr(setup_api, "validate_anthropic_model", reject)
+        response = configured_client.post(
+            "/setup/stages",
+            json={
+                "gate_provider": "openrouter",
+                "verify_provider": "anthropic",
+                "verify_model": "claude-no-search",
+            },
+        )
+        assert response.status_code == 400
+        assert response.json() == {"detail": "verify_model: no web search"}
+        assert stages_env_file.read_text(encoding="utf-8") == STAGES_ENV
+
+    def test_anthropic_stage_without_credentials_is_409(
+        self, configured_client: TestClient, stages_env_file: Path
+    ) -> None:
+        response = configured_client.post(
+            "/setup/stages",
+            json={"gate_provider": "openrouter", "verify_provider": "anthropic"},
+        )
+        assert response.status_code == 409
+        detail = response.json()["detail"]
+        assert "verify provider 'anthropic'" in detail
+        assert "ant auth login" in detail
+        assert stages_env_file.read_text(encoding="utf-8") == STAGES_ENV
+
+
+class _FakeModels:
+    def __init__(self, outcome: Any) -> None:
+        self._outcome = outcome
+
+    async def _resolve(self) -> Any:
+        if isinstance(self._outcome, BaseException):
+            raise self._outcome
+        return self._outcome
+
+    async def list(self, **kwargs: Any) -> Any:
+        return await self._resolve()
+
+    async def retrieve(self, model_id: str) -> Any:
+        return await self._resolve()
+
+
+class _FakeAnthropicProbeClient:
+    def __init__(self, outcome: Any) -> None:
+        self.models = _FakeModels(outcome)
+        self.closed = False
+
+    def with_options(self, **options: Any) -> "_FakeAnthropicProbeClient":
+        return self
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+def _model_info(web_search_supported: bool | None) -> Any:
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        capabilities=SimpleNamespace(
+            server_tools=SimpleNamespace(
+                web_search=SimpleNamespace(supported=web_search_supported)
+            )
+        )
+    )
+
+
+class TestAnthropicProbes:
+    """The live probes, against a fake SDK client (no network)."""
+
+    @pytest.fixture()
+    def install(self, monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untyped-def]
+        created: list[_FakeAnthropicProbeClient] = []
+
+        def installer(outcome: Any) -> list[_FakeAnthropicProbeClient]:
+            def factory(api_key: str | None) -> _FakeAnthropicProbeClient:
+                client = _FakeAnthropicProbeClient(outcome)
+                created.append(client)
+                return client
+
+            monkeypatch.setattr(setup_api, "create_anthropic_client", factory)
+            return created
+
+        return installer
+
+    async def test_credentials_accepted(self, install) -> None:  # type: ignore[no-untyped-def]
+        created = install(object())  # any non-exception = models.list succeeded
+        await setup_api.validate_anthropic_credentials(None)
+        assert created[0].closed is True
+
+    async def test_rejected_sign_in_names_the_sign_in(self, install) -> None:  # type: ignore[no-untyped-def]
+        from tests.conftest import make_anthropic_status_error
+
+        install(
+            make_anthropic_status_error(401, "invalid token", "authentication_error")
+        )
+        with pytest.raises(ProviderKeyRejected, match="ant auth login"):
+            await setup_api.validate_anthropic_credentials(None)
+
+    async def test_rejected_key_names_the_key(self, install) -> None:  # type: ignore[no-untyped-def]
+        from tests.conftest import make_anthropic_status_error
+
+        install(
+            make_anthropic_status_error(
+                401, "invalid x-api-key", "authentication_error"
+            )
+        )
+        with pytest.raises(ProviderKeyRejected, match="API key"):
+            await setup_api.validate_anthropic_credentials(ANTHROPIC_KEY)
+
+    async def test_no_credentials_at_all_is_a_rejection(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Real create_anthropic_client + the isolated (empty) config dir.
+        with pytest.raises(ProviderKeyRejected, match="ant auth login"):
+            await setup_api.validate_anthropic_credentials(None)
+
+    async def test_server_error_is_unreachable(self, install) -> None:  # type: ignore[no-untyped-def]
+        from tests.conftest import make_anthropic_status_error
+
+        install(make_anthropic_status_error(529, "overloaded", "overloaded_error"))
+        with pytest.raises(ProviderUnreachable):
+            await setup_api.validate_anthropic_credentials(ANTHROPIC_KEY)
+
+    async def test_model_with_web_search_passes_for_verify(self, install) -> None:  # type: ignore[no-untyped-def]
+        install(_model_info(True))
+        settings = Settings(anthropic_api_key=ANTHROPIC_KEY, _env_file=None)
+        await setup_api.validate_anthropic_model("claude-haiku-5-5", settings, True)
+
+    async def test_model_without_web_search_is_rejected_for_verify_only(
+        self, install
+    ) -> None:  # type: ignore[no-untyped-def]
+        install(_model_info(False))
+        settings = Settings(anthropic_api_key=ANTHROPIC_KEY, _env_file=None)
+        await setup_api.validate_anthropic_model("claude-x", settings, False)
+        with pytest.raises(setup_api.ModelSlugRejected, match="web search"):
+            await setup_api.validate_anthropic_model("claude-x", settings, True)
+
+    async def test_unknown_model_is_rejected(self, install) -> None:  # type: ignore[no-untyped-def]
+        from tests.conftest import make_anthropic_status_error
+
+        install(make_anthropic_status_error(404, "model not found", "not_found_error"))
+        settings = Settings(anthropic_api_key=ANTHROPIC_KEY, _env_file=None)
+        with pytest.raises(setup_api.ModelSlugRejected, match="no model 'claude-nope'"):
+            await setup_api.validate_anthropic_model("claude-nope", settings, False)

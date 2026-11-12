@@ -1,18 +1,19 @@
-"""Replay historical claims through the configured OpenRouter verifier.
+"""Replay historical claims through the configured verifier.
 
 Answers "are verdicts any good?" with evidence rather than a sample of four:
 reads claims from the analytics database (or a CSV), runs each through the
-real :class:`app.llm_openrouter.OpenRouterFactChecker` with the current
-prompts and capability lookup, and prints per-claim rows plus label /
-evidence / mode histograms and latency percentiles.
+real fact checker of the chosen provider (``--provider anthropic`` or
+``openrouter``; default: the configured verify provider) with the current
+prompts, and prints per-claim rows plus label / evidence / fallback
+histograms and latency percentiles.
 
-This SPENDS OpenRouter credits (web search ~$0.007 per claim plus tokens), so
-it refuses to run without ``--yes-spend-credits`` and prints the estimated
-cost first.
+This SPENDS credits (web search: ~$0.007 per claim on OpenRouter, ~$0.01 per
+search on Anthropic, plus tokens), so it refuses to run without
+``--yes-spend-credits`` and prints the estimated cost first.
 
     cd backend
-    uv run python scripts/eval_verify.py --limit 40 --yes-spend-credits \\
-        --out /tmp/eval.jsonl
+    uv run python scripts/eval_verify.py --provider anthropic --limit 40 \\
+        --yes-spend-credits --out /tmp/eval.jsonl
     jq -r '[.label,.evidence,.used_fallback,.claim]|@tsv' /tmp/eval.jsonl | sort
 """
 
@@ -33,11 +34,8 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from app.config import Settings  # noqa: E402
-from app.llm_openrouter import (  # noqa: E402
-    OpenRouterFactChecker,
-    create_openrouter_client,
-    verify_mode_snapshot,
-)
+from app.llm_openrouter import verify_mode_snapshot  # noqa: E402
+from app.llm_provider import create_fact_checker, create_llm_client  # noqa: E402
 from app.logging_setup import configure_logging  # noqa: E402
 from app.openrouter_catalogue import (  # noqa: E402
     lookup_model_capabilities,
@@ -45,7 +43,11 @@ from app.openrouter_catalogue import (  # noqa: E402
 )
 from app.rate_limit import QuotaCooldown  # noqa: E402
 
-EXA_COST_PER_CLAIM_USD = 0.007
+#: Verify providers this script can replay through -> their model setting.
+VERIFY_MODEL_FIELDS = {
+    "anthropic": "anthropic_verify_model",
+    "openrouter": "openrouter_verify_model",
+}
 
 
 def load_claims_from_db(path: Path, limit: int | None) -> list[dict[str, str]]:
@@ -90,15 +92,22 @@ def load_claims_from_csv(path: Path, limit: int | None) -> list[dict[str, str]]:
 
 
 async def run(args: argparse.Namespace) -> int:
-    settings = Settings()
-    if settings.resolved_verify_provider != "openrouter":
+    configured = Settings()
+    provider = args.provider or configured.resolved_verify_provider
+    if provider not in VERIFY_MODEL_FIELDS:
         print(
-            "VERIFY_PROVIDER must resolve to openrouter for this script",
+            f"verify provider must be one of {sorted(VERIFY_MODEL_FIELDS)}, "
+            f"got {provider!r}",
             file=sys.stderr,
         )
         return 2
-    settings.require_openrouter_api_key()
-    model = args.model or settings.openrouter_verify_model
+    model_field = VERIFY_MODEL_FIELDS[provider]
+    model = args.model or getattr(configured, model_field)
+    # Rebuilt (not model_copy) so validators run: the provider-aware cost
+    # default follows the chosen provider.
+    settings = Settings(verify_provider=provider, **{model_field: model})
+    if not settings.provider_configured(provider):
+        settings.require_llm_api_key()  # raises with the provider's own hint
 
     claims = (
         load_claims_from_csv(Path(args.csv), args.limit)
@@ -108,27 +117,23 @@ async def run(args: argparse.Namespace) -> int:
     if not claims:
         print("no claims to replay", file=sys.stderr)
         return 2
-    estimate = len(claims) * EXA_COST_PER_CLAIM_USD
+    estimate = len(claims) * settings.cost_per_verify_usd
     print(
-        f"{len(claims)} claim(s) -> {model}; estimated web-search cost ~${estimate:.2f}"
+        f"{len(claims)} claim(s) -> {provider} · {model}; estimated cost "
+        f"~${estimate:.2f} (${settings.cost_per_verify_usd:.3f}/claim)"
     )
     if not args.yes_spend_credits:
         print("refusing to spend credits without --yes-spend-credits", file=sys.stderr)
         return 2
 
     configure_logging("WARNING")
-    await prime_openrouter_capabilities([model])
-    print("capabilities:", json.dumps(lookup_model_capabilities(model).as_dict()))
-    client = create_openrouter_client(settings.openrouter_api_key)
-    checker = OpenRouterFactChecker(
-        client=client,
-        verify_model=model,
-        cooldown=QuotaCooldown(),
-        web_max_results=settings.openrouter_web_max_results,
-        web_engine=settings.openrouter_web_engine,
-        verify_timeout_s=settings.verify_timeout_s,
-        reasoning_effort=settings.openrouter_reasoning_effort_or_none,
-    )
+    if provider == "openrouter":
+        await prime_openrouter_capabilities([model])
+        print("capabilities:", json.dumps(lookup_model_capabilities(model).as_dict()))
+    else:
+        print(f"anthropic auth: {settings.anthropic_auth_method}")
+    client = create_llm_client(settings, provider)
+    checker = create_fact_checker(settings, client, QuotaCooldown())
     semaphore = asyncio.Semaphore(args.concurrency)
     results: list[dict[str, Any]] = []
 
@@ -185,7 +190,8 @@ async def run(args: argparse.Namespace) -> int:
             min(len(latencies) - 1, int(round(0.95 * (len(latencies) - 1))))
         ]
         print(f"latency p50 {statistics.median(latencies):.0f}ms  p95 {p95}ms")
-    print("verify modes:", json.dumps(verify_mode_snapshot()))
+    if provider == "openrouter":
+        print("verify modes:", json.dumps(verify_mode_snapshot()))
     changed = [
         record
         for record in results
@@ -207,7 +213,12 @@ def main() -> int:
     parser.add_argument("--db", default=str(BACKEND_DIR / "fact_checker.db"))
     parser.add_argument("--csv", help="claim,topic rows instead of the database")
     parser.add_argument("--limit", type=int, default=None)
-    parser.add_argument("--model", help="override OPENROUTER_VERIFY_MODEL")
+    parser.add_argument(
+        "--provider",
+        choices=sorted(VERIFY_MODEL_FIELDS),
+        help="verify provider (default: the configured VERIFY_PROVIDER/LLM_PROVIDER)",
+    )
+    parser.add_argument("--model", help="override the provider's verify model setting")
     parser.add_argument("--concurrency", type=int, default=2)
     parser.add_argument("--out", help="write one JSON object per claim here")
     parser.add_argument("--yes-spend-credits", action="store_true")

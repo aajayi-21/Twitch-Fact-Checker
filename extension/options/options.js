@@ -37,12 +37,24 @@ const SETUP_STATUS_TIMEOUT_MS = 2500;
 const SETUP_SAVE_TIMEOUT_MS = 30000;
 // How long the "verified" status stays visible before the card collapses.
 const SETUP_SUCCESS_COLLAPSE_MS = 1400;
-// How long a stage-routing Apply may take (config write + hot-swap, no
-// provider probe beyond the local ollama one).
-const STAGE_APPLY_TIMEOUT_MS = 5000;
+// How long a stage-routing Apply may take: config write + hot-swap, plus a
+// model check against the provider (Anthropic's model list or OpenRouter's
+// catalogue) when a model changed.
+const STAGE_APPLY_TIMEOUT_MS = 15000;
 const PROVIDER_LABELS = Object.freeze({
+  anthropic: "Anthropic",
   openrouter: "OpenRouter",
   ollama: "Ollama",
+});
+/** Providers whose stage model is settable here (Ollama's is .env-only). */
+const MODEL_PROVIDERS = new Set(["anthropic", "openrouter"]);
+/** Model input placeholders per provider and stage. */
+const MODEL_PLACEHOLDERS = Object.freeze({
+  anthropic: {gate: "e.g. claude-haiku-5-5", verify: "e.g. claude-haiku-5-5"},
+  openrouter: {
+    gate: "e.g. inception/mercury-2.5-preview",
+    verify: "e.g. openai/gpt-oss-120b",
+  },
 });
 const BACKEND_DOWN_COPY =
   "Backend isn't running — start it first (./backend/run.sh in the project folder)";
@@ -63,6 +75,7 @@ const keyVisibilityToggle = document.getElementById("key-visibility-toggle");
 const saveKeyButton = document.getElementById("save-key-button");
 const providerStatus = document.getElementById("provider-status");
 const keyInputRow = providerForm.querySelector(".key-input-row");
+const anthropicKeyHelp = document.getElementById("anthropic-key-help");
 const providerStatusList = document.getElementById("provider-status-list");
 const stageSection = document.getElementById("stage-section");
 const gateProviderSelect = document.getElementById("gate-provider-select");
@@ -160,7 +173,7 @@ const showConfirmation = (text, isError = false) => {
 
 const getSelectedProvider = () =>
   providerForm.querySelector('input[name="apiProvider"]:checked')?.value ??
-  "openrouter";
+  "anthropic";
 
 const setSelectedProvider = (provider) => {
   const radio = providerForm.querySelector(
@@ -197,6 +210,8 @@ const describeStagesSummary = (status) => {
   const verifyInfo = providers[verify.provider];
   if (verifyInfo?.key_hint) {
     verifyPart += ` ${verifyInfo.key_hint}`;
+  } else if (verifyInfo?.auth_method === "sign_in") {
+    verifyPart += " (ant sign-in)";
   }
   const credits = providers.openrouter?.credits;
   if (
@@ -222,7 +237,13 @@ const renderProviderStatusList = (status) => {
         : ["missing", "not reachable — is `ollama serve` running?"];
     }
     if (!info.configured) {
-      return ["missing", "no key"];
+      return [
+        "missing",
+        name === "anthropic" ? "no key and no `ant auth login` sign-in" : "no key",
+      ];
+    }
+    if (name === "anthropic" && info.auth_method === "sign_in") {
+      return ["ok", "signed in with `ant auth login`"];
     }
     let detail = `key ${info.key_hint ?? "set"}`;
     const credits = info.credits;
@@ -231,7 +252,7 @@ const renderProviderStatusList = (status) => {
     }
     return ["ok", detail];
   };
-  for (const name of ["openrouter", "ollama"]) {
+  for (const name of ["anthropic", "openrouter", "ollama"]) {
     const [rowState, detail] = describeRow(name);
     const row = document.createElement("li");
     row.dataset.provider = name;
@@ -254,16 +275,18 @@ const setStageStatus = (text, stateName) => {
 };
 
 /**
- * The stored OpenRouter slug for a stage. Read from providers.openrouter
- * (NOT stage.model): stage.model reports the ACTIVE provider's model, so it
- * says "gemma3:4b" whenever that stage is routed to Ollama.
+ * The stored model of ``provider`` for a stage. Read from
+ * providers.<provider> (NOT stage.model): stage.model reports the ACTIVE
+ * provider's model, so it says "gemma3:4b" whenever that stage is routed to
+ * Ollama, and could not prefill the input when the user switches provider.
  *
  * @param {object|null} status
  * @param {"gate"|"verify"} stage
+ * @param {string} provider - "anthropic" | "openrouter" (others have none)
  * @returns {string}
  */
-const storedSlug = (status, stage) =>
-  status?.providers?.openrouter?.[`${stage}_model`] ?? "";
+const storedSlug = (status, stage, provider) =>
+  status?.providers?.[provider]?.[`${stage}_model`] ?? "";
 
 /** The stored Jev pre-screen mode ("off" | "shadow" | "screen"). */
 const storedJevMode = (status) => status?.providers?.openrouter?.jev_mode ?? "off";
@@ -280,11 +303,18 @@ const jevSlugTyped = () =>
     JEV_SLUG_RE.test(input.value.trim())
   );
 
-/** Model slug inputs (and the Jev pre-screen) only apply to OpenRouter. */
+/**
+ * Model inputs apply to Anthropic and OpenRouter stages; the Jev pre-screen
+ * only to an OpenRouter gate. Placeholders follow the selected provider.
+ */
 const syncModelRowVisibility = () => {
-  gateModelRow.hidden = gateProviderSelect.value !== "openrouter";
-  jevModeRow.hidden = gateProviderSelect.value !== "openrouter";
-  verifyModelRow.hidden = verifyProviderSelect.value !== "openrouter";
+  const gateProvider = gateProviderSelect.value;
+  const verifyProvider = verifyProviderSelect.value;
+  gateModelRow.hidden = !MODEL_PROVIDERS.has(gateProvider);
+  jevModeRow.hidden = gateProvider !== "openrouter";
+  verifyModelRow.hidden = !MODEL_PROVIDERS.has(verifyProvider);
+  gateModelInput.placeholder = MODEL_PLACEHOLDERS[gateProvider]?.gate ?? "";
+  verifyModelInput.placeholder = MODEL_PLACEHOLDERS[verifyProvider]?.verify ?? "";
   const misplaced = jevSlugTyped();
   gateModelError.hidden = !misplaced;
   gateModelError.textContent = misplaced
@@ -293,12 +323,12 @@ const syncModelRowVisibility = () => {
     : "";
 };
 
-/** Apply is enabled when any select OR slug differs from the backend. */
+/** Apply is enabled when any select OR model differs from the backend. */
 const updateStagesDirty = () => {
   const slugDirty = (stage, input, select) =>
-    select.value === "openrouter" &&
+    MODEL_PROVIDERS.has(select.value) &&
     input.value.trim() !== "" &&
-    input.value.trim() !== storedSlug(lastStatus, stage);
+    input.value.trim() !== storedSlug(lastStatus, stage, select.value);
   const dirty =
     lastStatus !== null &&
     (gateProviderSelect.value !== (lastStatus.gate?.provider ?? "") ||
@@ -317,9 +347,9 @@ const renderStageSection = (status) => {
   if (status.verify?.provider) {
     verifyProviderSelect.value = status.verify.provider;
   }
-  gateModelInput.value = storedSlug(status, "gate");
+  gateModelInput.value = storedSlug(status, "gate", gateProviderSelect.value);
   jevModeSelect.value = storedJevMode(status);
-  verifyModelInput.value = storedSlug(status, "verify");
+  verifyModelInput.value = storedSlug(status, "verify", verifyProviderSelect.value);
   syncModelRowVisibility();
   stageSection.hidden = false;
   updateStagesDirty();
@@ -383,7 +413,13 @@ const expandProviderForm = () => {
   apiKeyInput.value = "";
   resetKeyVisibility();
   cancelChangeButton.hidden = lastConnectedStatus === null;
-  setProviderStatus("Paste a new API key, then Save & verify.", "setup");
+  setProviderStatus(
+    getSelectedProvider() === "anthropic"
+      ? "Paste an API key — or leave it empty to use your `ant auth login` " +
+          "sign-in — then Save & verify."
+      : "Paste a new API key, then Save & verify.",
+    "setup"
+  );
   apiKeyInput.focus();
 };
 
@@ -465,7 +501,10 @@ const handleProviderSubmit = async (event) => {
   event.preventDefault();
   const provider = getSelectedProvider();
   const apiKey = apiKeyInput.value.trim();
-  if (provider !== "ollama" && !apiKey) {
+  // Anthropic may go keyless: the backend then uses the `ant auth login`
+  // sign-in. Ollama is always keyless.
+  const signInMode = provider === "anthropic" && !apiKey;
+  if (provider === "openrouter" && !apiKey) {
     // Deliberately BEFORE cancelPendingCollapse(): an empty re-submit during
     // the post-save success beat must not cancel the scheduled collapse.
     setProviderStatus("Paste an API key first.", "error");
@@ -489,7 +528,9 @@ const handleProviderSubmit = async (event) => {
   setProviderStatus(
     provider === "ollama"
       ? "Testing connection to Ollama…"
-      : `Verifying key with ${PROVIDER_LABELS[provider] ?? provider}…`,
+      : signInMode
+        ? "Checking your `ant auth login` sign-in with Anthropic…"
+        : `Verifying key with ${PROVIDER_LABELS[provider] ?? provider}…`,
     "pending"
   );
   try {
@@ -540,7 +581,9 @@ const handleProviderSubmit = async (event) => {
       renderProviderStatusList(status);
       renderStageSection(status);
       setProviderStatus(
-        `Key verified ✓ ${describeStagesSummary(status)}`,
+        `${signInMode ? "Sign-in verified" : "Key verified"} ✓ ${describeStagesSummary(
+          status
+        )}`,
         "connected"
       );
       collapseTimerId = setTimeout(() => {
@@ -554,7 +597,9 @@ const handleProviderSubmit = async (event) => {
         ? body.detail
         : `Setup failed (HTTP ${response.status}).`;
     setProviderStatus(
-      response.status === 401 ? `Key rejected: ${detail}` : detail,
+      response.status === 401
+        ? `${signInMode ? "Sign-in rejected" : "Key rejected"}: ${detail}`
+        : detail,
       "error"
     );
   } finally {
@@ -562,10 +607,19 @@ const handleProviderSubmit = async (event) => {
   }
 };
 
-/** Ollama needs no key: hide the input row, relabel the submit button. */
+/**
+ * Ollama needs no key: hide the input row, relabel the submit button.
+ * Anthropic's key is optional (`ant auth login`): show the hint.
+ */
 const syncProviderRadioUi = () => {
-  const isOllama = getSelectedProvider() === "ollama";
+  const provider = getSelectedProvider();
+  const isOllama = provider === "ollama";
   keyInputRow.hidden = isOllama;
+  anthropicKeyHelp.hidden = provider !== "anthropic";
+  apiKeyInput.placeholder =
+    provider === "anthropic"
+      ? "Paste your API key (optional)"
+      : "Paste your API key";
   saveKeyButton.textContent = isOllama ? "Test connection" : "Save & verify";
 };
 
@@ -599,12 +653,14 @@ const handleApplyStages = async () => {
       body: JSON.stringify({
         gate_provider: gateProvider,
         verify_provider: verifyProvider,
-        // Only meaningful for OpenRouter-routed stages; "" tells the
-        // backend to keep whatever slug it already has.
-        gate_model:
-          gateProvider === "openrouter" ? gateModelInput.value.trim() : "",
-        verify_model:
-          verifyProvider === "openrouter" ? verifyModelInput.value.trim() : "",
+        // A model of the stage's provider (Anthropic or OpenRouter); ""
+        // tells the backend to keep whatever model it already has.
+        gate_model: MODEL_PROVIDERS.has(gateProvider)
+          ? gateModelInput.value.trim()
+          : "",
+        verify_model: MODEL_PROVIDERS.has(verifyProvider)
+          ? verifyModelInput.value.trim()
+          : "",
         // The Jev pre-screen rides the OpenRouter gate; "" keeps it as is.
         jev_mode: gateProvider === "openrouter" ? jevModeSelect.value : "",
       }),
@@ -633,8 +689,8 @@ const handleApplyStages = async () => {
       : `Applying stages failed (HTTP ${response.status}).`;
   setStageStatus(
     response.status === 409
-      ? `Can't apply: ${detail} Add its key above (or test Ollama), then ` +
-        "apply again."
+      ? `Can't apply: ${detail} Connect it above (an API key, ` +
+        "`ant auth login` for Anthropic, or test Ollama), then apply again."
       : detail,
     "error"
   );
@@ -660,6 +716,16 @@ const wireProviderCard = () => {
       saveKeyButton.disabled = false;
     });
   });
+  // Switching a stage's provider swaps its model input to that provider's
+  // stored model (an OpenRouter slug is meaningless to Anthropic and back).
+  for (const [select, input, stage] of [
+    [gateProviderSelect, gateModelInput, "gate"],
+    [verifyProviderSelect, verifyModelInput, "verify"],
+  ]) {
+    select.addEventListener("change", () => {
+      input.value = storedSlug(lastStatus, stage, select.value);
+    });
+  }
   for (const select of [gateProviderSelect, verifyProviderSelect, jevModeSelect]) {
     select.addEventListener("change", () => {
       setStageStatus("", "setup");

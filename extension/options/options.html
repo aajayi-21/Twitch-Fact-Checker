@@ -42,7 +42,7 @@
 
         <div class="provider-form-body" id="provider-form-body">
           <p class="field-help">
-            The fact-checker needs an LLM API key. It is sent once to your
+            The fact-checker needs an LLM provider. A key is sent once to your
             local backend and stored in its <code>.env</code> file — never in
             the browser.
           </p>
@@ -52,10 +52,17 @@
             aria-labelledby="provider-title"
           >
             <label class="segment">
-              <input type="radio" name="apiProvider" value="openrouter" checked />
+              <input type="radio" name="apiProvider" value="anthropic" checked />
+              <span class="segment-multi">
+                <span class="segment-name">Anthropic</span>
+                <span class="segment-sub">recommended · Claude Haiku</span>
+              </span>
+            </label>
+            <label class="segment">
+              <input type="radio" name="apiProvider" value="openrouter" />
               <span class="segment-multi">
                 <span class="segment-name">OpenRouter</span>
-                <span class="segment-sub">recommended · free models</span>
+                <span class="segment-sub">many models</span>
               </span>
             </label>
             <label class="segment">
@@ -85,6 +92,12 @@
               Show
             </button>
           </div>
+          <p class="field-help" id="anthropic-key-help" hidden>
+            Key optional: leave it empty to use your <code>ant auth login</code>
+            sign-in (this clears any saved Anthropic key). Create a key at
+            <a href="https://platform.claude.com/settings/keys" target="_blank"
+              rel="noopener noreferrer">platform.claude.com</a>.
+          </p>
           <div class="provider-actions">
             <button type="submit" class="button-save" id="save-key-button">
               Save &amp; verify
@@ -122,6 +135,7 @@
               Claim detection (gate)
             </label>
             <select id="gate-provider-select">
+              <option value="anthropic">Anthropic</option>
               <option value="openrouter">OpenRouter</option>
               <option value="ollama">Ollama (local)</option>
             </select>
@@ -130,7 +144,7 @@
                sit inside #provider-form — options.js suppresses that. -->
           <div class="stage-row stage-model-row" data-provider-scope="gate" hidden>
             <label class="stage-label" for="gate-model-input">
-              Gate model slug
+              Gate model
             </label>
             <input
               id="gate-model-input"
@@ -138,8 +152,8 @@
               type="text"
               spellcheck="false"
               autocomplete="off"
-              placeholder="e.g. inception/mercury-2.5-preview"
-              aria-label="OpenRouter gate model slug"
+              placeholder="e.g. claude-haiku-5-5"
+              aria-label="Gate model"
             />
           </div>
           <p class="field-error" id="gate-model-error" hidden></p>
@@ -163,20 +177,19 @@
             <label class="stage-label" for="verify-provider-select">
               Verification
             </label>
-            <!-- Verification needs web search, which only OpenRouter
-                 provides here; kept as a (fixed) select so the stage
-                 routing logic reads it like the gate select. -->
+            <!-- Verification needs web search: Anthropic's own web_search
+                 tool or OpenRouter's web plugin (Ollama has none). -->
             <select
               id="verify-provider-select"
-              disabled
-              title="Verification needs web search, which runs on OpenRouter."
+              title="Verification needs web search: Anthropic or OpenRouter."
             >
+              <option value="anthropic">Anthropic</option>
               <option value="openrouter">OpenRouter</option>
             </select>
           </div>
           <div class="stage-row stage-model-row" data-provider-scope="verify" hidden>
             <label class="stage-label" for="verify-model-input">
-              Verify model slug
+              Verify model
             </label>
             <input
               id="verify-model-input"
@@ -184,8 +197,8 @@
               type="text"
               spellcheck="false"
               autocomplete="off"
-              placeholder="e.g. openai/gpt-oss-120b"
-              aria-label="OpenRouter verify model slug"
+              placeholder="e.g. claude-haiku-5-5"
+              aria-label="Verify model"
             />
           </div>
           <div class="stage-actions">
@@ -200,12 +213,13 @@
             ></p>
           </div>
           <p class="field-help">
-            The gate runs ~300 cheap calls/hour (great locally via Ollama);
-            verification needs web search and always runs on OpenRouter.
-            Model slugs are checked against OpenRouter's live catalogue when
-            you Apply — browse them at
-            <a href="https://openrouter.ai/models" target="_blank"
-              rel="noopener noreferrer">openrouter.ai/models</a>.
+            The gate runs ~300 cheap calls/hour (Claude Haiku, or locally via
+            Ollama); verification needs web search, so it runs on Anthropic
+            or OpenRouter. Models are checked when you Apply: Anthropic ids
+            (e.g. <code>claude-haiku-5-5</code>) against Anthropic's model
+            list, OpenRouter slugs against its live catalogue
+            (<a href="https://openrouter.ai/models" target="_blank"
+              rel="noopener noreferrer">openrouter.ai/models</a>).
           </p>
         </div>
       </form>

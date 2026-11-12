@@ -38,7 +38,8 @@ logger = logging.getLogger(__name__)
 
 
 async def close_llm_client(client: Any) -> None:
-    """Close a provider client (``AsyncOpenAI`` for OpenRouter and Ollama)."""
+    """Close a provider client (``AsyncAnthropic``, or ``AsyncOpenAI`` for
+    OpenRouter and Ollama — both expose ``close()``)."""
     await client.close()
 
 
@@ -103,6 +104,36 @@ def _openrouter_spec() -> ProviderSpec:
     )
 
 
+def _anthropic_spec() -> ProviderSpec:
+    from app.llm_anthropic import (
+        AnthropicClaimGate,
+        AnthropicFactChecker,
+        create_anthropic_client,
+    )
+
+    return ProviderSpec(
+        # No key -> the SDK's own credential chain (`ant auth login` profile).
+        make_client=lambda s: create_anthropic_client(s.anthropic_api_key_or_none),
+        make_gate=lambda s, client: AnthropicClaimGate(
+            client=client,
+            model=s.anthropic_gate_model,
+            gate_interval_s=s.gate_interval_s,
+            gate_timeout_s=s.gate_timeout_s,
+            reasoning_effort=s.anthropic_gate_reasoning_effort,
+        ),
+        make_checker=lambda s, client, cooldown: AnthropicFactChecker(
+            client=client,
+            verify_model=s.anthropic_verify_model,
+            cooldown=cooldown,
+            verify_timeout_s=s.verify_timeout_s,
+            reasoning_effort=s.anthropic_verify_reasoning_effort,
+            web_max_uses=s.anthropic_web_max_uses,
+            web_search_tool=s.anthropic_web_search_tool,
+        ),
+        close=close_llm_client,
+    )
+
+
 def _ollama_spec() -> ProviderSpec:
     from app.llm_local import LocalClaimGate, create_local_client
 
@@ -124,6 +155,7 @@ def _ollama_spec() -> ProviderSpec:
 
 
 _SPEC_FACTORIES: dict[str, Callable[[], ProviderSpec]] = {
+    "anthropic": _anthropic_spec,
     "openrouter": _openrouter_spec,
     "ollama": _ollama_spec,
 }
