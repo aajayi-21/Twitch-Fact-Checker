@@ -92,7 +92,7 @@ export const getEnabledTopicSlugs = (topics) => {
  * ws://host:port/ws/audio -> http://host:port (wss -> https).
  *
  * Shared by the service worker (/feedback POST), popup (/healthz), and
- * options page (/setup endpoints). Content scripts never talk HTTP.
+ * app (/setup endpoints). Content scripts never talk HTTP.
  *
  * @param {string} backendUrl
  * @returns {string|null}

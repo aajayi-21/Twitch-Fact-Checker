@@ -22,7 +22,7 @@
  *    the header a "Clear all" button — both delegate to content.js (the
  *    history owner) via onRemoveVerdict / onClearHistory, which mutates the
  *    array and re-renders. A footer aggregates claims skipped by the topic
- *    filter with an "Edit topics" link (opens the options page via
+ *    filter with an "Edit topics" link (opens the app's Settings via
  *    content.js).
  *  - Transient extras: non-fatal backend notice chip, optional live
  *    transcript line.
@@ -113,7 +113,7 @@ class FactCheckOverlay {
   /**
    * Called when the user clicks "Edit topics" in the history-panel footer.
    * Assigned by content.js (which relays OPEN_OPTIONS to the service worker
-   * — content scripts cannot open the options page themselves).
+   * — content scripts cannot open extension pages themselves).
    * @type {(() => void)|null}
    */
   onEditTopics = null;

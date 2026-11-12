@@ -258,6 +258,25 @@ supports today; the app simply does not surface these.
 
 ## 4. The app shell
 
+> **Status — Phase 1 done, 2026-11-11.** The app exists at `extension/app/`: it opens in
+> a new tab on install, and has the welcome flow, Home, AI provider and Settings. It runs
+> on the existing backend, so only Anthropic and OpenRouter keys can be added today. The
+> old `options/` page is gone; everything it did is in the app (the per-stage routing,
+> Ollama, Jev and `ant` sign-in controls live under AI provider → Advanced, because they
+> are features of the local backend). Verified by `scripts/run_app_e2e.mjs`, which walks
+> the app in a real Chrome against a built-in fake backend, or a real one.
+>
+> Differences from the sketch below, decided while building:
+> - **Preact + htm without signals**, and a 60-line store instead — fewer vendored files.
+> - **No import map.** The extension's content security policy blocks inline scripts,
+>   import maps included, so `scripts/vendor_ui_runtime.py` rewrites the vendored
+>   modules' bare imports to relative paths.
+> - **The welcome flow has four steps, not five**: how it works, local backend, API key,
+>   try it. "Set up speech" joins when the browser engine does (Phase 3).
+> - **History and Usage are not in the navigation yet** — they arrive with the ledger
+>   (Phase 2). Home shows today's and all-time totals from the backend and links to its
+>   analytics page meanwhile.
+
 ### 4.1 Opening in a new tab
 
 Three small changes cover every entry point:
@@ -826,10 +845,11 @@ A reviewer has no API key. Two measures:
 | S2 ◐ | Does each provider return a grounded, strict-JSON verdict from an extension context? | **Anthropic and OpenRouter passed 2026-11-11** ([results](spike-results/provider-calls.md)). Open: one live run each for OpenAI and Gemini, which also settles Gemini's one call or two |
 | S3 ✅ | Does the speech worker live happily in the offscreen document? | **Passed 2026-11-11** ([results](spike-results/stt-in-extension.md)): live capture + transcription on CPU and GPU with no audio lost; 643 MB model download works; isolation works but is not needed |
 
-**Phase 1 — app shell on the existing backend (1–2 weeks).** New-tab app, open on
-install, welcome wizard, providers screen (Anthropic and OpenRouter keys through today's
-`/setup/*` endpoints), settings migrated from `options/`. *Done means:* a developer-mode
-install is fully configurable without the old options page, and capture is unchanged.
+**Phase 1 ✅ — app shell on the existing backend (done 2026-11-11).** New-tab app, open
+on install, welcome wizard, providers screen (Anthropic and OpenRouter keys through
+today's `/setup/*` endpoints), settings migrated from `options/`, which is deleted.
+*Done means:* a developer-mode install is fully configurable without the old options
+page, and capture is unchanged — both checked by `scripts/run_app_e2e.mjs`.
 
 **Phase 2 — ledger, history, usage (1–2 weeks).** IndexedDB ledger written by the service
 worker, YouTube/Rumble channel resolution, `usage` on backend frames, history and usage

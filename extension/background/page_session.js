@@ -337,7 +337,7 @@ export const setAdActive = (active) => {
 export const isSocketOpen = () => socket?.isOpen === true;
 
 /**
- * Mid-session sensitivity/topic change, relayed from the options page.
+ * Mid-session sensitivity/topic change, relayed from the app's Settings.
  *
  * @param {{sensitivity?: string, topics?: string[]}} patch
  */

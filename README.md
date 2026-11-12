@@ -12,8 +12,9 @@ Shadow-DOM overlay rendered over the player.
 The LLM layer runs on the **Anthropic API** by default (Claude Haiku 5.5, with
 Anthropic's own `web_search` tool for grounding — sign in with `ant auth login`, no key
 needed), or on **OpenRouter** (one key, any model, the `web` search plugin); the claim
-gate can optionally run on a local **Ollama** model. Connect a provider on the
-extension's options page — no file editing needed.
+gate can optionally run on a local **Ollama** model. Connect a provider in the
+extension's app, which opens in a new tab when you install it — no file editing
+needed.
 
 ## Quickstart
 
@@ -40,18 +41,21 @@ extension's options page — no file editing needed.
    `tabCapture`/`offscreen` permissions. Both are expected: the manifest
    deliberately carries both browsers' keys so there is no build step.
 
-3. **Connect your AI provider**: click the extension's toolbar icon → **Open
-   settings**, then either:
-   - **Anthropic** (default): run `ant auth login` once in a terminal (the
-     [Anthropic CLI](https://platform.claude.com/docs/en/cli-sdks-libraries/cli/quickstart);
-     pick the Console organization that holds your credits), choose **Anthropic**,
-     leave the key empty → **Save & verify**. Or paste a key from
-     https://platform.claude.com/settings/keys instead.
-   - **OpenRouter**: choose **OpenRouter**, paste your key (https://openrouter.ai/keys —
-     hold a few dollars of credit for web search) → **Save & verify**.
+3. **Connect your AI provider**: the extension opens a welcome tab the first time
+   it is installed and walks you through it. To get back to it later, click the
+   toolbar icon → **Open dashboard** → **AI provider**. Then either:
+   - **Anthropic** (default): paste a key from
+     https://platform.claude.com/settings/keys → **Save and check key**.
+   - **OpenRouter**: paste your key (https://openrouter.ai/keys — hold a few
+     dollars of credit for web search) → **Save and check key**.
 
    Credentials are validated live against the provider; a key is stored only in
-   `backend/.env` on your machine.
+   `backend/.env` on your machine, never in the browser.
+
+   *Already use the [Anthropic CLI](https://platform.claude.com/docs/en/cli-sdks-libraries/cli/quickstart)?*
+   If you have run `ant auth login`, the backend picks that sign-in up by itself when
+   no key is stored — there is nothing to paste. To switch back to it from a stored
+   key, open **AI provider → Advanced → Use the sign-in instead of a key**.
 
 That's it — open a stream on a supported site, click the toolbar icon, and press
 **Start**. See [Usage](#usage) for details.
@@ -146,7 +150,7 @@ active `llm_provider`, `gate_model`, and `verify_model` — all `null` until a k
 set).
 
 **API keys:** the backend starts without one, in a "needs setup" state (fact-checking
-is disabled until a key is added). The normal path is the extension's options page,
+is disabled until a key is added). The normal path is the extension's app (AI provider),
 which validates the key live and writes it to `backend/.env`. Editing `.env` by hand
 still works if you prefer — set `OPENROUTER_API_KEY=<key>` (see `.env.example`) and
 restart. Both paths use the same
@@ -414,7 +418,7 @@ high-confidence judgements surface.
 
 ## On-screen claims (experimental, opt-in)
 
-Enable **"Send video frames for on-screen claims"** in the options page and the
+Enable **"Check on-screen claims"** under Settings → Advanced in the app and the
 extension captures a small (≤480p) screenshot of the stream every 5 seconds
 alongside the audio. When a claim references something visible ("as you can see,
 this chart…"), the freshest frame is attached to that verification call so the
@@ -461,7 +465,7 @@ default to `inception/mercury-2.5-preview`: cheap ($0.04/M input tokens) and fas
 enough for the ~300 gate calls an hour, its endpoint publishes `temperature`,
 `structured_outputs` and `reasoning` support (so strict JSON works on the first
 call), and it produced zero fallback verdicts in production. Change models via
-`OPENROUTER_GATE_MODEL` / `OPENROUTER_VERIFY_MODEL` in `.env` or the options page.
+`OPENROUTER_GATE_MODEL` / `OPENROUTER_VERIFY_MODEL` in `.env` or the app (AI provider → Advanced).
 
 **Optional Jev pre-screen (`JEV_MODE=off|shadow|screen`).** [Jev](https://openrouter.ai/blog/insights/what-is-jev/)
 (TypeSafe, via OpenRouter's alpha Decisions API) answers one typed question per gate
@@ -491,7 +495,7 @@ which claims and verdicts (FALSE/MISLEADING first) it would have thrown away.
 `JEV_MODEL` must be a pinned release (`typesafe/jev-1.13`, or its dated canonical
 slug) — the floating `~typesafe/jev-latest` would drift under a threshold
 calibrated for one release; the release that actually answered is logged and
-stored. The mode is selectable on the options page; model, threshold and timeout
+stored. The mode is selectable in the app (AI provider → Advanced); model, threshold and timeout
 are `.env`-only. `/healthz` reports the pre-screen under `openrouter.decision_gate`.
 A paid smoke test of the wire contract on synthetic cases:
 `uv run python scripts/eval_jev.py --yes-spend-credits`.
@@ -531,7 +535,7 @@ $0.007/request, `OPENROUTER_WEB_MAX_RESULTS=5` results), `native` (the model
 provider's own search — pricier, and fails on models without one), or `auto`.
 
 **Choosing specific models.** Each stage's OpenRouter model is a slug you can set
-from the options page (Gate model slug / Verify model slug) or in `.env`. Slugs are
+from the app (AI provider → Advanced) or in `.env`. Slugs are
 validated against OpenRouter's live catalogue on Apply, so a typo is rejected
 immediately rather than surfacing as a runtime failure mid-stream — and a model works
 the day it launches. A paid model and its `:free` variant are distinct slugs (the
@@ -555,8 +559,8 @@ ollama pull gemma3:4b          # gate model (OLLAMA_GATE_MODEL)
 ollama pull nomic-embed-text   # embeddings for contradiction detection
 ```
 
-Then on the options page: select **Ollama → Test connection**, and set **Claim
-detection (gate)** to Ollama under stage routing (verification stays on Anthropic
+Then in the app, open **AI provider → Advanced**: it shows whether Ollama is
+reachable. Set **Finding claims** to Ollama there (verification stays on Anthropic
 or OpenRouter — local verify is not supported because it has no web-search
 grounding). Env equivalents: `GATE_PROVIDER=ollama`, `VERIFY_PROVIDER=anthropic`,
 `OLLAMA_BASE_URL=http://127.0.0.1:11434/v1` (any OpenAI-compatible server works:
@@ -629,7 +633,7 @@ hidden while the count is 0). History is in-memory — a page reload clears it.
 sensitivity (low/medium/high — applied live), popup position (4 corners), popup
 duration, and an optional live-transcript toggle.
 
-**Topics to fact-check** (options page): a checkbox per claim category — Politics &
+**Topics** (Settings in the app): a checkbox per claim category — Politics &
 current events, Health & medicine, Science & technology, Money & economy, History,
 Sports, Gaming, Entertainment & pop culture, and Everything else (claims that don't
 fit a category above) — under a tri-state "Fact-check all topics" master checkbox.
