@@ -89,6 +89,14 @@ class TestAnthropicVerifyPrompts:
         assert "never from memory alone" in system
         assert "Politburo" in system  # shared calibration guidance
 
+    def test_explanation_length_is_capped_below_the_popup_clamp(self) -> None:
+        # Live Haiku runs wrote 450+ character explanations that the 450-char
+        # clamp cut mid-sentence; both prompts state a tighter budget.
+        structured, _ = build_anthropic_verify_messages(CLAIM, "2026-11-11", 2)
+        fallback, _ = build_anthropic_verify_fallback_messages(CLAIM, "2026-11-11", 2)
+        assert "UNDER 350\ncharacters" in structured
+        assert "under 350 characters" in fallback
+
     def test_unsearched_or_indecisive_means_unverified(self) -> None:
         system, _ = build_anthropic_verify_messages(CLAIM, "2026-11-11", 1)
         assert "If you did not\nsearch" in system

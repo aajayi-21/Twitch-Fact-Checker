@@ -311,13 +311,15 @@ Evidence rating:
 TRUE, FALSE, and MISLEADING require "strong" evidence; anything less is
 UNVERIFIED. Unverifiable claim types (above) are always "none".
 
-Write the explanation as 2-3 plain-language sentences grounded only in the
-retrieved results, including the key fact or number that decides the verdict.
-Do not put URLs in the explanation text.
+Write the explanation as 2-3 short plain-language sentences, UNDER 350
+characters in total (about 55 words — it is shown in a small popup and cut off
+beyond that), grounded only in the retrieved results and including the key
+fact or number that decides the verdict. Lead with that fact; skip caveats
+that do not change the verdict. Do not put URLs in the explanation text.
 
 Return a JSON object with these fields:
 - "evidence": "strong" | "partial" | "none"
-- "explanation": the 2-3 sentence explanation
+- "explanation": the short explanation (under 350 characters)
 - "label": "TRUE" | "FALSE" | "MISLEADING" | "UNVERIFIED"
 - "source_urls": the URLs of the search results your verdict relies on, copied
   exactly from the results (at most 5; an empty list if none were decisive)
@@ -334,8 +336,9 @@ FALSE, and MISLEADING require "strong"; unverifiable claim types are "none".
 After searching, respond in EXACTLY this three-line format and nothing else:
 LABEL: <TRUE|FALSE|MISLEADING|UNVERIFIED>
 EVIDENCE: <strong|partial|none>
-EXPLANATION: <2-3 plain-language sentences grounded only in the retrieved \
-results, including the key fact or number. No URLs.>
+EXPLANATION: <2-3 short plain-language sentences, under 350 characters in \
+total, grounded only in the retrieved results, leading with the key fact or \
+number. No URLs.>
 """
 
 
