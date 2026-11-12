@@ -16,9 +16,13 @@ Key-material hygiene (the whole point of this module):
 - The key is NEVER logged, echoed, or returned. Responses carry at most a
   last-4 ``key_hint`` (``"…abcd"``).
 - Validation probes cost $0: OpenRouter ``GET /api/v1/key`` (plus the free
-  ``GET /api/v1/credits`` for the ``credits`` field); Ollama a keyless
-  reachability check.
+  ``GET /api/v1/credits`` for the ``credits`` field); Anthropic
+  ``GET /v1/models`` (with the key, or with no key so the SDK uses the
+  ``ant auth login`` sign-in); Ollama a keyless reachability check.
 - Nothing is persisted unless the provider accepted the key.
+- Anthropic accepts an EMPTY key: "use my ``ant auth login`` sign-in". That
+  clears any stored ``ANTHROPIC_API_KEY`` (which would otherwise take
+  precedence over the sign-in) and persists no key at all.
 - The ``.env`` upsert touches ONLY ``LLM_PROVIDER`` and the submitted
   provider's key line; every other line (comments, ordering, unrelated
   keys) is preserved byte-for-byte, and the write is atomic
@@ -33,6 +37,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Literal
 
+import anthropic
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ValidationError
@@ -42,6 +47,10 @@ from app.config import (
     is_jev_model,
     jev_misplaced_message,
     resolve_env_file,
+)
+from app.llm_anthropic import (
+    create_anthropic_client,
+    reset_anthropic_capability_latches,
 )
 from app.llm_openrouter import reset_openrouter_capability_latches
 from app.llm_provider import LLMRuntime, build_llm_runtime, close_llm_runtime
@@ -63,31 +72,36 @@ router = APIRouter()
 OPENROUTER_KEY_URL = "https://openrouter.ai/api/v1/key"
 OPENROUTER_CREDITS_URL = "https://openrouter.ai/api/v1/credits"
 
-#: SetupStagesRequest field -> the .env key that persists it.
-_MODEL_ENV_KEYS = {
-    "gate_model": "OPENROUTER_GATE_MODEL",
-    "verify_model": "OPENROUTER_VERIFY_MODEL",
+#: (stage, provider) -> (Settings field, .env key) for the stage's model. A
+#: stage routed to a provider missing here (Ollama) has no settable model.
+_STAGE_MODEL_FIELDS: dict[tuple[str, str], tuple[str, str]] = {
+    ("gate", "openrouter"): ("openrouter_gate_model", "OPENROUTER_GATE_MODEL"),
+    ("verify", "openrouter"): ("openrouter_verify_model", "OPENROUTER_VERIFY_MODEL"),
+    ("gate", "anthropic"): ("anthropic_gate_model", "ANTHROPIC_GATE_MODEL"),
+    ("verify", "anthropic"): ("anthropic_verify_model", "ANTHROPIC_VERIFY_MODEL"),
 }
 
 #: Accepted values for SetupStagesRequest.jev_mode (mirrors Settings.jev_mode).
 JEV_MODES = ("off", "shadow", "screen")
 
-Provider = Literal["openrouter", "ollama"]
+Provider = Literal["anthropic", "openrouter", "ollama"]
 
 # Stage routing: which providers each pipeline stage accepts. Ollama is
 # GATE-ONLY — local verify has no web-search grounding, so every verdict
 # would be downgraded to UNVERIFIED.
-GATE_PROVIDERS: tuple[str, ...] = ("openrouter", "ollama")
-VERIFY_PROVIDERS: tuple[str, ...] = ("openrouter",)
+GATE_PROVIDERS: tuple[str, ...] = ("anthropic", "openrouter", "ollama")
+VERIFY_PROVIDERS: tuple[str, ...] = ("anthropic", "openrouter")
 
 # Keyed providers only — Ollama has no key and no settings field to persist.
 _PROVIDER_ENV_KEYS: dict[str, str] = {
+    "anthropic": "ANTHROPIC_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
 }
 _PROVIDER_SETTINGS_FIELDS: dict[str, str] = {
+    "anthropic": "anthropic_api_key",
     "openrouter": "openrouter_api_key",
 }
-_KNOWN_PROVIDERS: frozenset[str] = frozenset({"openrouter", "ollama"})
+_KNOWN_PROVIDERS: frozenset[str] = frozenset({"anthropic", "openrouter", "ollama"})
 
 
 class ProviderKeyRejected(Exception):
@@ -134,6 +148,22 @@ class OpenRouterStatus(BaseModel):
     jev_min_check_probability: float
 
 
+class AnthropicStatus(BaseModel):
+    """Direct Anthropic API. ``auth_method`` is ``"api_key"`` (a stored
+    ANTHROPIC_API_KEY, hinted by last-4 ``key_hint``), ``"sign_in"`` (an
+    ``ant auth login`` profile or other SDK credential; no key stored), or
+    ``None`` when neither exists. ``gate_model``/``verify_model`` are the
+    stored Anthropic model ids, reported even when Anthropic is not the
+    active provider for that stage (so the options page can prefill them).
+    """
+
+    configured: bool
+    auth_method: Literal["api_key", "sign_in"] | None
+    key_hint: str | None
+    gate_model: str
+    verify_model: str
+
+
 class OllamaStatus(BaseModel):
     """Keyless local provider: ``configured`` is always True; ``reachable``
     is a live best-effort probe of the OpenAI-compatible endpoint."""
@@ -144,6 +174,7 @@ class OllamaStatus(BaseModel):
 
 
 class ProvidersStatus(BaseModel):
+    anthropic: AnthropicStatus
     openrouter: OpenRouterStatus
     ollama: OllamaStatus
 
@@ -163,7 +194,8 @@ class SetupCredentialsRequest(BaseModel):
     Both fields default to ``""`` so missing keys surface as the contract's
     400 (via the handler's explicit checks) instead of FastAPI's 422.
     ``api_key`` stays ``""`` for ``provider="ollama"`` (keyless
-    test-connection).
+    test-connection) and may be ``""`` for ``provider="anthropic"`` (use the
+    ``ant auth login`` sign-in).
     """
 
     provider: str = ""
@@ -173,8 +205,10 @@ class SetupCredentialsRequest(BaseModel):
 class SetupStagesRequest(BaseModel):
     """Body for POST /setup/stages — per-stage provider routing and models.
 
-    ``gate_model``/``verify_model`` are OpenRouter chat slugs (e.g.
-    ``"openai/gpt-oss-120b"``); ``jev_mode`` is the Jev pre-screen mode
+    ``gate_model``/``verify_model`` name a model of the provider the stage is
+    routed to: an OpenRouter chat slug (e.g. ``"openai/gpt-oss-120b"``) or an
+    Anthropic model id (e.g. ``"claude-haiku-5-5"``); they are ignored for an
+    Ollama stage. ``jev_mode`` is the Jev pre-screen mode
     (off/shadow/screen). Empty means "leave the stored value alone", which
     keeps this endpoint backward-compatible with clients that send only the
     two provider fields.
@@ -253,8 +287,90 @@ async def fetch_openrouter_credits(api_key: str) -> CreditsInfo | None:
         return None
 
 
+async def validate_anthropic_credentials(api_key: str | None) -> None:
+    """Probe ``GET /v1/models?limit=1`` (free) with the candidate credential.
+
+    ``api_key=None`` probes the SDK's own credential chain — the
+    ``ant auth login`` sign-in.
+
+    Raises:
+        ProviderKeyRejected: on a 401/403, or when no key was given and the
+            SDK finds no sign-in at all.
+        ProviderUnreachable: on network failure, timeout, or an unexpected
+            status.
+    """
+    try:
+        client = create_anthropic_client(api_key)
+    except RuntimeError as exc:
+        raise ProviderKeyRejected(str(exc)) from exc
+    try:
+        await client.with_options(timeout=PROBE_TIMEOUT_S).models.list(limit=1)
+    except (anthropic.AuthenticationError, anthropic.PermissionDeniedError) as exc:
+        source = "API key" if api_key else "`ant auth login` sign-in"
+        raise ProviderKeyRejected(
+            f"Anthropic rejected the {source} (HTTP {exc.status_code}): "
+            f"{getattr(exc, 'api_message', None) or exc.message}"
+        ) from exc
+    except anthropic.APIStatusError as exc:
+        raise ProviderUnreachable(
+            f"unexpected Anthropic response (HTTP {exc.status_code}): {exc.message}"
+        ) from exc
+    except anthropic.AnthropicError as exc:
+        raise ProviderUnreachable(f"could not reach Anthropic: {exc}") from exc
+    finally:
+        await client.close()
+
+
+async def validate_anthropic_model(
+    model_id: str, settings: Settings, needs_web_search: bool
+) -> None:
+    """Check one model id against the Anthropic Models API (free).
+
+    Uses the current Anthropic credential (key or sign-in). For the verify
+    stage, a model whose capabilities say web search is unsupported is
+    rejected — verification would have no grounding.
+
+    Raises:
+        ModelSlugRejected: unknown model, or no web search for verify.
+        ProviderKeyRejected: the credential was rejected (401/403).
+        ProviderUnreachable: network failure or an unexpected status.
+    """
+    try:
+        client = create_anthropic_client(settings.anthropic_api_key_or_none)
+    except RuntimeError as exc:
+        raise ProviderKeyRejected(str(exc)) from exc
+    try:
+        info = await client.with_options(timeout=PROBE_TIMEOUT_S).models.retrieve(
+            model_id
+        )
+    except anthropic.NotFoundError as exc:
+        raise ModelSlugRejected(f"Anthropic has no model {model_id!r}.") from exc
+    except (anthropic.AuthenticationError, anthropic.PermissionDeniedError) as exc:
+        raise ProviderKeyRejected(
+            f"Anthropic rejected the credentials (HTTP {exc.status_code})"
+        ) from exc
+    except anthropic.APIStatusError as exc:
+        raise ProviderUnreachable(
+            f"unexpected Anthropic response (HTTP {exc.status_code}): {exc.message}"
+        ) from exc
+    except anthropic.AnthropicError as exc:
+        raise ProviderUnreachable(f"could not reach Anthropic: {exc}") from exc
+    finally:
+        await client.close()
+    if needs_web_search:
+        capabilities = getattr(info, "capabilities", None)
+        server_tools = getattr(capabilities, "server_tools", None)
+        web_search = getattr(server_tools, "web_search", None)
+        if getattr(web_search, "supported", None) is False:
+            raise ModelSlugRejected(
+                f"Anthropic model {model_id!r} does not support web search, "
+                "which verification needs."
+            )
+
+
 class ModelSlugRejected(Exception):
-    """OpenRouter answered, and does not publish this model slug."""
+    """The provider answered, and does not offer this model (or it lacks a
+    capability the stage needs)."""
 
 
 async def fetch_openrouter_model_slugs(
@@ -456,6 +572,13 @@ async def _build_status(settings: Settings) -> SetupStatusResponse:
             settings, settings.resolved_verify_provider, settings.active_verify_model
         ),
         providers=ProvidersStatus(
+            anthropic=AnthropicStatus(
+                configured=settings.provider_configured("anthropic"),
+                auth_method=settings.anthropic_auth_method,
+                key_hint=_key_hint(settings, "anthropic"),
+                gate_model=settings.anthropic_gate_model,
+                verify_model=settings.anthropic_verify_model,
+            ),
             openrouter=OpenRouterStatus(
                 configured=settings.provider_configured("openrouter"),
                 key_hint=_key_hint(settings, "openrouter"),
@@ -544,17 +667,17 @@ async def submit_credentials(
 ) -> SetupStatusResponse:
     """Validate a candidate key live, persist it, and hot-swap the provider.
 
-    Responses: 400 bad provider/empty key, 401 provider rejected the key,
-    502 provider unreachable, 500 with a descriptive detail on local
-    persistence/rebuild failure — never a bare 500. On success the runtime
-    swap is atomic (one ``app.state`` assignment) and the response mirrors
-    GET /setup/status.
+    Responses: 400 bad provider/empty key, 401 provider rejected the key
+    (or, for Anthropic with no key, no usable sign-in), 502 provider
+    unreachable, 500 with a descriptive detail on local persistence/rebuild
+    failure — never a bare 500. On success the runtime swap is atomic (one
+    ``app.state`` assignment) and the response mirrors GET /setup/status.
     """
     provider = body.provider.strip().lower()
     if provider not in _KNOWN_PROVIDERS:
         raise HTTPException(
             status_code=400,
-            detail="provider must be one of: openrouter, ollama",
+            detail="provider must be one of: anthropic, openrouter, ollama",
         )
 
     runtime: LLMRuntime = request.app.state.llm_runtime
@@ -569,11 +692,16 @@ async def submit_credentials(
         return await _build_status(runtime.settings)
 
     api_key = body.api_key.strip()
-    if not api_key:
+    # Anthropic alone may omit the key: the SDK then authenticates with the
+    # `ant auth login` sign-in.
+    if not api_key and provider != "anthropic":
         raise HTTPException(status_code=400, detail="api_key must be non-empty")
 
     try:
-        await validate_openrouter_key(api_key)
+        if provider == "anthropic":
+            await validate_anthropic_credentials(api_key or None)
+        else:
+            await validate_openrouter_key(api_key)
     except ProviderKeyRejected as exc:
         logger.warning("%s rejected the submitted API key: %s", provider, exc)
         raise HTTPException(status_code=401, detail=str(exc)) from exc
@@ -614,25 +742,27 @@ async def submit_stages(
 ) -> SetupStatusResponse:
     """Route each pipeline stage to a provider and model; persist + hot-swap.
 
-    ``gate_model``/``verify_model`` are OpenRouter chat slugs, validated
-    against the live catalogue; ``jev_mode`` sets the Jev pre-screen. Empty
-    fields leave stored values untouched.
+    ``gate_model``/``verify_model`` name a model of the stage's provider:
+    OpenRouter slugs are validated against the live catalogue, Anthropic ids
+    against the Models API (verify models must support web search).
+    ``jev_mode`` sets the Jev pre-screen. Empty fields leave stored values
+    untouched.
 
     Responses: 400 unknown provider (or ollama for verify — local verify is
-    not supported), an unknown model slug, a Jev id in a model slot, an
+    not supported), an unknown model, a Jev id in a model slot, an
     unknown Jev mode, or settings that fail validation (nothing is written
     in any of these cases), 409 when a chosen provider is
-    not configured (missing key, or Ollama unreachable), 502 when
-    OpenRouter's catalogue is unreachable, 500 with a descriptive detail on
-    persistence/rebuild failure. On success the runtime swap is atomic and
-    the response mirrors GET /setup/status.
+    not configured (missing credentials, or Ollama unreachable) or rejects
+    its credentials, 502 when the provider's model list is unreachable,
+    500 with a descriptive detail on persistence/rebuild failure. On success
+    the runtime swap is atomic and the response mirrors GET /setup/status.
     """
     gate_provider = body.gate_provider.strip().lower()
     verify_provider = body.verify_provider.strip().lower()
     if gate_provider not in GATE_PROVIDERS:
         raise HTTPException(
             status_code=400,
-            detail="gate_provider must be one of: openrouter, ollama",
+            detail="gate_provider must be one of: anthropic, openrouter, ollama",
         )
     if verify_provider not in VERIFY_PROVIDERS:
         if verify_provider == "ollama":
@@ -640,12 +770,12 @@ async def submit_stages(
                 status_code=400,
                 detail=(
                     "local verify is not supported; verify_provider must be "
-                    "openrouter"
+                    "anthropic or openrouter"
                 ),
             )
         raise HTTPException(
             status_code=400,
-            detail="verify_provider must be openrouter",
+            detail="verify_provider must be one of: anthropic, openrouter",
         )
 
     runtime: LLMRuntime = request.app.state.llm_runtime
@@ -666,52 +796,72 @@ async def submit_stages(
                     detail=f"{stage} provider 'ollama' is not reachable: {exc}",
                 ) from exc
         elif not current.provider_configured(provider):
+            what = (
+                "no credentials configured (save an API key or run " "`ant auth login`)"
+                if provider == "anthropic"
+                else "no API key configured"
+            )
             raise HTTPException(
                 status_code=409,
-                detail=f"{stage} provider {provider!r} has no API key configured",
+                detail=f"{stage} provider {provider!r} has {what}",
             )
 
-    # Model slugs: empty means "keep the stored one".
+    # Models: each stage's model belongs to the provider it is routed to;
+    # empty means "keep the stored one" (Ollama stages have no model here).
     #
-    # Validation is keyed on a slug having CHANGED, not merely being present.
-    # The options page prefills these inputs with the stored slugs, so every
-    # Apply arrives with them populated; gating on presence would make a
-    # routing-only change (say, moving the gate to Ollama) fail with a 502
-    # whenever openrouter.ai is unreachable, and would let an unrelated stale
-    # slug 400 a valid change to the other stage. Changed slugs are validated
-    # together so a two-model change still costs one catalogue fetch.
-    stored_models = {
-        "gate_model": current.openrouter_gate_model,
-        "verify_model": current.openrouter_verify_model,
-    }
-    requested_models = {
-        field: getattr(body, field).strip() or stored
-        for field, stored in stored_models.items()
-    }
-    # Jev answers decisions, not chat completions, and is absent from the
-    # chat catalogue: reject it in a model slot before spending a fetch.
-    for field, slug in requested_models.items():
-        if is_jev_model(slug):
+    # Validation is keyed on a model having CHANGED, not merely being
+    # present. The options page prefills these inputs with the stored ids, so
+    # every Apply arrives with them populated; gating on presence would make
+    # a routing-only change (say, moving the gate to Ollama) fail with a 502
+    # whenever the provider is unreachable, and would let an unrelated stale
+    # id 400 a valid change to the other stage. Changed OpenRouter slugs are
+    # validated together so a two-model change still costs one catalogue
+    # fetch.
+    requested_models: dict[str, str] = {}  # Settings field -> model id
+    changed_models: dict[str, tuple[str, str, str, str]] = {}
+    for stage, provider, body_value in (
+        ("gate", gate_provider, body.gate_model),
+        ("verify", verify_provider, body.verify_model),
+    ):
+        mapping = _STAGE_MODEL_FIELDS.get((stage, provider))
+        if mapping is None:
+            continue
+        settings_field, env_key = mapping
+        stored = getattr(current, settings_field)
+        model = body_value.strip() or stored
+        # Jev answers decisions, not chat completions: reject it in a model
+        # slot before spending a fetch.
+        if is_jev_model(model):
             raise HTTPException(
-                status_code=400,
-                detail=jev_misplaced_message(_MODEL_ENV_KEYS[field], slug),
+                status_code=400, detail=jev_misplaced_message(env_key, model)
             )
-    changed_models = {
-        field: slug
-        for field, slug in requested_models.items()
-        if slug != stored_models[field]
-    }
+        requested_models[settings_field] = model
+        if model != stored:
+            changed_models[settings_field] = (stage, provider, env_key, model)
+
     catalogue: OpenRouterCatalogue | None = None
-    if changed_models:
+    changed_providers = {provider for _, provider, _, _ in changed_models.values()}
+    if "openrouter" in changed_providers:
         try:
             catalogue = await fetch_openrouter_catalogue()
         except ProviderUnreachable as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
-        for field, slug in changed_models.items():
-            try:
-                await validate_openrouter_model(slug, catalogue.slugs)
-            except ModelSlugRejected as exc:
-                raise HTTPException(status_code=400, detail=f"{field}: {exc}") from exc
+    for stage, provider, _env_key, model in changed_models.values():
+        field = f"{stage}_model"
+        try:
+            if provider == "openrouter":
+                assert catalogue is not None
+                await validate_openrouter_model(model, catalogue.slugs)
+            else:
+                await validate_anthropic_model(
+                    model, current, needs_web_search=stage == "verify"
+                )
+        except ModelSlugRejected as exc:
+            raise HTTPException(status_code=400, detail=f"{field}: {exc}") from exc
+        except ProviderKeyRejected as exc:
+            raise HTTPException(status_code=409, detail=f"{field}: {exc}") from exc
+        except ProviderUnreachable as exc:
+            raise HTTPException(status_code=502, detail=f"{field}: {exc}") from exc
 
     # Build (and so validate) the new Settings BEFORE writing .env: a value
     # that fails validation must be a 400 with the file untouched, never a
@@ -723,9 +873,8 @@ async def submit_stages(
         new_settings = Settings(
             gate_provider=gate_provider,
             verify_provider=verify_provider,
-            openrouter_gate_model=requested_models["gate_model"],
-            openrouter_verify_model=requested_models["verify_model"],
             jev_mode=jev_mode,
+            **requested_models,
         )
     except ValidationError as exc:
         messages = "; ".join(error["msg"] for error in exc.errors())
@@ -738,9 +887,9 @@ async def submit_stages(
     }
     # Persist only a value the caller actually changed. Writing both on every
     # stage POST would bake the code defaults into .env for users who never
-    # touch OpenRouter, freezing them against future default changes.
-    for field, slug in changed_models.items():
-        env_updates[_MODEL_ENV_KEYS[field]] = slug
+    # change a model, freezing them against future default changes.
+    for _stage, _provider, env_key, model in changed_models.values():
+        env_updates[env_key] = model
     if jev_mode != current.jev_mode:
         env_updates["JEV_MODE"] = jev_mode
     try:
@@ -751,7 +900,11 @@ async def submit_stages(
             detail=f"could not persist stage routing to {env_path}: {exc}",
         ) from exc
 
-    if changed_models:
+    if "anthropic" in changed_providers:
+        # Same reasoning as below: a new model must not inherit the previous
+        # one's learned "no structured output" latch.
+        reset_anthropic_capability_latches()
+    if "openrouter" in changed_providers:
         # The latches are process-wide and outlive this rebuild, so a new
         # model would otherwise inherit the previous one's learned
         # capabilities (e.g. "no json_schema support") forever.

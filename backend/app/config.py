@@ -35,6 +35,85 @@ _DEFAULT_ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 DEFAULT_OPENROUTER_GATE_MODEL = "inception/mercury-2.5-preview"
 DEFAULT_OPENROUTER_VERIFY_MODEL = "inception/mercury-2.5-preview"
 
+# Anthropic (direct Messages API) is the default provider. Claude Haiku 5.5:
+# fast, $0.10/$0.50 per million tokens, strict JSON output, and Anthropic's
+# own server-side web_search tool for grounded verification.
+DEFAULT_ANTHROPIC_MODEL = "claude-haiku-5-5"
+# Estimated marginal cost of one Anthropic verification: web search is
+# $10 per 1,000 searches ($0.01 each), a verify runs one or two searches, and
+# Haiku's tokens add ~$0.001-0.002. Used only when COST_PER_VERIFY_USD is not
+# set explicitly and verification runs on Anthropic.
+ANTHROPIC_EST_COST_PER_VERIFY_USD = 0.015
+# Exa's documented per-request price for OpenRouter's web plugin.
+OPENROUTER_EST_COST_PER_VERIFY_USD = 0.007
+
+#: Accepted reasoning-effort values for the Anthropic stages. "none" turns
+#: thinking OFF; "" sends nothing (the model's default); the rest are
+#: ``output_config.effort`` levels with adaptive thinking.
+AnthropicEffort = Literal["none", "", "low", "medium", "high", "xhigh", "max"]
+
+# Environment variables that, together, configure Workload Identity
+# Federation for the Anthropic SDK (the token may come from either variable).
+_ANTHROPIC_WIF_REQUIRED_ENV = (
+    "ANTHROPIC_FEDERATION_RULE_ID",
+    "ANTHROPIC_ORGANIZATION_ID",
+)
+_ANTHROPIC_WIF_TOKEN_ENV = ("ANTHROPIC_IDENTITY_TOKEN", "ANTHROPIC_IDENTITY_TOKEN_FILE")
+
+
+def anthropic_config_dir() -> Path:
+    """The Anthropic SDK/CLI configuration directory (``ant auth login`` store).
+
+    Mirrors the SDK's resolution: ``$ANTHROPIC_CONFIG_DIR``, else
+    ``%APPDATA%\\Anthropic`` on Windows, else ``~/.config/anthropic``.
+    """
+    override = os.environ.get("ANTHROPIC_CONFIG_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+    if os.name == "nt" and os.environ.get("APPDATA"):
+        return Path(os.environ["APPDATA"]) / "Anthropic"
+    return Path.home() / ".config" / "anthropic"
+
+
+def anthropic_active_profile_name(config_dir: Path) -> str:
+    """The profile the SDK would load: ``$ANTHROPIC_PROFILE``, the one-line
+    ``active_config`` file written by ``ant profile activate``, else
+    ``default``. Only that pointer file is read — never a credentials file.
+    """
+    explicit = os.environ.get("ANTHROPIC_PROFILE", "").strip()
+    if explicit:
+        return explicit
+    try:
+        active = (config_dir / "active_config").read_text(encoding="utf-8").strip()
+    except OSError:
+        active = ""
+    return active or "default"
+
+
+def anthropic_sdk_credentials_available() -> bool:
+    """Whether the Anthropic SDK can authenticate WITHOUT an explicit API key.
+
+    True for ``ANTHROPIC_AUTH_TOKEN``, a complete Workload Identity
+    Federation environment, or an ``ant auth login`` profile on disk (both
+    ``configs/<profile>.json`` and ``credentials/<profile>.json`` exist).
+    Checks environment variables and file EXISTENCE only: the credentials
+    file holds tokens and is never opened here. A profile whose refresh
+    token has expired still counts — that surfaces per call as a clear
+    "run `ant auth login` again" error.
+    """
+    if os.environ.get("ANTHROPIC_AUTH_TOKEN", "").strip():
+        return True
+    if all(
+        os.environ.get(name, "").strip() for name in _ANTHROPIC_WIF_REQUIRED_ENV
+    ) and any(os.environ.get(name, "").strip() for name in _ANTHROPIC_WIF_TOKEN_ENV):
+        return True
+    config_dir = anthropic_config_dir()
+    profile = anthropic_active_profile_name(config_dir)
+    return (config_dir / "configs" / f"{profile}.json").is_file() and (
+        config_dir / "credentials" / f"{profile}.json"
+    ).is_file()
+
+
 # Jev (TypeSafe, via OpenRouter's alpha Decisions API) is an optional
 # PRE-SCREEN in front of the gate model, never a gate model itself: it
 # answers typed questions with probabilities and cannot write claim text.
@@ -106,17 +185,44 @@ class Settings(BaseSettings):
         kwargs.setdefault("_env_file", str(resolve_env_file()))
         super().__init__(**kwargs)
 
-    # The keyed LLM provider. OpenRouter is the only one; the field is kept so
-    # existing .env files (LLM_PROVIDER=openrouter) stay valid.
-    llm_provider: Literal["openrouter"] = "openrouter"
+    # The keyed LLM provider for both stages (unless overridden per stage):
+    #   anthropic  (default) — the direct Anthropic Messages API (Claude
+    #              Haiku 5.5 + Anthropic's server-side web_search tool).
+    #              Authenticates with ANTHROPIC_API_KEY or, with no key, an
+    #              `ant auth login` sign-in (app/llm_anthropic.py).
+    #   openrouter — OpenRouter (any catalogue model + the `web` plugin).
+    llm_provider: Literal["anthropic", "openrouter"] = "anthropic"
 
     # Per-stage provider overrides; "" = follow ``llm_provider``. The gate
     # may run on a local Ollama server. The verify Literal deliberately
     # excludes "ollama": local verify has no web-search grounding, so every
     # verdict would be downgraded to UNVERIFIED — a hand-edited
     # VERIFY_PROVIDER=ollama fails loudly at boot instead of half-working.
-    gate_provider: Literal["", "openrouter", "ollama"] = ""
-    verify_provider: Literal["", "openrouter"] = ""
+    gate_provider: Literal["", "anthropic", "openrouter", "ollama"] = ""
+    verify_provider: Literal["", "anthropic", "openrouter"] = ""
+
+    # Anthropic (direct API). The key is OPTIONAL: empty = let the Anthropic
+    # SDK resolve credentials itself (ANTHROPIC_AUTH_TOKEN, ANTHROPIC_PROFILE,
+    # Workload Identity Federation, or the active `ant auth login` profile).
+    anthropic_api_key: str = ""
+    anthropic_gate_model: str = DEFAULT_ANTHROPIC_MODEL
+    anthropic_verify_model: str = DEFAULT_ANTHROPIC_MODEL
+    # Gate (claim extraction + contradiction judge): "none" turns thinking
+    # OFF — extraction needs no deliberation and thinking tokens would count
+    # against the gate's output cap (same finding as the OpenRouter gate).
+    anthropic_gate_reasoning_effort: AnthropicEffort = "none"
+    # Verify: adaptive thinking at low effort — enough to read search results
+    # carefully without adding seconds to every popup.
+    anthropic_verify_reasoning_effort: AnthropicEffort = "low"
+    # Upper bound on web searches per verification ($0.01 each). Two lets the
+    # model refine a first query that missed; the prompt states the cap too.
+    anthropic_web_max_uses: int = Field(default=2, ge=1, le=5)
+    # Which server-side web_search tool version:
+    #   basic   (default) — web_search_20250305: results go straight to the
+    #           model; the fastest, simplest round trip.
+    #   dynamic — web_search_20260209: the model filters results with code
+    #           before reading them (fewer input tokens, more latency).
+    anthropic_web_search_tool: Literal["basic", "dynamic"] = "basic"
 
     # Ollama (or any OpenAI-compatible local server: LM Studio, vLLM,
     # llama.cpp). The base URL is the OpenAI-compatible root INCLUDING /v1;
@@ -174,7 +280,12 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def validate_jev_settings(self) -> "Settings":
         """Keep Jev out of chat slots and its pre-screen settings coherent."""
-        for field in ("openrouter_gate_model", "openrouter_verify_model"):
+        for field in (
+            "openrouter_gate_model",
+            "openrouter_verify_model",
+            "anthropic_gate_model",
+            "anthropic_verify_model",
+        ):
             slug = getattr(self, field)
             if is_jev_model(slug):
                 raise ValueError(jev_misplaced_message(field.upper(), slug))
@@ -374,9 +485,24 @@ class Settings(BaseSettings):
     # Analytics persistence (app/db.py). One SQLite file; delete it to reset.
     db_path: str = str(_DEFAULT_DB_PATH)
     # Estimated marginal cost of ONE verification attempt (the web-search fee
-    # dominates; tokens are noise): Exa's documented $0.007/request. Used for
-    # the popup/dashboard cost readouts.
-    cost_per_verify_usd: float = 0.007
+    # dominates; tokens are noise). Used for the popup/dashboard cost
+    # readouts. Unset = derived from the verify provider by
+    # ``apply_provider_cost_default``: Exa's $0.007/request on OpenRouter,
+    # ~$0.015 on Anthropic (one or two $0.01 searches plus tokens).
+    cost_per_verify_usd: float = OPENROUTER_EST_COST_PER_VERIFY_USD
+
+    @model_validator(mode="after")
+    def apply_provider_cost_default(self) -> "Settings":
+        """Use the Anthropic cost estimate when verify runs there and
+        COST_PER_VERIFY_USD was not set explicitly (env, .env or kwarg)."""
+        if (
+            "cost_per_verify_usd" not in self.model_fields_set
+            and self.resolved_verify_provider == "anthropic"
+        ):
+            object.__setattr__(
+                self, "cost_per_verify_usd", ANTHROPIC_EST_COST_PER_VERIFY_USD
+            )
+        return self
 
     host: str = "127.0.0.1"
     port: int = 8710
@@ -396,6 +522,7 @@ class Settings(BaseSettings):
     def active_gate_model(self) -> str:
         """The gate model of the gate stage's provider (logs/healthz/ready)."""
         return {
+            "anthropic": self.anthropic_gate_model,
             "openrouter": self.openrouter_gate_model,
             "ollama": self.ollama_gate_model,
         }[self.resolved_gate_provider]
@@ -404,24 +531,51 @@ class Settings(BaseSettings):
     def active_verify_model(self) -> str:
         """The verify model of the verify stage's provider."""
         return {
+            "anthropic": self.anthropic_verify_model,
             "openrouter": self.openrouter_verify_model,
         }[self.resolved_verify_provider]
 
     @property
     def active_api_key(self) -> str:
-        """The OpenRouter API key (may be empty when unconfigured)."""
+        """The ``llm_provider``'s API key (may be empty when unconfigured)."""
+        if self.llm_provider == "anthropic":
+            return self.anthropic_api_key
         return self.openrouter_api_key
+
+    @property
+    def anthropic_api_key_or_none(self) -> str | None:
+        """The Anthropic key, or None when empty/placeholder (= use sign-in)."""
+        if self._is_placeholder_key(self.anthropic_api_key):
+            return None
+        return self.anthropic_api_key.strip()
+
+    @property
+    def anthropic_auth_method(self) -> Literal["api_key", "sign_in"] | None:
+        """How the Anthropic provider authenticates, or None if it cannot.
+
+        ``api_key`` when ANTHROPIC_API_KEY holds a real key; ``sign_in`` when
+        the SDK can resolve credentials on its own (an ``ant auth login``
+        profile, ANTHROPIC_AUTH_TOKEN, or federation).
+        """
+        if self.anthropic_api_key_or_none is not None:
+            return "api_key"
+        if anthropic_sdk_credentials_available():
+            return "sign_in"
+        return None
 
     def provider_configured(self, provider: str) -> bool:
         """Whether ``provider`` is usable.
 
-        Keyed providers need a non-placeholder key. Ollama is keyless and
+        OpenRouter needs a non-placeholder key. Anthropic needs a key OR SDK
+        credentials (an ``ant auth login`` profile). Ollama is keyless and
         counts as ALWAYS configured — runtime unreachability surfaces as
         per-call ``GateError`` (and the setup probe reports reachability).
         Unknown names are never configured.
         """
         if provider == "openrouter":
             return not self._is_placeholder_key(self.openrouter_api_key)
+        if provider == "anthropic":
+            return self.anthropic_auth_method is not None
         return provider == "ollama"
 
     @property
@@ -440,16 +594,36 @@ class Settings(BaseSettings):
     def require_llm_api_key(self) -> None:
         """Fail loudly at startup when an ACTIVE stage provider has no key.
 
-        Ollama needs no key; the verify stage always runs on OpenRouter, so
-        in practice this checks ``OPENROUTER_API_KEY``.
+        Ollama needs no key; Anthropic needs a key or an ``ant`` sign-in.
 
         Raises:
-            RuntimeError: if a resolved stage provider's API key is empty,
-                whitespace, or a leftover comment rather than a real key.
+            RuntimeError: if a resolved stage provider has no usable
+                credential (an empty, whitespace, or leftover-comment key, and
+                for Anthropic no SDK sign-in either).
         """
         for provider in {self.resolved_gate_provider, self.resolved_verify_provider}:
             if provider == "openrouter":
                 self.require_openrouter_api_key()
+            elif provider == "anthropic":
+                self.require_anthropic_credentials()
+
+    def require_anthropic_credentials(self) -> None:
+        """Fail loudly when the Anthropic provider has no way to authenticate.
+
+        Raises:
+            RuntimeError: if ANTHROPIC_API_KEY is empty/placeholder AND the
+                Anthropic SDK finds no sign-in (``ant auth login``),
+                ANTHROPIC_AUTH_TOKEN, or federation configuration.
+        """
+        if self.anthropic_auth_method is None:
+            raise RuntimeError(
+                "No Anthropic credentials (LLM_PROVIDER=anthropic). Either run "
+                "`ant auth login` (no API key needed; pick the Console "
+                "organization and workspace that hold your credits) or set "
+                "ANTHROPIC_API_KEY in backend/.env "
+                "(https://platform.claude.com/settings/keys). The key is "
+                "backend-only and must never be shipped in the extension."
+            )
 
     def require_openrouter_api_key(self) -> None:
         """Fail loudly when ``OPENROUTER_API_KEY`` is missing or a placeholder.

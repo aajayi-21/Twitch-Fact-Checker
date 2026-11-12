@@ -1,11 +1,14 @@
 """Provider registry: the right client/gate/checker per stage provider."""
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
 from app.config import Settings
+from app.llm_anthropic import AnthropicClaimGate, AnthropicFactChecker
 from app.llm_jev import JevScreenedGate
 from app.llm_local import LocalClaimGate
 from app.llm_openrouter import (
@@ -59,10 +62,70 @@ class TestCreateLlmClient:
 
     def test_unknown_provider_raises_value_error(self) -> None:
         with pytest.raises(ValueError, match="unknown LLM provider"):
-            get_provider_spec("anthropic")
+            get_provider_spec("gemini")
+
+    async def test_anthropic_with_key_builds_asyncanthropic(self) -> None:
+        settings = make_settings("anthropic", anthropic_api_key="sk-ant-offline-test")
+        client = create_llm_client(settings, "anthropic")
+        try:
+            assert isinstance(client, AsyncAnthropic)
+            assert client.api_key == "sk-ant-offline-test"
+            assert client.max_retries == 0  # the app owns retries/cooldowns
+        finally:
+            await close_llm_client(client)
+
+    def test_anthropic_without_credentials_fails_clearly(self) -> None:
+        # conftest isolates ANTHROPIC_CONFIG_DIR: no key, no sign-in.
+        with pytest.raises(RuntimeError, match="ant auth login"):
+            create_llm_client(make_settings("anthropic"), "anthropic")
+
+    async def test_anthropic_without_key_uses_the_sdk_credential_chain(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # ANTHROPIC_AUTH_TOKEN stands in for an `ant auth login` profile: both
+        # are found by the SDK itself because NO key is passed explicitly.
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "token-offline-test")
+        settings = make_settings("anthropic")
+        assert settings.anthropic_auth_method == "sign_in"
+        client = create_llm_client(settings, "anthropic")
+        try:
+            assert isinstance(client, AsyncAnthropic)
+            assert client.api_key is None
+        finally:
+            await close_llm_client(client)
 
 
 class TestCreateGateAndChecker:
+    def test_anthropic_classes_and_settings_flow_through(self) -> None:
+        settings = make_settings(
+            "anthropic",
+            anthropic_gate_model="claude-gate",
+            anthropic_verify_model="claude-verify",
+            anthropic_web_max_uses=3,
+            anthropic_web_search_tool="dynamic",
+            anthropic_verify_reasoning_effort="medium",
+        )
+        dummy_client = SimpleNamespace()
+        gate = create_claim_gate(settings, dummy_client)
+        checker = create_fact_checker(settings, dummy_client, QuotaCooldown())
+        assert isinstance(gate, AnthropicClaimGate)
+        assert gate._model == "claude-gate"
+        assert gate._reasoning_effort == "none"
+        assert isinstance(checker, AnthropicFactChecker)
+        assert checker._model == "claude-verify"
+        assert checker._web_search_tool() == {
+            "type": "web_search_20260209",
+            "name": "web_search",
+            "max_uses": 3,
+        }
+        assert checker._reasoning_effort == "medium"
+
+    def test_anthropic_gate_ignores_jev(self) -> None:
+        settings = make_settings("anthropic", jev_mode="screen")
+        assert settings.jev_active_mode == "off"
+        gate = create_claim_gate(settings, SimpleNamespace())
+        assert isinstance(gate, AnthropicClaimGate)
+
     def test_openrouter_classes(self) -> None:
         settings = make_settings("openrouter")
         dummy_client = SimpleNamespace()
@@ -193,7 +256,7 @@ class TestCloseLlmRuntime:
 class TestUnknownProviderIsRejected:
     def test_settings_reject_unknown_provider(self) -> None:
         with pytest.raises(ValueError):
-            Settings(llm_provider="anthropic", _env_file=None)  # type: ignore[arg-type]
+            Settings(llm_provider="gemini", _env_file=None)  # type: ignore[arg-type]
 
     def test_settings_reject_ollama_verify_provider(self) -> None:
         """LOCAL GATE ONLY: verify_provider excludes ollama at the type level."""

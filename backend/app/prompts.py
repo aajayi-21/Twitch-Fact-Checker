@@ -50,6 +50,18 @@ is the bare claim — anything else in it pollutes the search query
 (``build_verify_messages``). The wording says "the results attached to this
 request", never "search for".
 
+Anthropic is the opposite: the model runs Anthropic's server-side
+``web_search`` tool ITSELF, so its prompts (``build_anthropic_verify_messages``)
+tell it to search, cap the number of searches, and still decide strictly from
+what the searches returned. It may name the result URLs it relied on
+(``source_urls``), but code keeps only URLs that the search tool actually
+returned, so a fabricated URL can never reach the popup.
+
+The Anthropic gate sends the static gate instructions as a cached SYSTEM
+block and only the transcript batch as the user message
+(``build_gate_prompt_parts``), so ~1.7k prompt tokens are read from the prompt
+cache on every pass instead of being billed in full.
+
 The verify prompts share :data:`VERIFY_LABEL_GUIDANCE`, which carries the calibration
 learned from production verdicts: MISLEADING was being used for pedantry and
 FALSE for near-correct facts.
@@ -269,6 +281,67 @@ results, including the key fact or number. No URLs.>
 """
 
 
+# Anthropic: the model searches itself with the web_search tool, so the prompt
+# tells it to search (and caps how often). The user message is the bare claim,
+# as for OpenRouter, so the system prompt stays identical across claims and is
+# served from the prompt cache.
+_ANTHROPIC_VERIFY_PREAMBLE = """\
+You are a fact-checker for live-stream speech. Today is {date}.
+
+The user message is ONE claim heard on a live stream. Use the web_search tool
+to find reputable, independent sources that address EXACTLY this claim — its
+specific entities, numbers, place, and time. You may search at most
+{max_uses} times; make the first query count. Decide STRICTLY from what your
+searches returned — never from memory alone — and ignore results that are
+merely on the same topic without addressing the claim itself. If you did not
+search, or the searches returned nothing decisive, the label is UNVERIFIED and
+the evidence is "none".
+
+{label_guidance}"""
+
+ANTHROPIC_VERIFY_SYSTEM_TEMPLATE = _ANTHROPIC_VERIFY_PREAMBLE + """
+Evidence rating:
+- "strong": at least one reputable result reports the SAME specific event,
+  entity, place, and time as the claim and directly confirms or refutes it.
+- "partial": results are related and suggestive but not decisive — a similar
+  incident elsewhere or at another time, a general rule, or the same topic
+  without the claim's specifics.
+- "none": results are off-topic or absent, or the claim names no identifiable
+  event, entity, place, or time that a result could match.
+TRUE, FALSE, and MISLEADING require "strong" evidence; anything less is
+UNVERIFIED. Unverifiable claim types (above) are always "none".
+
+Write the explanation as 2-3 short plain-language sentences, UNDER 350
+characters in total (about 55 words — it is shown in a small popup and cut off
+beyond that), grounded only in the retrieved results and including the key
+fact or number that decides the verdict. Lead with that fact; skip caveats
+that do not change the verdict. Do not put URLs in the explanation text.
+
+Return a JSON object with these fields:
+- "evidence": "strong" | "partial" | "none"
+- "explanation": the short explanation (under 350 characters)
+- "label": "TRUE" | "FALSE" | "MISLEADING" | "UNVERIFIED"
+- "source_urls": the URLs of the search results your verdict relies on, copied
+  exactly from the results (at most 5; an empty list if none were decisive)
+"""
+
+ANTHROPIC_VERIFY_FALLBACK_SYSTEM_TEMPLATE = _ANTHROPIC_VERIFY_PREAMBLE + """
+Evidence rating: "strong" = at least one reputable result reports the SAME
+specific event, entity, place, and time as the claim and directly confirms or
+refutes it; "partial" = related but not decisive (a similar incident
+elsewhere, a general rule, the same topic without the specifics); "none" =
+off-topic, absent, or the claim names nothing a result could match. TRUE,
+FALSE, and MISLEADING require "strong"; unverifiable claim types are "none".
+
+After searching, respond in EXACTLY this three-line format and nothing else:
+LABEL: <TRUE|FALSE|MISLEADING|UNVERIFIED>
+EVIDENCE: <strong|partial|none>
+EXPLANATION: <2-3 short plain-language sentences, under 350 characters in \
+total, grounded only in the retrieved results, leading with the key fact or \
+number. No URLs.>
+"""
+
+
 # Appended to verify prompts when a captured stream frame is attached. The
 # frame is context, never evidence: the label and evidence rules stay
 # anchored to the retrieved sources, so a misread frame cannot move a verdict.
@@ -333,6 +406,55 @@ def build_gate_prompt(context: str, new_transcript: str) -> str:
         context=context.strip() or "(none)",
         new_transcript=new_transcript.strip(),
     )
+
+
+#: Where the static gate instructions end and the per-batch input begins.
+_GATE_INPUT_MARKER = "CONTEXT (reference resolution only): {context}"
+
+
+def build_gate_prompt_parts(context: str, new_transcript: str) -> tuple[str, str]:
+    """``(instructions, transcript)`` — the gate prompt split for caching.
+
+    ``instructions`` is everything before the real input (identical on every
+    pass, so it can be a cached system block); ``transcript`` is the
+    ``CONTEXT`` / ``NEW TRANSCRIPT`` tail. Concatenated, the two parts equal
+    :func:`build_gate_prompt` exactly.
+    """
+    split_at = GATE_PROMPT_TEMPLATE.index(_GATE_INPUT_MARKER)
+    instructions = GATE_PROMPT_TEMPLATE[:split_at].format()
+    transcript = GATE_PROMPT_TEMPLATE[split_at:].format(
+        context=context.strip() or "(none)",
+        new_transcript=new_transcript.strip(),
+    )
+    return instructions, transcript
+
+
+def build_anthropic_verify_messages(
+    claim: str, date: str, max_uses: int, with_image: bool = False
+) -> tuple[str, str]:
+    """``(system, user)`` for the Anthropic structured verify call.
+
+    The model searches itself (web_search tool), so the system prompt tells
+    it to, with the search cap stated; the user message is the bare claim.
+    """
+    system = ANTHROPIC_VERIFY_SYSTEM_TEMPLATE.format(
+        date=date, max_uses=max_uses, label_guidance=VERIFY_LABEL_GUIDANCE
+    )
+    if with_image:
+        system += VERIFY_IMAGE_NOTE
+    return system, VERIFY_USER_TEMPLATE.format(claim=claim)
+
+
+def build_anthropic_verify_fallback_messages(
+    claim: str, date: str, max_uses: int, with_image: bool = False
+) -> tuple[str, str]:
+    """``(system, user)`` for the Anthropic LABEL:/EVIDENCE:/EXPLANATION: call."""
+    system = ANTHROPIC_VERIFY_FALLBACK_SYSTEM_TEMPLATE.format(
+        date=date, max_uses=max_uses, label_guidance=VERIFY_LABEL_GUIDANCE
+    )
+    if with_image:
+        system += VERIFY_IMAGE_NOTE
+    return system, VERIFY_USER_TEMPLATE.format(claim=claim)
 
 
 def build_verify_messages(

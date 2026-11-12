@@ -1,7 +1,7 @@
 # 🛠️ CLAUDE.md - Twitch Live Fact-Checker
 
 ## 🎯 Project Overview
-This project is a Chrome Extension (Manifest V3) paired with a Python backend. It actively monitors an open Twitch live stream, transcribes the audio, and uses a web-search-grounded LLM (via OpenRouter) to automatically detect testable claims. When a claim requires verification, the extension displays a non-intrusive popup over the stream featuring a high-level label (e.g., **TRUE**, **FALSE**, **MISLEADING**, **UNVERIFIED**) and a concise, well-sourced explanation. The popup should be aesthetically pleasing.
+This project is a Chrome Extension (Manifest V3) paired with a Python backend. It actively monitors an open Twitch live stream, transcribes the audio, and uses a web-search-grounded LLM (the Anthropic API by default, or OpenRouter) to automatically detect testable claims. When a claim requires verification, the extension displays a non-intrusive popup over the stream featuring a high-level label (e.g., **TRUE**, **FALSE**, **MISLEADING**, **UNVERIFIED**) and a concise, well-sourced explanation. The popup should be aesthetically pleasing.
 
 ## 🏗️ Architecture & Tech Stack
 
@@ -15,7 +15,7 @@ The following architecture is a recommendation that should be used as inspiratio
 
 ### Backend: Python API (`/backend`)
 *   **Core:** Python 3.11+, FastAPI (for high-performance, asynchronous REST/WebSocket endpoints).
-*   **LLM Integration:** OpenRouter is the primary provider (OpenAI SDK against the OpenRouter API, the `web` plugin for search grounding, capability-aware strict JSON via the public model catalogue). The claim gate can optionally run on a local Ollama model.
+*   **LLM Integration:** The Anthropic API is the default provider (`anthropic` SDK, Claude Haiku 5.5, Anthropic's server-side `web_search` tool for grounding, strict JSON via `output_config.format`; credentials from `ANTHROPIC_API_KEY` or an `ant auth login` sign-in). OpenRouter is the alternative (OpenAI SDK against the OpenRouter API, the `web` plugin for search grounding, capability-aware strict JSON via the public model catalogue). The claim gate can optionally run on a local Ollama model.
 *   **Logic Pipeline:** 
     1. Receive transcribed text buffer.
     2. Determine if the buffer contains a factual claim worth checking.

@@ -25,6 +25,7 @@ dependencies = [
     # client) are product surfaces, so this cannot live in the dev group —
     # it would only be installed transitively there, which is a latent break.
     "websockets>=12.0",
+    "anthropic>=1.1",
 ]
 
 # GPU speech-to-text backend (STT_BACKEND=torch), needed for Intel XPU and

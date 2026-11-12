@@ -9,9 +9,11 @@ LLM "claim gate", verifies them with a web-search-grounded LLM call, and pushes
 **TRUE / FALSE / MISLEADING / UNVERIFIED** verdicts (with sources) back to a
 Shadow-DOM overlay rendered over the player.
 
-The LLM layer runs on **OpenRouter** (one key, any model, the `web` search plugin for
-grounding); the claim gate can optionally run on a local **Ollama** model. Paste your
-key on the extension's options page — no file editing needed.
+The LLM layer runs on the **Anthropic API** by default (Claude Haiku 5.5, with
+Anthropic's own `web_search` tool for grounding — sign in with `ant auth login`, no key
+needed), or on **OpenRouter** (one key, any model, the `web` search plugin); the claim
+gate can optionally run on a local **Ollama** model. Connect a provider on the
+extension's options page — no file editing needed.
 
 ## Quickstart
 
@@ -39,9 +41,17 @@ key on the extension's options page — no file editing needed.
    deliberately carries both browsers' keys so there is no build step.
 
 3. **Connect your AI provider**: click the extension's toolbar icon → **Open
-   settings** → paste your **OpenRouter** key (https://openrouter.ai/keys —
-   hold a few dollars of credit for web search) → **Save & verify**. The key is validated
-   live against the provider and stored only in `backend/.env` on your machine.
+   settings**, then either:
+   - **Anthropic** (default): run `ant auth login` once in a terminal (the
+     [Anthropic CLI](https://platform.claude.com/docs/en/cli-sdks-libraries/cli/quickstart);
+     pick the Console organization that holds your credits), choose **Anthropic**,
+     leave the key empty → **Save & verify**. Or paste a key from
+     https://platform.claude.com/settings/keys instead.
+   - **OpenRouter**: choose **OpenRouter**, paste your key (https://openrouter.ai/keys —
+     hold a few dollars of credit for web search) → **Save & verify**.
+
+   Credentials are validated live against the provider; a key is stored only in
+   `backend/.env` on your machine.
 
 That's it — open a stream on a supported site, click the toolbar icon, and press
 **Start**. See [Usage](#usage) for details.
@@ -416,7 +426,37 @@ have been without it — the no-citations ⇒ UNVERIFIED rule is unchanged.
 
 ## LLM provider, models, costs
 
-**Primary provider: OpenRouter.** Both pipeline stages (claim gate + verification)
+**Default provider: Anthropic (direct API).** Both pipeline stages default to
+`claude-haiku-5-5` ($0.10 / $0.50 per million input/output tokens) on the Anthropic
+Messages API (`backend/app/llm_anthropic.py`):
+
+- **Credentials** — either an `ant auth login` sign-in (no key: the Anthropic SDK finds
+  the sign-in in `~/.config/anthropic` and refreshes it itself; sign-ins expire after
+  some weeks, so run `ant auth login` again when the backend reports rejected
+  credentials) or `ANTHROPIC_API_KEY` in `.env`, which takes precedence. Usage is
+  billed to the Console organization/workspace the credential belongs to. The startup
+  banner and `/setup/status` say which one is in use.
+- **Claim gate** — strict JSON output (`output_config.format`), thinking **off**
+  (`ANTHROPIC_GATE_REASONING_EFFORT=none`), and the static gate instructions sent as a
+  cached system block, so ~1.7k prompt tokens per pass are cache reads.
+- **Verification** — Anthropic's server-side `web_search` tool: the model writes its own
+  queries, at most `ANTHROPIC_WEB_MAX_USES` (default 2) per claim, and must decide
+  strictly from what the searches returned. It names the result URLs it relied on, but
+  a URL is kept only if the search tool actually returned it; a verdict reached without
+  searching has no sources and is downgraded to UNVERIFIED. If strict JSON cannot be
+  combined with search, the backend latches to a LABEL/EVIDENCE/EXPLANATION text
+  format plus one extraction pass. `ANTHROPIC_WEB_SEARCH_TOOL=dynamic` switches to the
+  `web_search_20260209` tool (the model filters results with code first: fewer tokens,
+  more latency).
+- **Rules the transport follows** — no `temperature` (Haiku 5.5 rejects non-default
+  values), no assistant prefill, `pause_turn` resumed up to twice, a 429 or an exhausted
+  credit balance / spend limit trips the quota cooldown (15 minutes for credit).
+- **Cost** — web search is $10 per 1,000 searches, which dominates: about $0.015 per
+  verification (`COST_PER_VERIFY_USD` defaults to that when verify runs on Anthropic).
+  At ~180 gate calls and ~60 verifications per stream hour, expect roughly
+  $0.75–1.50 per hour.
+
+**Alternative provider: OpenRouter.** With `LLM_PROVIDER=openrouter`, both stages
 default to `inception/mercury-2.5-preview`: cheap ($0.04/M input tokens) and fast
 enough for the ~300 gate calls an hour, its endpoint publishes `temperature`,
 `structured_outputs` and `reasoning` support (so strict JSON works on the first
@@ -516,9 +556,9 @@ ollama pull nomic-embed-text   # embeddings for contradiction detection
 ```
 
 Then on the options page: select **Ollama → Test connection**, and set **Claim
-detection (gate)** to Ollama under stage routing (verification stays on
-OpenRouter — local verify is not supported because it has no web-search
-grounding). Env equivalents: `GATE_PROVIDER=ollama`, `VERIFY_PROVIDER=openrouter`,
+detection (gate)** to Ollama under stage routing (verification stays on Anthropic
+or OpenRouter — local verify is not supported because it has no web-search
+grounding). Env equivalents: `GATE_PROVIDER=ollama`, `VERIFY_PROVIDER=anthropic`,
 `OLLAMA_BASE_URL=http://127.0.0.1:11434/v1` (any OpenAI-compatible server works:
 LM Studio, vLLM, llama.cpp). A cold local model's first call can exceed
 `GATE_TIMEOUT_S=15` — raise it or set a longer Ollama `keep_alive` if the first
@@ -538,9 +578,10 @@ gate pass times out.
   and deduped), expect well under a dollar per multi-hour stream.
 
 **Checking verdict quality.** `backend/scripts/eval_verify.py` replays the claims
-stored in `fact_checker.db` through the configured verifier and prints label,
-evidence and fallback histograms plus latency — it spends credits, so it insists on
-`--yes-spend-credits`. `POST /debug/text` runs the gate → verify path on raw text.
+stored in `fact_checker.db` through the configured verifier (or `--provider
+anthropic|openrouter`, `--model ...`) and prints label, evidence and fallback
+histograms plus latency — it spends credits, so it insists on `--yes-spend-credits`.
+`POST /debug/text` runs the gate → verify path on raw text.
 
 **On the transcription model.** `openai/whisper-small.en` stays the torch default on
 an integrated Intel GPU: after the startup warm-up it runs ~0.9 s per 4 s window, and
