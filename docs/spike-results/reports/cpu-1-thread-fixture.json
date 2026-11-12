@@ -1,0 +1,334 @@
+{
+  "schema": 1,
+  "environment": {
+    "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.0.0 Safari/537.36",
+    "platform": "Linux",
+    "hardwareConcurrency": 8,
+    "deviceMemoryGb": 32,
+    "crossOriginIsolated": false,
+    "origin": "http:",
+    "timestamp": "2026-11-12T01:31:29.258Z"
+  },
+  "clip": "http://127.0.0.1:39869/fixture/claims_16k.wav",
+  "options": {
+    "forceFallbackAdapter": false,
+    "allowSoftwareGpu": false,
+    "powerPreference": "high-performance",
+    "numThreads": 1
+  },
+  "models": [
+    {
+      "modelId": "moonshine-base",
+      "repo": "onnx-community/moonshine-base-ONNX",
+      "gpu": {
+        "webgpuAvailable": true,
+        "kind": "none",
+        "usable": false,
+        "reason": "no-adapter",
+        "error": null,
+        "vendor": "",
+        "architecture": "",
+        "device": "",
+        "description": "",
+        "isFallbackAdapter": false,
+        "shaderF16": false,
+        "features": [],
+        "limits": {},
+        "powerPreference": "high-performance",
+        "label": "No GPU available to the browser",
+        "cacheKey": "none|||||no-f16|high-performance"
+      },
+      "skipped": [
+        {
+          "variantId": "webgpu-fp32",
+          "reason": "no-usable-gpu"
+        }
+      ],
+      "audio": {
+        "seconds": 42.6949375,
+        "segments": 6,
+        "hasReference": true
+      },
+      "thresholds": {
+        "maxRealTimeFactor": 0.5,
+        "maxWordErrorRate": 0.25
+      },
+      "runs": [
+        {
+          "variantId": "wasm-q8",
+          "device": "wasm",
+          "dtype": "q8",
+          "downloadMb": 63,
+          "wordErrorRate": 0.14960629921259844,
+          "ok": true,
+          "error": null,
+          "loadMs": 3295.7999999970198,
+          "warmupMs": 257.09999999403954,
+          "inferenceMs": 4472.89999999851,
+          "audioSeconds": 44.580000000000005,
+          "realTimeFactor": 0.10033423059664669,
+          "slowestSegmentRtf": 0.10797043010812774,
+          "text": "Welcome back to the stream everyone we are live did you know that Eiffel Tower is 450 meters tall Oh, look it up, cat. Honestly this patch is terrible, the developers have no idea what they are doing. I'm going to push to push the left lane and take the tower before their jungler responds. Someone said the Great Wall of China is visible from space with the naked eye and has just facts. Messi has won eight million Dora Awards, no other player is close. Trust me, our team is willing the whole tournament this year. This year easy by the way the speed of light is about 300 000 kilometers per second anyway we're Wait, remember to hit that follow button and use code 3410% off.",
+          "segments": [
+            {
+              "audioSeconds": 7.23,
+              "inferenceMs": 706.8000000044703,
+              "text": "Welcome back to the stream everyone we are live did you know that Eiffel Tower is 450 meters tall"
+            },
+            {
+              "audioSeconds": 7.44,
+              "inferenceMs": 803.3000000044703,
+              "text": "Oh, look it up, cat. Honestly this patch is terrible, the developers have no idea what they are doing. I'm going to push"
+            },
+            {
+              "audioSeconds": 10.41,
+              "inferenceMs": 1085.6999999955297,
+              "text": "to push the left lane and take the tower before their jungler responds. Someone said the Great Wall of China is visible from space with the naked eye and has just facts."
+            },
+            {
+              "audioSeconds": 7.26,
+              "inferenceMs": 719.8999999985099,
+              "text": "Messi has won eight million Dora Awards, no other player is close. Trust me, our team is willing the whole tournament this year."
+            },
+            {
+              "audioSeconds": 7.35,
+              "inferenceMs": 709.5999999940395,
+              "text": "This year easy by the way the speed of light is about 300 000 kilometers per second anyway we're"
+            },
+            {
+              "audioSeconds": 4.89,
+              "inferenceMs": 447.6000000014901,
+              "text": "Wait, remember to hit that follow button and use code 3410% off."
+            }
+          ],
+          "numThreads": 1,
+          "crossOriginIsolated": false,
+          "workerProbe": null,
+          "sessionGpu": null,
+          "verdict": {
+            "pass": true,
+            "reason": null
+          }
+        }
+      ],
+      "selected": {
+        "variantId": "wasm-q8",
+        "device": "wasm",
+        "dtype": "q8",
+        "requiresShaderF16": false
+      }
+    },
+    {
+      "modelId": "whisper-base.en",
+      "repo": "onnx-community/whisper-base.en",
+      "gpu": {
+        "webgpuAvailable": true,
+        "kind": "none",
+        "usable": false,
+        "reason": "no-adapter",
+        "error": null,
+        "vendor": "",
+        "architecture": "",
+        "device": "",
+        "description": "",
+        "isFallbackAdapter": false,
+        "shaderF16": false,
+        "features": [],
+        "limits": {},
+        "powerPreference": "high-performance",
+        "label": "No GPU available to the browser",
+        "cacheKey": "none|||||no-f16|high-performance"
+      },
+      "skipped": [
+        {
+          "variantId": "webgpu-mixed",
+          "reason": "no-usable-gpu"
+        },
+        {
+          "variantId": "webgpu-fp32",
+          "reason": "no-usable-gpu"
+        }
+      ],
+      "audio": {
+        "seconds": 42.6949375,
+        "segments": 6,
+        "hasReference": true
+      },
+      "thresholds": {
+        "maxRealTimeFactor": 0.5,
+        "maxWordErrorRate": 0.25
+      },
+      "runs": [
+        {
+          "variantId": "wasm-q8",
+          "device": "wasm",
+          "dtype": "q8",
+          "downloadMb": 77,
+          "wordErrorRate": 0.09448818897637795,
+          "ok": true,
+          "error": null,
+          "loadMs": 3103.2999999970198,
+          "warmupMs": 2426.9000000059605,
+          "inferenceMs": 15051.09999999404,
+          "audioSeconds": 44.580000000000005,
+          "realTimeFactor": 0.3376200089724997,
+          "slowestSegmentRtf": 0.4539877300613497,
+          "text": "Welcome back to the stream everyone, we are live. Did you know the Eiffel Tower is 450 meters tall? Look it up, chat. Honestly this patch is terrible, but developers have no idea what they are doing. I'm going to push. to push the left lane and take the tower before their jungler responds. Someone said the Great Wall of China is visible from space with the naked eye and that just facts. Messy has won 8 Ballon dor rewards, no other player is close. Trust me, our team is winning the whole tournament this year. This year, easy. By the way, a speed of light is about 300,000 km per second. Anyway, Remember to hit that follow button and use code stream for 10% off.",
+          "segments": [
+            {
+              "audioSeconds": 7.23,
+              "inferenceMs": 2499,
+              "text": "Welcome back to the stream everyone, we are live. Did you know the Eiffel Tower is 450 meters tall?"
+            },
+            {
+              "audioSeconds": 7.44,
+              "inferenceMs": 2542.39999999851,
+              "text": "Look it up, chat. Honestly this patch is terrible, but developers have no idea what they are doing. I'm going to push."
+            },
+            {
+              "audioSeconds": 10.41,
+              "inferenceMs": 2824.2999999970198,
+              "text": "to push the left lane and take the tower before their jungler responds. Someone said the Great Wall of China is visible from space with the naked eye and that just facts."
+            },
+            {
+              "audioSeconds": 7.26,
+              "inferenceMs": 2546,
+              "text": "Messy has won 8 Ballon dor rewards, no other player is close. Trust me, our team is winning the whole tournament this year."
+            },
+            {
+              "audioSeconds": 7.35,
+              "inferenceMs": 2419.39999999851,
+              "text": "This year, easy. By the way, a speed of light is about 300,000 km per second. Anyway,"
+            },
+            {
+              "audioSeconds": 4.89,
+              "inferenceMs": 2220,
+              "text": "Remember to hit that follow button and use code stream for 10% off."
+            }
+          ],
+          "numThreads": 1,
+          "crossOriginIsolated": false,
+          "workerProbe": null,
+          "sessionGpu": null,
+          "verdict": {
+            "pass": true,
+            "reason": null
+          }
+        }
+      ],
+      "selected": {
+        "variantId": "wasm-q8",
+        "device": "wasm",
+        "dtype": "q8",
+        "requiresShaderF16": false
+      }
+    },
+    {
+      "modelId": "distil-small.en",
+      "repo": "onnx-community/distil-small.en",
+      "gpu": {
+        "webgpuAvailable": true,
+        "kind": "none",
+        "usable": false,
+        "reason": "no-adapter",
+        "error": null,
+        "vendor": "",
+        "architecture": "",
+        "device": "",
+        "description": "",
+        "isFallbackAdapter": false,
+        "shaderF16": false,
+        "features": [],
+        "limits": {},
+        "powerPreference": "high-performance",
+        "label": "No GPU available to the browser",
+        "cacheKey": "none|||||no-f16|high-performance"
+      },
+      "skipped": [
+        {
+          "variantId": "webgpu-mixed",
+          "reason": "no-usable-gpu"
+        },
+        {
+          "variantId": "webgpu-fp32",
+          "reason": "no-usable-gpu"
+        }
+      ],
+      "audio": {
+        "seconds": 42.6949375,
+        "segments": 6,
+        "hasReference": true
+      },
+      "thresholds": {
+        "maxRealTimeFactor": 0.5,
+        "maxWordErrorRate": 0.25
+      },
+      "runs": [
+        {
+          "variantId": "wasm-q8",
+          "device": "wasm",
+          "dtype": "q8",
+          "downloadMb": 172,
+          "wordErrorRate": 0.11023622047244094,
+          "ok": true,
+          "error": null,
+          "loadMs": 3960.3000000044703,
+          "warmupMs": 6450.39999999851,
+          "inferenceMs": 41021.39999999851,
+          "audioSeconds": 44.580000000000005,
+          "realTimeFactor": 0.9201749663525909,
+          "slowestSegmentRtf": 1.3494478527616505,
+          "text": "Welcome back to the stream, everyone! We are live! Did you know that Eiffel Tower is 450 meters tall? Look it up, chat. Honestly, this patch is terrible. The developers have no idea what they are doing. I'm going to push. to push the left lane and take the tower before their jungler responds. Someone said the great wall of China is visible from space with the naked eye, and that's just facts. Messifas won 8 Ballendor Awards, no other player is close. Trust me, our team is winning the full tournament this. this year easy by the way the speed of light is about 300,000 kilometers per second anyway Remember to it at Fall Buten and use code stream for 10% off.",
+          "segments": [
+            {
+              "audioSeconds": 7.23,
+              "inferenceMs": 6834.29999999702,
+              "text": "Welcome back to the stream, everyone! We are live! Did you know that Eiffel Tower is 450 meters tall?"
+            },
+            {
+              "audioSeconds": 7.44,
+              "inferenceMs": 6869.5,
+              "text": "Look it up, chat. Honestly, this patch is terrible. The developers have no idea what they are doing. I'm going to push."
+            },
+            {
+              "audioSeconds": 10.41,
+              "inferenceMs": 7188.60000000149,
+              "text": "to push the left lane and take the tower before their jungler responds. Someone said the great wall of China is visible from space with the naked eye, and that's just facts."
+            },
+            {
+              "audioSeconds": 7.26,
+              "inferenceMs": 6882.69999999553,
+              "text": "Messifas won 8 Ballendor Awards, no other player is close. Trust me, our team is winning the full tournament this."
+            },
+            {
+              "audioSeconds": 7.35,
+              "inferenceMs": 6647.5,
+              "text": "this year easy by the way the speed of light is about 300,000 kilometers per second anyway"
+            },
+            {
+              "audioSeconds": 4.89,
+              "inferenceMs": 6598.80000000447,
+              "text": "Remember to it at Fall Buten and use code stream for 10% off."
+            }
+          ],
+          "numThreads": 1,
+          "crossOriginIsolated": false,
+          "workerProbe": null,
+          "sessionGpu": null,
+          "verdict": {
+            "pass": false,
+            "reason": "too-slow"
+          }
+        }
+      ],
+      "selected": null
+    }
+  ],
+  "runner": {
+    "label": "cpu-1-thread-fixture",
+    "headless": true,
+    "chromeFlags": [],
+    "isolated": false,
+    "chromeVersion": "Chrome/157.0.8103.50"
+  }
+}

@@ -1,0 +1,299 @@
+{
+  "schema": 1,
+  "environment": {
+    "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.0.0 Safari/537.36",
+    "platform": "Linux",
+    "hardwareConcurrency": 8,
+    "deviceMemoryGb": 32,
+    "crossOriginIsolated": false,
+    "origin": "http:",
+    "timestamp": "2026-11-12T01:30:08.164Z"
+  },
+  "clip": "built-in clip",
+  "options": {
+    "forceFallbackAdapter": false,
+    "allowSoftwareGpu": false,
+    "powerPreference": "high-performance",
+    "numThreads": 1
+  },
+  "models": [
+    {
+      "modelId": "moonshine-base",
+      "repo": "onnx-community/moonshine-base-ONNX",
+      "gpu": {
+        "webgpuAvailable": true,
+        "kind": "none",
+        "usable": false,
+        "reason": "no-adapter",
+        "error": null,
+        "vendor": "",
+        "architecture": "",
+        "device": "",
+        "description": "",
+        "isFallbackAdapter": false,
+        "shaderF16": false,
+        "features": [],
+        "limits": {},
+        "powerPreference": "high-performance",
+        "label": "No GPU available to the browser",
+        "cacheKey": "none|||||no-f16|high-performance"
+      },
+      "skipped": [
+        {
+          "variantId": "webgpu-fp32",
+          "reason": "no-usable-gpu"
+        }
+      ],
+      "audio": {
+        "seconds": 11,
+        "segments": 4,
+        "hasReference": true
+      },
+      "thresholds": {
+        "maxRealTimeFactor": 0.5,
+        "maxWordErrorRate": 0.25
+      },
+      "runs": [
+        {
+          "variantId": "wasm-q8",
+          "device": "wasm",
+          "dtype": "q8",
+          "downloadMb": 63,
+          "wordErrorRate": 0,
+          "ok": true,
+          "error": null,
+          "loadMs": 3348.7999999970198,
+          "warmupMs": 274,
+          "inferenceMs": 818.4000000059605,
+          "audioSeconds": 9.27,
+          "realTimeFactor": 0.08828478964465593,
+          "slowestSegmentRtf": 0.09054054054054055,
+          "text": "And so my fellow Americans. Ask not. What your country can do for you? Ask what you can do for your country.",
+          "segments": [
+            {
+              "audioSeconds": 2.22,
+              "inferenceMs": 201,
+              "text": "And so my fellow Americans."
+            },
+            {
+              "audioSeconds": 1.47,
+              "inferenceMs": 120.90000000596046,
+              "text": "Ask not."
+            },
+            {
+              "audioSeconds": 2.58,
+              "inferenceMs": 233.5,
+              "text": "What your country can do for you?"
+            },
+            {
+              "audioSeconds": 3,
+              "inferenceMs": 263,
+              "text": "Ask what you can do for your country."
+            }
+          ],
+          "numThreads": 1,
+          "crossOriginIsolated": false,
+          "workerProbe": null,
+          "sessionGpu": null,
+          "verdict": {
+            "pass": true,
+            "reason": null
+          }
+        }
+      ],
+      "selected": {
+        "variantId": "wasm-q8",
+        "device": "wasm",
+        "dtype": "q8",
+        "requiresShaderF16": false
+      }
+    },
+    {
+      "modelId": "whisper-base.en",
+      "repo": "onnx-community/whisper-base.en",
+      "gpu": {
+        "webgpuAvailable": true,
+        "kind": "none",
+        "usable": false,
+        "reason": "no-adapter",
+        "error": null,
+        "vendor": "",
+        "architecture": "",
+        "device": "",
+        "description": "",
+        "isFallbackAdapter": false,
+        "shaderF16": false,
+        "features": [],
+        "limits": {},
+        "powerPreference": "high-performance",
+        "label": "No GPU available to the browser",
+        "cacheKey": "none|||||no-f16|high-performance"
+      },
+      "skipped": [
+        {
+          "variantId": "webgpu-mixed",
+          "reason": "no-usable-gpu"
+        },
+        {
+          "variantId": "webgpu-fp32",
+          "reason": "no-usable-gpu"
+        }
+      ],
+      "audio": {
+        "seconds": 11,
+        "segments": 4,
+        "hasReference": true
+      },
+      "thresholds": {
+        "maxRealTimeFactor": 0.5,
+        "maxWordErrorRate": 0.25
+      },
+      "runs": [
+        {
+          "variantId": "wasm-q8",
+          "device": "wasm",
+          "dtype": "q8",
+          "downloadMb": 77,
+          "wordErrorRate": 0,
+          "ok": true,
+          "error": null,
+          "loadMs": 3186.39999999851,
+          "warmupMs": 2422.10000000149,
+          "inferenceMs": 8228.69999999553,
+          "audioSeconds": 9.27,
+          "realTimeFactor": 0.8876699029121391,
+          "slowestSegmentRtf": 1.3489115646248366,
+          "text": "and so my fellow Americans. Ask not! What your country can do for you. Ask what you can do for your country.",
+          "segments": [
+            {
+              "audioSeconds": 2.22,
+              "inferenceMs": 2104.1999999955297,
+              "text": "and so my fellow Americans."
+            },
+            {
+              "audioSeconds": 1.47,
+              "inferenceMs": 1982.8999999985099,
+              "text": "Ask not!"
+            },
+            {
+              "audioSeconds": 2.58,
+              "inferenceMs": 2050.7000000029802,
+              "text": "What your country can do for you."
+            },
+            {
+              "audioSeconds": 3,
+              "inferenceMs": 2090.89999999851,
+              "text": "Ask what you can do for your country."
+            }
+          ],
+          "numThreads": 1,
+          "crossOriginIsolated": false,
+          "workerProbe": null,
+          "sessionGpu": null,
+          "verdict": {
+            "pass": false,
+            "reason": "too-slow"
+          }
+        }
+      ],
+      "selected": null
+    },
+    {
+      "modelId": "distil-small.en",
+      "repo": "onnx-community/distil-small.en",
+      "gpu": {
+        "webgpuAvailable": true,
+        "kind": "none",
+        "usable": false,
+        "reason": "no-adapter",
+        "error": null,
+        "vendor": "",
+        "architecture": "",
+        "device": "",
+        "description": "",
+        "isFallbackAdapter": false,
+        "shaderF16": false,
+        "features": [],
+        "limits": {},
+        "powerPreference": "high-performance",
+        "label": "No GPU available to the browser",
+        "cacheKey": "none|||||no-f16|high-performance"
+      },
+      "skipped": [
+        {
+          "variantId": "webgpu-mixed",
+          "reason": "no-usable-gpu"
+        },
+        {
+          "variantId": "webgpu-fp32",
+          "reason": "no-usable-gpu"
+        }
+      ],
+      "audio": {
+        "seconds": 11,
+        "segments": 4,
+        "hasReference": true
+      },
+      "thresholds": {
+        "maxRealTimeFactor": 0.5,
+        "maxWordErrorRate": 0.25
+      },
+      "runs": [
+        {
+          "variantId": "wasm-q8",
+          "device": "wasm",
+          "dtype": "q8",
+          "downloadMb": 172,
+          "wordErrorRate": 0,
+          "ok": true,
+          "error": null,
+          "loadMs": 4616.10000000149,
+          "warmupMs": 6213,
+          "inferenceMs": 25274.29999999702,
+          "audioSeconds": 9.27,
+          "realTimeFactor": 2.726461704422548,
+          "slowestSegmentRtf": 4.26530612244898,
+          "text": "And so my fellow Americans. Ask not! What your country can do for you? Ask what you can do for your country.",
+          "segments": [
+            {
+              "audioSeconds": 2.22,
+              "inferenceMs": 6290.5,
+              "text": "And so my fellow Americans."
+            },
+            {
+              "audioSeconds": 1.47,
+              "inferenceMs": 6270,
+              "text": "Ask not!"
+            },
+            {
+              "audioSeconds": 2.58,
+              "inferenceMs": 6319.39999999851,
+              "text": "What your country can do for you?"
+            },
+            {
+              "audioSeconds": 3,
+              "inferenceMs": 6394.39999999851,
+              "text": "Ask what you can do for your country."
+            }
+          ],
+          "numThreads": 1,
+          "crossOriginIsolated": false,
+          "workerProbe": null,
+          "sessionGpu": null,
+          "verdict": {
+            "pass": false,
+            "reason": "too-slow"
+          }
+        }
+      ],
+      "selected": null
+    }
+  ],
+  "runner": {
+    "label": "cpu-1-thread-jfk",
+    "headless": true,
+    "chromeFlags": [],
+    "isolated": false,
+    "chromeVersion": "Chrome/157.0.8103.50"
+  }
+}

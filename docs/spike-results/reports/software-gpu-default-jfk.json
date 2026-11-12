@@ -1,0 +1,155 @@
+{
+  "schema": 1,
+  "environment": {
+    "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.0.0 Safari/537.36",
+    "platform": "Linux",
+    "hardwareConcurrency": 8,
+    "deviceMemoryGb": 32,
+    "crossOriginIsolated": true,
+    "origin": "http:",
+    "timestamp": "2026-11-12T01:39:32.063Z"
+  },
+  "clip": "built-in clip",
+  "options": {
+    "forceFallbackAdapter": true,
+    "allowSoftwareGpu": false,
+    "powerPreference": "high-performance",
+    "numThreads": 4
+  },
+  "models": [
+    {
+      "modelId": "whisper-base.en",
+      "repo": "onnx-community/whisper-base.en",
+      "gpu": {
+        "webgpuAvailable": true,
+        "kind": "software",
+        "usable": false,
+        "reason": "software-adapter",
+        "error": null,
+        "vendor": "google",
+        "architecture": "swiftshader",
+        "device": "",
+        "description": "",
+        "isFallbackAdapter": true,
+        "shaderF16": false,
+        "features": [
+          "bgra8unorm-storage",
+          "chromium-experimental-sampling-resource-table",
+          "chromium-experimental-timestamp-query-inside-passes",
+          "clip-distances",
+          "core-features-and-limits",
+          "depth-clip-control",
+          "depth32float-stencil8",
+          "float32-blendable",
+          "float32-filterable",
+          "indirect-first-instance",
+          "rg11b10ufloat-renderable",
+          "subgroup-size-control",
+          "subgroups",
+          "texture-component-swizzle",
+          "texture-compression-astc",
+          "texture-compression-astc-sliced-3d",
+          "texture-compression-bc",
+          "texture-compression-bc-sliced-3d",
+          "texture-compression-etc2",
+          "texture-compression-unaligned",
+          "timestamp-query"
+        ],
+        "limits": {
+          "maxBufferSize": 1073741824,
+          "maxStorageBufferBindingSize": 1073741824,
+          "maxComputeInvocationsPerWorkgroup": 256,
+          "maxComputeWorkgroupStorageSize": 32768,
+          "maxStorageBuffersPerShaderStage": 10
+        },
+        "powerPreference": "high-performance",
+        "label": "google (swiftshader) — software renderer",
+        "cacheKey": "software|google|swiftshader|||no-f16|high-performance"
+      },
+      "skipped": [
+        {
+          "variantId": "webgpu-mixed",
+          "reason": "software-gpu"
+        },
+        {
+          "variantId": "webgpu-fp32",
+          "reason": "software-gpu"
+        }
+      ],
+      "audio": {
+        "seconds": 11,
+        "segments": 4,
+        "hasReference": true
+      },
+      "thresholds": {
+        "maxRealTimeFactor": 0.5,
+        "maxWordErrorRate": 0.25
+      },
+      "runs": [
+        {
+          "variantId": "wasm-q8",
+          "device": "wasm",
+          "dtype": "q8",
+          "downloadMb": 77,
+          "wordErrorRate": 0,
+          "ok": true,
+          "error": null,
+          "loadMs": 3339.804999999702,
+          "warmupMs": 1120.484999999404,
+          "inferenceMs": 4327.109999991953,
+          "audioSeconds": 9.27,
+          "realTimeFactor": 0.46678640776612224,
+          "slowestSegmentRtf": 0.6845102040794026,
+          "text": "and so my fellow Americans. Ask not! What your country can do for you. Ask what you can do for your country.",
+          "segments": [
+            {
+              "audioSeconds": 2.22,
+              "inferenceMs": 1109.1599999964237,
+              "text": "and so my fellow Americans."
+            },
+            {
+              "audioSeconds": 1.47,
+              "inferenceMs": 1006.2299999967217,
+              "text": "Ask not!"
+            },
+            {
+              "audioSeconds": 2.58,
+              "inferenceMs": 1101.1349999979138,
+              "text": "What your country can do for you."
+            },
+            {
+              "audioSeconds": 3,
+              "inferenceMs": 1110.585000000894,
+              "text": "Ask what you can do for your country."
+            }
+          ],
+          "numThreads": 4,
+          "crossOriginIsolated": true,
+          "workerProbe": null,
+          "sessionGpu": null,
+          "verdict": {
+            "pass": true,
+            "reason": null
+          }
+        }
+      ],
+      "selected": {
+        "variantId": "wasm-q8",
+        "device": "wasm",
+        "dtype": "q8",
+        "requiresShaderF16": false
+      }
+    }
+  ],
+  "runner": {
+    "label": "software-gpu-default-jfk",
+    "headless": true,
+    "chromeFlags": [
+      "--enable-features=Vulkan",
+      "--use-angle=vulkan",
+      "--enable-unsafe-webgpu"
+    ],
+    "isolated": true,
+    "chromeVersion": "Chrome/157.0.8103.50"
+  }
+}
