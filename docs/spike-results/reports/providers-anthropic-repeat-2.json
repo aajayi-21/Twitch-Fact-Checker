@@ -1,0 +1,185 @@
+{
+  "schema": 1,
+  "extensionId": "gfgjaloajgbhommfligfaekjnihpdmmo",
+  "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.0.0 Safari/537.36",
+  "timestamp": "2026-11-12T02:45:34.096Z",
+  "providers": [
+    {
+      "providerId": "openrouter",
+      "skipped": "no key supplied"
+    },
+    {
+      "providerId": "anthropic",
+      "models": {
+        "gate": "claude-haiku-5-5",
+        "verify": "claude-haiku-5-5"
+      },
+      "hostPermissionGranted": false,
+      "validateKey": {
+        "ok": true,
+        "ms": 373.6000000014901,
+        "error": null
+      },
+      "wrongKey": {
+        "rejected": true,
+        "kind": "auth",
+        "status": 401
+      },
+      "gate": {
+        "ok": true,
+        "ms": 1268.5,
+        "usage": {
+          "inputTokens": 268,
+          "cachedInputTokens": 2959,
+          "outputTokens": 218,
+          "webSearches": 0,
+          "costUsd": null,
+          "calls": 1
+        },
+        "claims": [
+          {
+            "claim_text": "The Eiffel Tower is 450 meters tall.",
+            "check_worthiness": 0.8,
+            "topic": "other"
+          },
+          {
+            "claim_text": "The Great Wall of China is visible from space with the naked eye.",
+            "check_worthiness": 0.8,
+            "topic": "science_tech"
+          },
+          {
+            "claim_text": "Lionel Messi has won eight Ballon d'Or awards.",
+            "check_worthiness": 0.8,
+            "topic": "sports"
+          },
+          {
+            "claim_text": "The speed of light is about 300,000 kilometers per second.",
+            "check_worthiness": 0.7,
+            "topic": "science_tech"
+          }
+        ],
+        "expectedFound": [
+          "eiffel",
+          "great wall",
+          "ballon",
+          "speed of light"
+        ],
+        "excludedLeaked": []
+      },
+      "verify": [
+        {
+          "claim": "The Eiffel Tower is 450 meters tall.",
+          "expected": "FALSE",
+          "requestedMode": null,
+          "ms": 3827.5999999940395,
+          "ok": true,
+          "mode": "single",
+          "label": "FALSE",
+          "matchesExpected": true,
+          "evidence": "strong",
+          "explanation": "Sources consistently give the Eiffel Tower's total height as about 330 meters (1,083 feet) including its antenna, and about 300 meters for the iron structure alone. Nothing supports 450 meters, so the claim is off by roughly 120 meters.",
+          "sources": [
+            {
+              "url": "https://eiffeltowertravel.com/height-and-facts",
+              "title": "Eiffel Tower Height: 330m (1,083 ft)"
+            },
+            {
+              "url": "https://geographyworlds.com/blog/eiffel-tower-paris-landmark-guide/",
+              "title": "Eiffel Tower Height: 330 Meters Tall"
+            },
+            {
+              "url": "https://heightsimulator.com/en/tools/landmark-height-charts/eiffel-tower",
+              "title": "How Tall Is Eiffel Tower? Height in Meters & Feet"
+            },
+            {
+              "url": "https://theeiffeltower.net/eiffel-tower-height-and-dimensions/",
+              "title": "Eiffel Tower height and dimensions"
+            }
+          ],
+          "usage": {
+            "inputTokens": 8122,
+            "cachedInputTokens": 7238,
+            "outputTokens": 292,
+            "webSearches": 1,
+            "costUsd": null,
+            "calls": 1
+          }
+        },
+        {
+          "claim": "The speed of light is approximately 300,000 kilometers per second.",
+          "expected": "TRUE",
+          "requestedMode": null,
+          "ms": 4553.29999999702,
+          "ok": true,
+          "mode": "single",
+          "label": "TRUE",
+          "matchesExpected": true,
+          "evidence": "strong",
+          "explanation": "The speed of light in a vacuum is exactly 299,792.458 km/s, which is rounded to about 300,000 km/s. Sources including Wikipedia, Live Science and Aeon state this, so the approximation is substantively correct.",
+          "sources": [
+            {
+              "url": "https://en.wikipedia.org/wiki/Speed_of_light",
+              "title": "Speed of light"
+            },
+            {
+              "url": "https://www.livescience.com/space/cosmology/what-is-the-speed-of-light",
+              "title": "What is the speed of light?"
+            },
+            {
+              "url": "https://aeon.co/essays/why-is-the-speed-of-light-the-speed-of-light",
+              "title": "Why is the speed of light the speed of light?"
+            }
+          ],
+          "usage": {
+            "inputTokens": 7806,
+            "cachedInputTokens": 7238,
+            "outputTokens": 415,
+            "webSearches": 1,
+            "costUsd": null,
+            "calls": 1
+          }
+        },
+        {
+          "claim": "Police are arresting protesters at the port of Dover right now.",
+          "expected": "UNVERIFIED",
+          "requestedMode": null,
+          "ms": 1888.1999999955297,
+          "ok": true,
+          "mode": "single",
+          "label": "UNVERIFIED",
+          "matchesExpected": true,
+          "evidence": "none",
+          "explanation": "This claim describes an event happening live at a specific location right now, which published sources cannot settle. No search was needed to reach this verdict.",
+          "sources": [],
+          "usage": {
+            "inputTokens": 94,
+            "cachedInputTokens": 3619,
+            "outputTokens": 80,
+            "webSearches": 0,
+            "costUsd": null,
+            "calls": 1
+          }
+        }
+      ]
+    },
+    {
+      "providerId": "openai",
+      "skipped": "no key supplied"
+    },
+    {
+      "providerId": "gemini",
+      "skipped": "no key supplied"
+    }
+  ],
+  "runner": {
+    "label": "providers-anthropic-repeat-2",
+    "mode": "providers",
+    "manifest": "plain",
+    "headless": true,
+    "chromeFlags": [
+      "--enable-unsafe-extension-debugging",
+      "--allowlisted-extension-id=gfgjaloajgbhommfligfaekjnihpdmmo"
+    ],
+    "chromeVersion": "Chrome/157.0.8103.50"
+  }
+}

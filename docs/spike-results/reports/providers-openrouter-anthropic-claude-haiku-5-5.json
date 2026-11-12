@@ -1,0 +1,218 @@
+{
+  "schema": 1,
+  "extensionId": "gfgjaloajgbhommfligfaekjnihpdmmo",
+  "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.0.0 Safari/537.36",
+  "timestamp": "2026-11-12T02:44:31.989Z",
+  "providers": [
+    {
+      "providerId": "openrouter",
+      "models": {
+        "gate": "anthropic/claude-haiku-5.5",
+        "verify": "anthropic/claude-haiku-5.5"
+      },
+      "hostPermissionGranted": false,
+      "validateKey": {
+        "ok": true,
+        "ms": 89.39999999850988,
+        "error": null
+      },
+      "wrongKey": {
+        "rejected": true,
+        "kind": "auth",
+        "status": 401
+      },
+      "gate": {
+        "ok": true,
+        "ms": 3653,
+        "usage": {
+          "inputTokens": 3228,
+          "cachedInputTokens": 0,
+          "outputTokens": 554,
+          "webSearches": 0,
+          "costUsd": 0.0005998,
+          "calls": 1
+        },
+        "claims": [
+          {
+            "claim_text": "The Eiffel Tower is 450 meters tall.",
+            "check_worthiness": 0.9,
+            "topic": "other"
+          },
+          {
+            "claim_text": "The Great Wall of China is visible from space with the naked eye.",
+            "check_worthiness": 0.7,
+            "topic": "science_tech"
+          },
+          {
+            "claim_text": "Lionel Messi has won eight Ballon d'Or awards.",
+            "check_worthiness": 0.8,
+            "topic": "sports"
+          },
+          {
+            "claim_text": "The speed of light is about 300,000 kilometers per second.",
+            "check_worthiness": 0.5,
+            "topic": "science_tech"
+          }
+        ],
+        "expectedFound": [
+          "eiffel",
+          "great wall",
+          "ballon",
+          "speed of light"
+        ],
+        "excludedLeaked": []
+      },
+      "verify": [
+        {
+          "claim": "The Eiffel Tower is 450 meters tall.",
+          "expected": "FALSE",
+          "requestedMode": null,
+          "ms": 2152.5,
+          "ok": true,
+          "mode": "single",
+          "label": "FALSE",
+          "matchesExpected": true,
+          "evidence": "strong",
+          "explanation": "Multiple official and encyclopedic sources put the Eiffel Tower's current height at 330 meters (1,083 feet) including its antenna, with 300 meters (984 feet) as the architectural height. Nothing in the results supports 450 meters, so the claim is directly refuted.",
+          "sources": [
+            {
+              "url": "https://www.toureiffel.paris/en/the-monument/key-figures",
+              "title": "Eiffel Tower information : facts, height in feet, weight, ..."
+            },
+            {
+              "url": "https://en.wikipedia.org/wiki/Eiffel_Tower",
+              "title": "Eiffel Tower"
+            },
+            {
+              "url": "https://www.toureiffel.paris/en/news/history-and-culture/300-330-meters-story-towers-height",
+              "title": "From 300 to 330 meters : the story of the Tower’s height - The Eiffel Tower"
+            },
+            {
+              "url": "https://www.toureiffel.paris/en/news/events/eiffel-tower-grows-330-meters-tall",
+              "title": "The Eiffel Tower grows again : 330 meters high - The Eiffel Tower"
+            },
+            {
+              "url": "https://www.toureiffel.paris/en/news/history-and-culture/15-essential-things-know-about-eiffel-tower",
+              "title": "15 essential things to know about the Eiffel Tower"
+            }
+          ],
+          "usage": {
+            "inputTokens": 4260,
+            "cachedInputTokens": 0,
+            "outputTokens": 121,
+            "webSearches": 1,
+            "costUsd": 0.0074865,
+            "calls": 1
+          }
+        },
+        {
+          "claim": "The speed of light is approximately 300,000 kilometers per second.",
+          "expected": "TRUE",
+          "requestedMode": null,
+          "ms": 3597.60000000149,
+          "ok": true,
+          "mode": "single",
+          "label": "TRUE",
+          "matchesExpected": true,
+          "evidence": "strong",
+          "explanation": "Multiple reputable sources (NASA, Live Science, Cool Cosmos, Hamilton Astronomical Society) state that light travels at about 300,000 kilometers per second in a vacuum, with the exact defined value being 299,792.458 km/s. The claim's approximate figure matches this substance, so it is confirmed.",
+          "sources": [
+            {
+              "url": "https://coolcosmos.ipac.caltech.edu/ask/297-What-is-a-light-year-",
+              "title": "What is a light-year? | Cool Cosmos"
+            },
+            {
+              "url": "https://www.livescience.com/space/cosmology/what-is-the-speed-of-light",
+              "title": "What is the speed of light? | Live Science"
+            },
+            {
+              "url": "https://www.has.org.nz/article-speed-of-light",
+              "title": "Article - Speed of Light — Hamilton Astronomical Society"
+            },
+            {
+              "url": "https://chandra.harvard.edu/graphics/resources/handouts/lithos/light_handout_4page.pdf",
+              "title": "Light in the Universe"
+            },
+            {
+              "url": "https://aeon.co/essays/why-is-the-speed-of-light-the-speed-of-light",
+              "title": "Light travels at around 300,000 km per second. Why not faster? Why not slower? A new theory inches us closer to an answer"
+            }
+          ],
+          "usage": {
+            "inputTokens": 3403,
+            "cachedInputTokens": 0,
+            "outputTokens": 137,
+            "webSearches": 1,
+            "costUsd": 0.0074088,
+            "calls": 1
+          }
+        },
+        {
+          "claim": "Police are arresting protesters at the port of Dover right now.",
+          "expected": "UNVERIFIED",
+          "requestedMode": null,
+          "ms": 1733.1000000014901,
+          "ok": true,
+          "mode": "single",
+          "label": "UNVERIFIED",
+          "matchesExpected": true,
+          "evidence": "none",
+          "explanation": "The claim describes an arrest happening live at Dover right now, which published reports cannot confirm. The retrieved results say the Dover protest on 5 September 2026 led to no arrests and that protesters dispersed by midday, but that concerns a past event and does not settle what is happening now.",
+          "sources": [
+            {
+              "url": "https://www.bbc.co.uk/news/articles/cgk53rvydx5o",
+              "title": "Kent Police defend response to Port of Dover protest - BBC News"
+            },
+            {
+              "url": "https://www.bbc.co.uk/news/live/cmwyzxlzxpzgt",
+              "title": "Port of Dover delays: Disruption as masked 'stop the boats' protesters block roads - BBC News"
+            },
+            {
+              "url": "https://www.bbc.com/news/articles/cz0zymj93rno",
+              "title": "Kent Police warned of Dover protests the day before, force says"
+            },
+            {
+              "url": "https://www.bbc.com/news/articles/cy8znyzgkjjo",
+              "title": "Masked protesters block access at Port of Dover"
+            },
+            {
+              "url": "https://www.theguardian.com/uk-news/2026/sep/08/far-right-port-protests-police-intelligence-gathering-dover-portsmouth",
+              "title": "Far-right port protests: police told to improve intelligence gathering | Police | The Guardian"
+            }
+          ],
+          "usage": {
+            "inputTokens": 4816,
+            "cachedInputTokens": 0,
+            "outputTokens": 122,
+            "webSearches": 1,
+            "costUsd": 0.0075426,
+            "calls": 1
+          }
+        }
+      ]
+    },
+    {
+      "providerId": "anthropic",
+      "skipped": "no key supplied"
+    },
+    {
+      "providerId": "openai",
+      "skipped": "no key supplied"
+    },
+    {
+      "providerId": "gemini",
+      "skipped": "no key supplied"
+    }
+  ],
+  "runner": {
+    "label": "providers-openrouter-anthropic-claude-haiku-5-5",
+    "mode": "providers",
+    "manifest": "plain",
+    "headless": true,
+    "chromeFlags": [
+      "--enable-unsafe-extension-debugging",
+      "--allowlisted-extension-id=gfgjaloajgbhommfligfaekjnihpdmmo"
+    ],
+    "chromeVersion": "Chrome/157.0.8103.50"
+  }
+}

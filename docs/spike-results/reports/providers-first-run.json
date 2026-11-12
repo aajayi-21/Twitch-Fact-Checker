@@ -1,0 +1,246 @@
+{
+  "schema": 1,
+  "extensionId": "gfgjaloajgbhommfligfaekjnihpdmmo",
+  "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.0.0 Safari/537.36",
+  "timestamp": "2026-11-12T02:43:49.457Z",
+  "providers": [
+    {
+      "providerId": "openrouter",
+      "models": {
+        "gate": "inception/mercury-2.5-preview",
+        "verify": "inception/mercury-2.5-preview"
+      },
+      "hostPermissionGranted": false,
+      "validateKey": {
+        "ok": true,
+        "ms": 501.70000000298023,
+        "error": null
+      },
+      "wrongKey": {
+        "rejected": true,
+        "kind": "auth",
+        "status": 401
+      },
+      "gate": {
+        "ok": false,
+        "error": {
+          "kind": "bad_request",
+          "message": "inception/mercury-2.5-preview is no longer available on OpenRouter: no provider serves this model anymore. See available models at https://openrouter.ai/models",
+          "status": 404
+        },
+        "ms": 56.20000000298023
+      },
+      "verify": [
+        {
+          "claim": "The Eiffel Tower is 450 meters tall.",
+          "expected": "FALSE",
+          "requestedMode": null,
+          "ms": 37.5,
+          "ok": false,
+          "error": {
+            "kind": "bad_request",
+            "message": "inception/mercury-2.5-preview is no longer available on OpenRouter: no provider serves this model anymore. See available models at https://openrouter.ai/models",
+            "status": 404
+          }
+        },
+        {
+          "claim": "The speed of light is approximately 300,000 kilometers per second.",
+          "expected": "TRUE",
+          "requestedMode": null,
+          "ms": 31.80000000447035,
+          "ok": false,
+          "error": {
+            "kind": "bad_request",
+            "message": "inception/mercury-2.5-preview is no longer available on OpenRouter: no provider serves this model anymore. See available models at https://openrouter.ai/models",
+            "status": 404
+          }
+        },
+        {
+          "claim": "Police are arresting protesters at the port of Dover right now.",
+          "expected": "UNVERIFIED",
+          "requestedMode": null,
+          "ms": 40.599999994039536,
+          "ok": false,
+          "error": {
+            "kind": "bad_request",
+            "message": "inception/mercury-2.5-preview is no longer available on OpenRouter: no provider serves this model anymore. See available models at https://openrouter.ai/models",
+            "status": 404
+          }
+        }
+      ]
+    },
+    {
+      "providerId": "anthropic",
+      "models": {
+        "gate": "claude-haiku-5-5",
+        "verify": "claude-haiku-5-5"
+      },
+      "hostPermissionGranted": false,
+      "validateKey": {
+        "ok": true,
+        "ms": 352.30000000447035,
+        "error": null
+      },
+      "wrongKey": {
+        "rejected": true,
+        "kind": "auth",
+        "status": 401
+      },
+      "gate": {
+        "ok": true,
+        "ms": 1645.9000000059605,
+        "usage": {
+          "inputTokens": 3227,
+          "cachedInputTokens": 0,
+          "outputTokens": 218,
+          "webSearches": 0,
+          "costUsd": null,
+          "calls": 1
+        },
+        "claims": [
+          {
+            "claim_text": "The Eiffel Tower is 450 meters tall.",
+            "check_worthiness": 0.7,
+            "topic": "other"
+          },
+          {
+            "claim_text": "The Great Wall of China is visible from space with the naked eye.",
+            "check_worthiness": 0.8,
+            "topic": "science_tech"
+          },
+          {
+            "claim_text": "Lionel Messi has won eight Ballon d'Or awards.",
+            "check_worthiness": 0.8,
+            "topic": "sports"
+          },
+          {
+            "claim_text": "The speed of light is about 300,000 kilometers per second.",
+            "check_worthiness": 0.6,
+            "topic": "science_tech"
+          }
+        ],
+        "expectedFound": [
+          "eiffel",
+          "great wall",
+          "ballon",
+          "speed of light"
+        ],
+        "excludedLeaked": []
+      },
+      "verify": [
+        {
+          "claim": "The Eiffel Tower is 450 meters tall.",
+          "expected": "FALSE",
+          "requestedMode": null,
+          "ms": 3791,
+          "ok": true,
+          "mode": "single",
+          "label": "FALSE",
+          "matchesExpected": true,
+          "evidence": "strong",
+          "explanation": "Multiple sources give the Eiffel Tower's total height as about 330 meters (1,083 feet) including its antenna, and about 300 meters for the iron structure alone. Nothing reports 450 meters, so the claim is clearly wrong.",
+          "sources": [
+            {
+              "url": "https://heightprofiles.com/eiffel-tower-height",
+              "title": "Eiffel Tower Height"
+            },
+            {
+              "url": "https://eiffeltowertravel.com/height-and-facts",
+              "title": "Eiffel Tower Height: 330m (1,083 ft)"
+            },
+            {
+              "url": "https://lesinvalides.com/en/eiffel-tower-height/",
+              "title": "Eiffel Tower height in meters and key figures - Les Invalides"
+            },
+            {
+              "url": "https://geographyworlds.com/blog/eiffel-tower-paris-landmark-guide/",
+              "title": "Eiffel Tower Height: 330 Meters Tall"
+            }
+          ],
+          "usage": {
+            "inputTokens": 11866,
+            "cachedInputTokens": 3619,
+            "outputTokens": 386,
+            "webSearches": 1,
+            "costUsd": null,
+            "calls": 1
+          }
+        },
+        {
+          "claim": "The speed of light is approximately 300,000 kilometers per second.",
+          "expected": "TRUE",
+          "requestedMode": null,
+          "ms": 4469,
+          "ok": true,
+          "mode": "single",
+          "label": "TRUE",
+          "matchesExpected": true,
+          "evidence": "strong",
+          "explanation": "Sources agree light travels exactly 299,792,458 m/s in a vacuum, which is about 300,000 km/s (299,792.458 km/s). The approximate figure in the claim is correct.",
+          "sources": [
+            {
+              "url": "https://en.wikipedia.org/wiki/Speed_of_light",
+              "title": "Speed of light"
+            },
+            {
+              "url": "https://physicstribune.com/constants/speed-of-light/",
+              "title": "Speed of Light: Exact Value, Units, Formula & History"
+            },
+            {
+              "url": "https://www.physicsoftheuniverse.com/how-fast-does-light-travel.html",
+              "title": "How fast does light travel?"
+            }
+          ],
+          "usage": {
+            "inputTokens": 7596,
+            "cachedInputTokens": 7238,
+            "outputTokens": 370,
+            "webSearches": 1,
+            "costUsd": null,
+            "calls": 1
+          }
+        },
+        {
+          "claim": "Police are arresting protesters at the port of Dover right now.",
+          "expected": "UNVERIFIED",
+          "requestedMode": null,
+          "ms": 1027.8999999985099,
+          "ok": true,
+          "mode": "single",
+          "label": "UNVERIFIED",
+          "matchesExpected": true,
+          "evidence": "none",
+          "explanation": "This claim describes an event happening live at a specific location right now, which published sources cannot settle. No search was needed to reach this verdict.",
+          "sources": [],
+          "usage": {
+            "inputTokens": 94,
+            "cachedInputTokens": 3619,
+            "outputTokens": 80,
+            "webSearches": 0,
+            "costUsd": null,
+            "calls": 1
+          }
+        }
+      ]
+    },
+    {
+      "providerId": "openai",
+      "skipped": "no key supplied"
+    },
+    {
+      "providerId": "gemini",
+      "skipped": "no key supplied"
+    }
+  ],
+  "runner": {
+    "label": "providers-plain",
+    "mode": "providers",
+    "manifest": "plain",
+    "headless": true,
+    "chromeFlags": [
+      "--enable-unsafe-extension-debugging",
+      "--allowlisted-extension-id=gfgjaloajgbhommfligfaekjnihpdmmo"
+    ],
+    "chromeVersion": "Chrome/157.0.8103.50"
+  }
+}

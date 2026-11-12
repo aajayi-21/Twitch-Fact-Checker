@@ -117,6 +117,12 @@ rejection risk on its own (§10.6).
 
 ## 3. Provider connections (API keys only)
 
+> **Status — spike S2 partly done, 2026-11-11.** The four provider modules exist
+> (`extension/engine/providers/`). Anthropic and OpenRouter were tested live from inside
+> the extension and passed every check; OpenAI and Gemini are unit-tested only, because
+> no keys were available. Results:
+> [`spike-results/provider-calls.md`](spike-results/provider-calls.md).
+
 ### 3.1 Summary
 
 Every provider follows the same four-step flow: **paste key → free validation call →
@@ -124,12 +130,12 @@ grounded test call → store**. The test call matters: a key can be valid and st
 to verify claims (no billing enabled, search not available on the plan), and the viewer
 should learn that during setup, not on their first stream.
 
-| Provider | Key header | Free validation call | Web-grounded verify | Hosted speech fallback | Status |
+| Provider | Key header | Free validation call | Web-grounded verify | Hosted speech fallback | Status after S2 |
 |---|---|---|---|---|---|
-| OpenAI | `Authorization: Bearer` | `GET /v1/models` | Responses API, `web_search` tool | ✅ transcription API | New |
-| Anthropic | `x-api-key` | `GET /v1/models` | `web_search` server tool | ❌ | Backend exists; JS port |
-| Gemini | `x-goog-api-key` | `GET /v1beta/models` | `google_search` tool | ✅ audio input | Removed from backend; new JS provider |
-| OpenRouter | `Authorization: Bearer` | `GET /api/v1/key` | `web` plugin | treat as ❌ | Backend exists; JS port |
+| OpenAI | `Authorization: Bearer` | `GET /v1/models` | Responses API, `web_search` tool | ✅ transcription API | Module written; **no live call yet** |
+| Anthropic | `x-api-key` | `GET /v1/models` | `web_search` server tool | ❌ | **Passed live** |
+| Gemini | `x-goog-api-key` | `GET /v1beta/models` | `google_search` tool | ✅ audio input | Module written; **no live call yet** |
+| OpenRouter | `Authorization: Bearer` | `GET /api/v1/key` | `web` plugin | treat as ❌ | **Passed live** with three model families |
 
 All four expose the same interface to the pipeline, mirroring `backend/app/llm_provider.py`:
 
@@ -169,7 +175,8 @@ populate the picker from each provider's live model list, and let the viewer ove
   server-side `web_search` tool for grounding — exactly what `llm_anthropic.py` does.
 - **Browser detail:** Anthropic rejects requests carrying a browser `Origin` unless the
   request sets `anthropic-dangerous-direct-browser-access: true`. That header exists
-  precisely for bring-your-own-key apps; set it on every call.
+  precisely for bring-your-own-key apps; set it on every call. Confirmed in S2, along
+  with prompt caching working from the extension.
 - **Default model:** Claude Haiku 5.5 (`claude-haiku-5-5`), matching the backend.
 - **No speech fallback** — Anthropic has no transcription API, so an Anthropic-only
   viewer depends on local speech-to-text.
@@ -214,7 +221,11 @@ the API has moved since — treat them as notes, not code to restore.
   Verification needs a few dollars of credit for web search — check and say so.
 - **Why it earns a "good default" badge in onboarding:** one key reaches OpenAI,
   Anthropic and Google models, and OpenRouter reports the exact cost of every request
-  (§7), so the usage screen is precise rather than estimated.
+  (§7), so the usage screen is precise rather than estimated. S2 confirmed all three
+  families work through it, at about $0.0075 per fact-check.
+- **The backend's default model there is gone.** `inception/mercury-2.5-preview` was
+  withdrawn from OpenRouter; the backend and the extension both need a new default
+  (candidates and timings are in the S2 results).
 
 ### 3.6 Credential storage rules
 
@@ -726,17 +737,15 @@ Firefox needs one new key for AMO: `browser_specific_settings.gecko
 | `activeTab` | required | Read the stream tab's URL and title on the user's click |
 | `alarms` | required | Retention sweep and budget resets |
 | Stream-site content scripts | required | Draw the verdict overlay on the four supported sites |
-| `https://api.openai.com/*` | **optional**, requested when that key is added | Send claim text to the provider the user chose |
-| `https://api.anthropic.com/*` | **optional**, same | same |
-| `https://generativelanguage.googleapis.com/*` | **optional**, same | same |
-| `https://openrouter.ai/*` | **optional**, same | same |
+| `https://generativelanguage.googleapis.com/*` | **optional**, requested when a Gemini key is added | Send claim text to Gemini, which blocks cross-origin requests otherwise |
+| Anthropic, OpenRouter, OpenAI | **none needed** | S2: all three answer cross-origin requests from the extension (OpenAI confirmed for the key check only) |
 | Model host | **optional**, requested at model download | Fetch speech-model weights |
 | `http://127.0.0.1/*`, `http://localhost/*` (+ ws) | **optional**, requested when the user turns on the companion | Talk to software on the user's own machine |
 
-Moving every network host to `optional_host_permissions` means the install prompt
+Keeping every network host out of the required permissions means the install prompt
 mentions only the four stream sites, and each further grant happens at the moment its
 purpose is obvious. Narrow host lists also shorten review; broad patterns lengthen it.
-A viewer who only ever adds one key only ever grants one provider host.
+After S2, most viewers will never see a provider permission prompt at all.
 
 ### 10.4 Listing and privacy checklist
 
@@ -814,7 +823,7 @@ A reviewer has no API key. Two measures:
 | # | Question | Pass condition |
 |---|---|---|
 | S1 ✅ | Can a viewer's GPU transcribe live in the browser? | **Passed 2026-11-11** on Intel Arc, plus simulated no-GPU / software-GPU / single-thread machines ([results](spike-results/stt-gpu-benchmark.md)). Still open: reports from NVIDIA, AMD and Apple GPUs |
-| S2 | Does each provider return a grounded, strict-JSON verdict from an extension context? | Gate + verify working for all four from the offscreen document. **For Gemini, decide one call or two** |
+| S2 ◐ | Does each provider return a grounded, strict-JSON verdict from an extension context? | **Anthropic and OpenRouter passed 2026-11-11** ([results](spike-results/provider-calls.md)). Open: one live run each for OpenAI and Gemini, which also settles Gemini's one call or two |
 | S3 ✅ | Does the speech worker live happily in the offscreen document? | **Passed 2026-11-11** ([results](spike-results/stt-in-extension.md)): live capture + transcription on CPU and GPU with no audio lost; 643 MB model download works; isolation works but is not needed |
 
 **Phase 1 — app shell on the existing backend (1–2 weeks).** New-tab app, open on
@@ -861,7 +870,9 @@ cheap, and the first review is the slow one.
 | A GPU runs a model fast but wrong | high | Seen twice in S1 on 16-bit paths. Mandatory self-test that checks correctness before speed; verdict cached per GPU, model and browser version |
 | Only one real GPU has been tested | high | Benchmark page and runner produce a shareable report; collect NVIDIA, AMD and Apple results before Phase 3 ends |
 | WebGPU missing or flaky on a viewer's machine (Linux rollout, old drivers) | medium | Probe every session, software-adapter check, `device.lost` recovery, crash guard, CPU fallback |
-| Gemini grounded JSON unreliable | medium | Two-call verify decided in S2; cost reflected in estimates |
+| Gemini grounded JSON unreliable | medium | Fallback chain is built and reports which path it took; still needs a live run |
+| OpenAI and Gemini modules have never made a real call | medium | One command once keys exist; do it before Phase 4 builds on them |
+| A provider withdraws the default model (happened: OpenRouter's Mercury) | medium | Check the model catalogue before use; clear "model unavailable" message; defaults easy to change |
 | Free-tier or unfunded keys that validate but cannot verify | medium | Grounded test call during setup with a specific fix-it message per provider |
 | Two pipelines drift (Python vs JS) | high | Single-sourced prompts and tier table; shared golden fixtures; v1 scope limited to gate + verify |
 | Store rejection over `tabCapture` + audio | medium | Wizard disclosure, optional host permissions, demo mode, precise justifications |
