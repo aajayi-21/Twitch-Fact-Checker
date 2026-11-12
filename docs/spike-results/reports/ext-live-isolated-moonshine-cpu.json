@@ -1,0 +1,167 @@
+{
+  "schema": 1,
+  "modelId": "moonshine-base",
+  "variantId": "wasm-q8",
+  "device": "wasm",
+  "extensionId": "cofmfognnalfgidilcalmdobijokmgoo",
+  "controllerIsolated": true,
+  "environment": {
+    "crossOriginIsolated": true,
+    "hardwareConcurrency": 8,
+    "gpu": {
+      "webgpuAvailable": true,
+      "kind": "hardware",
+      "usable": true,
+      "reason": null,
+      "error": null,
+      "vendor": "intel",
+      "architecture": "xe-2lpg",
+      "device": "",
+      "description": "",
+      "isFallbackAdapter": false,
+      "shaderF16": true,
+      "features": [
+        "atomic-vec2u-min-max",
+        "bgra8unorm-storage",
+        "chromium-experimental-multi-draw-indirect",
+        "chromium-experimental-sampling-resource-table",
+        "chromium-experimental-subgroup-matrix",
+        "chromium-experimental-timestamp-query-inside-passes",
+        "clip-distances",
+        "core-features-and-limits",
+        "depth-clip-control",
+        "depth32float-stencil8",
+        "dual-source-blending",
+        "float32-blendable",
+        "float32-filterable",
+        "indirect-first-instance",
+        "primitive-index",
+        "rg11b10ufloat-renderable",
+        "shader-f16",
+        "subgroup-size-control",
+        "subgroups",
+        "texture-component-swizzle",
+        "texture-compression-bc",
+        "texture-compression-bc-sliced-3d",
+        "texture-compression-etc2",
+        "texture-compression-unaligned",
+        "texture-formats-tier1",
+        "texture-formats-tier2",
+        "timestamp-query"
+      ],
+      "limits": {
+        "maxBufferSize": 4294967292,
+        "maxStorageBufferBindingSize": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupStorageSize": 49152,
+        "maxStorageBuffersPerShaderStage": 16
+      },
+      "powerPreference": "high-performance",
+      "label": "intel (xe-2lpg)"
+    },
+    "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.0.0 Safari/537.36"
+  },
+  "load": {
+    "loadMs": 3381.795000001788,
+    "warmupMs": 107.05499999970198,
+    "numThreads": 4,
+    "crossOriginIsolated": true,
+    "workerProbe": null,
+    "sessionGpu": null
+  },
+  "capture": {
+    "capturedSeconds": 44.91892000000179,
+    "receivedSeconds": 44.5,
+    "maxFrameGapMs": 258.79500000178814,
+    "lateFrames": 0,
+    "endReason": null
+  },
+  "stats": {
+    "framesReceived": 178,
+    "samplesReceived": 712000,
+    "segmentsClosed": 6,
+    "segmentsTranscribed": 6,
+    "segmentsDropped": 0,
+    "droppedSeconds": 0,
+    "utteranceErrors": 0,
+    "inferenceMs": 2481.7150000035763,
+    "transcribedSeconds": 42.69,
+    "maxLagMs": 551.3000000044703,
+    "maxBacklogS": 9.990000000000002
+  },
+  "realTimeFactor": 0.05813340360748598,
+  "medianLagMs": 437.5899999961257,
+  "maxLagMs": 551.3000000044703,
+  "wordErrorRate": 0.16535433070866143,
+  "text": "Welcome back to the stream everyone we are live did you know that Eiffel Tower is 450 meters So, look it up, cat. Honestly this patch is terrible, but the maleppers have no idea what they are doing. I'm going to push the left lane and take the tower before their jungler responds someone said the great wall of china is visible from space with the naked eye And at just facts, Mercy has won eight million Dora Awards. No other player is close. Trust me, our team is willing to hold tournament this year, easy. By the way, the speed on light is about 300,000 kilometers per second. Anyway, remember to hit that follow button. 10% and you scold 3%%",
+  "transcripts": [
+    {
+      "text": "Welcome back to the stream everyone we are live did you know that Eiffel Tower is 450 meters",
+      "startS": 0.18,
+      "endS": 6.989999999999999,
+      "inferenceMs": 417.38499999791384,
+      "waitMs": 0.12000000476837158,
+      "lagMs": 418.41499999910593,
+      "forced": true
+    },
+    {
+      "text": "So, look it up, cat. Honestly this patch is terrible, but the maleppers have no idea what they are doing.",
+      "startS": 6.989999999999999,
+      "endS": 13.68,
+      "inferenceMs": 395.8850000053644,
+      "waitMs": 0.015000000596046448,
+      "lagMs": 396.25999999791384,
+      "forced": true
+    },
+    {
+      "text": "I'm going to push the left lane and take the tower before their jungler responds someone said the great wall of china is visible from space with the naked eye",
+      "startS": 13.68,
+      "endS": 22.68,
+      "inferenceMs": 549.2250000014901,
+      "waitMs": 0.005000002682209015,
+      "lagMs": 551.3000000044703,
+      "forced": true
+    },
+    {
+      "text": "And at just facts, Mercy has won eight million Dora Awards. No other player is close. Trust me, our team is willing to hold tournament this year, easy.",
+      "startS": 22.68,
+      "endS": 32.67,
+      "inferenceMs": 547.890000000596,
+      "waitMs": 0.01000000536441803,
+      "lagMs": 548.2550000026822,
+      "forced": true
+    },
+    {
+      "text": "By the way, the speed on light is about 300,000 kilometers per second. Anyway, remember to hit that follow button.",
+      "startS": 32.67,
+      "endS": 39.99,
+      "inferenceMs": 437.2550000026822,
+      "waitMs": 0.009999997913837433,
+      "lagMs": 437.5899999961257,
+      "forced": true
+    },
+    {
+      "text": "10% and you scold 3%%",
+      "startS": 39.99,
+      "endS": 42.87,
+      "inferenceMs": 134.07499999552965,
+      "waitMs": 0.005000002682209015,
+      "lagMs": 134.3150000050664,
+      "forced": false
+    }
+  ],
+  "runner": {
+    "label": "live-isolated-moonshine-cpu",
+    "mode": "live",
+    "manifest": "isolated",
+    "headless": true,
+    "chromeFlags": [
+      "--enable-unsafe-extension-debugging",
+      "--allowlisted-extension-id=cofmfognnalfgidilcalmdobijokmgoo",
+      "--enable-features=Vulkan",
+      "--use-angle=vulkan",
+      "--enable-unsafe-webgpu"
+    ],
+    "chromeVersion": "Chrome/157.0.8103.50"
+  }
+}

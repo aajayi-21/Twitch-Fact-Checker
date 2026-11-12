@@ -1,0 +1,222 @@
+{
+  "schema": 1,
+  "modelId": "moonshine-base",
+  "variantId": "webgpu-fp32",
+  "device": "webgpu",
+  "extensionId": "bkdmidiaaipkifgbgdcbeagfnefkecbo",
+  "controllerIsolated": false,
+  "environment": {
+    "crossOriginIsolated": false,
+    "hardwareConcurrency": 8,
+    "gpu": {
+      "webgpuAvailable": true,
+      "kind": "hardware",
+      "usable": true,
+      "reason": null,
+      "error": null,
+      "vendor": "intel",
+      "architecture": "xe-2lpg",
+      "device": "",
+      "description": "",
+      "isFallbackAdapter": false,
+      "shaderF16": true,
+      "features": [
+        "atomic-vec2u-min-max",
+        "bgra8unorm-storage",
+        "chromium-experimental-multi-draw-indirect",
+        "chromium-experimental-sampling-resource-table",
+        "chromium-experimental-subgroup-matrix",
+        "chromium-experimental-timestamp-query-inside-passes",
+        "clip-distances",
+        "core-features-and-limits",
+        "depth-clip-control",
+        "depth32float-stencil8",
+        "dual-source-blending",
+        "float32-blendable",
+        "float32-filterable",
+        "indirect-first-instance",
+        "primitive-index",
+        "rg11b10ufloat-renderable",
+        "shader-f16",
+        "subgroup-size-control",
+        "subgroups",
+        "texture-component-swizzle",
+        "texture-compression-bc",
+        "texture-compression-bc-sliced-3d",
+        "texture-compression-etc2",
+        "texture-compression-unaligned",
+        "texture-formats-tier1",
+        "texture-formats-tier2",
+        "timestamp-query"
+      ],
+      "limits": {
+        "maxBufferSize": 4294967292,
+        "maxStorageBufferBindingSize": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupStorageSize": 49152,
+        "maxStorageBuffersPerShaderStage": 16
+      },
+      "powerPreference": "high-performance",
+      "label": "intel (xe-2lpg)"
+    },
+    "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.0.0 Safari/537.36"
+  },
+  "load": {
+    "loadMs": 2003.5,
+    "warmupMs": 267.6000000014901,
+    "numThreads": 1,
+    "crossOriginIsolated": false,
+    "workerProbe": {
+      "webgpuAvailable": true,
+      "kind": "hardware",
+      "usable": true,
+      "reason": null,
+      "error": null,
+      "vendor": "intel",
+      "architecture": "xe-2lpg",
+      "device": "",
+      "description": "",
+      "isFallbackAdapter": false,
+      "shaderF16": true,
+      "features": [
+        "atomic-vec2u-min-max",
+        "bgra8unorm-storage",
+        "chromium-experimental-multi-draw-indirect",
+        "chromium-experimental-sampling-resource-table",
+        "chromium-experimental-subgroup-matrix",
+        "chromium-experimental-timestamp-query-inside-passes",
+        "clip-distances",
+        "core-features-and-limits",
+        "depth-clip-control",
+        "depth32float-stencil8",
+        "dual-source-blending",
+        "float32-blendable",
+        "float32-filterable",
+        "indirect-first-instance",
+        "primitive-index",
+        "rg11b10ufloat-renderable",
+        "shader-f16",
+        "subgroup-size-control",
+        "subgroups",
+        "texture-component-swizzle",
+        "texture-compression-bc",
+        "texture-compression-bc-sliced-3d",
+        "texture-compression-etc2",
+        "texture-compression-unaligned",
+        "texture-formats-tier1",
+        "texture-formats-tier2",
+        "timestamp-query"
+      ],
+      "limits": {
+        "maxBufferSize": 4294967292,
+        "maxStorageBufferBindingSize": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupStorageSize": 49152,
+        "maxStorageBuffersPerShaderStage": 16
+      },
+      "powerPreference": "high-performance"
+    },
+    "sessionGpu": {
+      "vendor": "intel",
+      "architecture": "xe-2lpg",
+      "description": "",
+      "isFallbackAdapter": false,
+      "shaderF16": true
+    }
+  },
+  "capture": {
+    "capturedSeconds": 45.0825,
+    "receivedSeconds": 45,
+    "maxFrameGapMs": 258.6000000014901,
+    "lateFrames": 0,
+    "endReason": null
+  },
+  "stats": {
+    "framesReceived": 180,
+    "samplesReceived": 720000,
+    "segmentsClosed": 6,
+    "segmentsTranscribed": 6,
+    "segmentsDropped": 0,
+    "droppedSeconds": 0,
+    "utteranceErrors": 0,
+    "inferenceMs": 4339.299999989569,
+    "transcribedSeconds": 42.690000000000005,
+    "maxLagMs": 869,
+    "maxBacklogS": 8.429999999999998
+  },
+  "realTimeFactor": 0.10164675568024288,
+  "medianLagMs": 711.7000000029802,
+  "maxLagMs": 869,
+  "wordErrorRate": 0.11811023622047244,
+  "text": "Welcome back to the stream everyone we are live did you know the Eiffel Tower is 450 meters Tall, look it up, cat. Honestly this patch is terrible, the developers have no idea what they are doing. I'm going to push the left lane and take the tower before their jungler responds someone said the great wall of chai is visible from space with the nail Goodbye and that's just facts. Mercy has won 8 million or awards, no other player is close. Trust me. Our team is willing to hold tournament this year easy by the way the speed of light is about 300 000 kilometers per second Anyway, remember to hit that follow button and use code TREME410%OFF.",
+  "transcripts": [
+    {
+      "text": "Welcome back to the stream everyone we are live did you know the Eiffel Tower is 450 meters",
+      "startS": 0.39,
+      "endS": 7.2299999999999995,
+      "inferenceMs": 645.9000000059605,
+      "waitMs": 0,
+      "lagMs": 646.5,
+      "forced": true
+    },
+    {
+      "text": "Tall, look it up, cat. Honestly this patch is terrible, the developers have no idea what they are doing.",
+      "startS": 7.2299999999999995,
+      "endS": 13.92,
+      "inferenceMs": 620.0999999940395,
+      "waitMs": 0,
+      "lagMs": 620.5,
+      "forced": true
+    },
+    {
+      "text": "I'm going to push the left lane and take the tower before their jungler responds someone said the great wall of chai is visible from space with the nail",
+      "startS": 13.92,
+      "endS": 22.349999999999998,
+      "inferenceMs": 868.5,
+      "waitMs": 0,
+      "lagMs": 869,
+      "forced": true
+    },
+    {
+      "text": "Goodbye and that's just facts. Mercy has won 8 million or awards, no other player is close. Trust me.",
+      "startS": 22.349999999999998,
+      "endS": 29.549999999999997,
+      "inferenceMs": 845.5999999940395,
+      "waitMs": 0,
+      "lagMs": 845.7999999970198,
+      "forced": true
+    },
+    {
+      "text": "Our team is willing to hold tournament this year easy by the way the speed of light is about 300 000 kilometers per second",
+      "startS": 29.549999999999997,
+      "endS": 37.35,
+      "inferenceMs": 711.3999999985099,
+      "waitMs": 0,
+      "lagMs": 711.7000000029802,
+      "forced": true
+    },
+    {
+      "text": "Anyway, remember to hit that follow button and use code TREME410%OFF.",
+      "startS": 37.35,
+      "endS": 43.08,
+      "inferenceMs": 647.7999999970198,
+      "waitMs": 0.10000000149011612,
+      "lagMs": 648.3999999985099,
+      "forced": false
+    }
+  ],
+  "runner": {
+    "label": "live-csp-moonshine-gpu",
+    "mode": "live",
+    "manifest": "csp",
+    "headless": true,
+    "chromeFlags": [
+      "--enable-unsafe-extension-debugging",
+      "--allowlisted-extension-id=bkdmidiaaipkifgbgdcbeagfnefkecbo",
+      "--enable-features=Vulkan",
+      "--use-angle=vulkan",
+      "--enable-unsafe-webgpu"
+    ],
+    "chromeVersion": "Chrome/157.0.8103.50"
+  }
+}

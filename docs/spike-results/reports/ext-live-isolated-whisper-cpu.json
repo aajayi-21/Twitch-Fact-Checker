@@ -1,0 +1,167 @@
+{
+  "schema": 1,
+  "modelId": "whisper-base.en",
+  "variantId": "wasm-q8",
+  "device": "wasm",
+  "extensionId": "cofmfognnalfgidilcalmdobijokmgoo",
+  "controllerIsolated": true,
+  "environment": {
+    "crossOriginIsolated": true,
+    "hardwareConcurrency": 8,
+    "gpu": {
+      "webgpuAvailable": true,
+      "kind": "hardware",
+      "usable": true,
+      "reason": null,
+      "error": null,
+      "vendor": "intel",
+      "architecture": "xe-2lpg",
+      "device": "",
+      "description": "",
+      "isFallbackAdapter": false,
+      "shaderF16": true,
+      "features": [
+        "atomic-vec2u-min-max",
+        "bgra8unorm-storage",
+        "chromium-experimental-multi-draw-indirect",
+        "chromium-experimental-sampling-resource-table",
+        "chromium-experimental-subgroup-matrix",
+        "chromium-experimental-timestamp-query-inside-passes",
+        "clip-distances",
+        "core-features-and-limits",
+        "depth-clip-control",
+        "depth32float-stencil8",
+        "dual-source-blending",
+        "float32-blendable",
+        "float32-filterable",
+        "indirect-first-instance",
+        "primitive-index",
+        "rg11b10ufloat-renderable",
+        "shader-f16",
+        "subgroup-size-control",
+        "subgroups",
+        "texture-component-swizzle",
+        "texture-compression-bc",
+        "texture-compression-bc-sliced-3d",
+        "texture-compression-etc2",
+        "texture-compression-unaligned",
+        "texture-formats-tier1",
+        "texture-formats-tier2",
+        "timestamp-query"
+      ],
+      "limits": {
+        "maxBufferSize": 4294967292,
+        "maxStorageBufferBindingSize": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupStorageSize": 49152,
+        "maxStorageBuffersPerShaderStage": 16
+      },
+      "powerPreference": "high-performance",
+      "label": "intel (xe-2lpg)"
+    },
+    "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.0.0 Safari/537.36"
+  },
+  "load": {
+    "loadMs": 2158.454999998212,
+    "warmupMs": 841.6449999958277,
+    "numThreads": 4,
+    "crossOriginIsolated": true,
+    "workerProbe": null,
+    "sessionGpu": null
+  },
+  "capture": {
+    "capturedSeconds": 45.40225499999523,
+    "receivedSeconds": 45.25,
+    "maxFrameGapMs": 261.47999999672174,
+    "lateFrames": 0,
+    "endReason": null
+  },
+  "stats": {
+    "framesReceived": 181,
+    "samplesReceived": 724000,
+    "segmentsClosed": 6,
+    "segmentsTranscribed": 6,
+    "segmentsDropped": 0,
+    "droppedSeconds": 0,
+    "utteranceErrors": 0,
+    "inferenceMs": 6570.6399999931455,
+    "transcribedSeconds": 42.72,
+    "maxLagMs": 1431.320000000298,
+    "maxBacklogS": 9.989999999999998
+  },
+  "realTimeFactor": 0.15380711610470846,
+  "medianLagMs": 1335.2550000026822,
+  "maxLagMs": 1431.320000000298,
+  "wordErrorRate": 0.10236220472440945,
+  "text": "Welcome back to the stream everyone, we are live. Did you know the Eiffel Tower is 450 meters? all, look it up, chat. Honestly this patch is terrible, but the developers have no idea what they are doing. I'm going to push the left lane and take the tower before their jungler responds. Someone sent a great wall of china is visible from space with the naked eye. And that just acts messy as one eight million dollar awards No other player is close Trust me, our team is winning the whole tournament this year, easy By the way, the speed of light is about 300,000 km per second. Anyway, remember to hit that follow button. And use code stream for 10% off.",
+  "transcripts": [
+    {
+      "text": "Welcome back to the stream everyone, we are live. Did you know the Eiffel Tower is 450 meters?",
+      "startS": 0.72,
+      "endS": 7.56,
+      "inferenceMs": 1430.6700000017881,
+      "waitMs": 0.054999999701976776,
+      "lagMs": 1431.320000000298,
+      "forced": true
+    },
+    {
+      "text": "all, look it up, chat. Honestly this patch is terrible, but the developers have no idea what they are doing.",
+      "startS": 7.56,
+      "endS": 14.25,
+      "inferenceMs": 1334.914999999106,
+      "waitMs": 0.005000002682209015,
+      "lagMs": 1335.2550000026822,
+      "forced": true
+    },
+    {
+      "text": "I'm going to push the left lane and take the tower before their jungler responds. Someone sent a great wall of china is visible from space with the naked eye.",
+      "startS": 14.25,
+      "endS": 23.279999999999998,
+      "inferenceMs": 1108.5099999979138,
+      "waitMs": 0.015000000596046448,
+      "lagMs": 1108.9949999973178,
+      "forced": true
+    },
+    {
+      "text": "And that just acts messy as one eight million dollar awards No other player is close Trust me, our team is winning the whole tournament this year, easy",
+      "startS": 23.279999999999998,
+      "endS": 33.269999999999996,
+      "inferenceMs": 1031.1999999955297,
+      "waitMs": 0.009999997913837433,
+      "lagMs": 1031.6049999967217,
+      "forced": true
+    },
+    {
+      "text": "By the way, the speed of light is about 300,000 km per second. Anyway, remember to hit that follow button.",
+      "startS": 33.269999999999996,
+      "endS": 40.559999999999995,
+      "inferenceMs": 985.3849999979138,
+      "waitMs": 0.004999995231628418,
+      "lagMs": 985.9199999943376,
+      "forced": true
+    },
+    {
+      "text": "And use code stream for 10% off.",
+      "startS": 40.559999999999995,
+      "endS": 43.44,
+      "inferenceMs": 679.9600000008941,
+      "waitMs": 730.9499999955297,
+      "lagMs": 1411.6599999964237,
+      "forced": false
+    }
+  ],
+  "runner": {
+    "label": "live-isolated-whisper-cpu",
+    "mode": "live",
+    "manifest": "isolated",
+    "headless": true,
+    "chromeFlags": [
+      "--enable-unsafe-extension-debugging",
+      "--allowlisted-extension-id=cofmfognnalfgidilcalmdobijokmgoo",
+      "--enable-features=Vulkan",
+      "--use-angle=vulkan",
+      "--enable-unsafe-webgpu"
+    ],
+    "chromeVersion": "Chrome/157.0.8103.50"
+  }
+}

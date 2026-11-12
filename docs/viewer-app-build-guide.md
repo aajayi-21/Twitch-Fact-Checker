@@ -483,6 +483,11 @@ This is the foundation of the browser engine.
 > [`spike-results/stt-gpu-benchmark.md`](spike-results/stt-gpu-benchmark.md). The
 > sections below are updated with what was measured. **NVIDIA, AMD and Apple GPUs are
 > still untested.**
+>
+> **Status — spike S3 done, 2026-11-11.** The same models were then run inside the real
+> extension: tab audio captured by the existing capture code and transcribed live in an
+> offscreen document, on CPU and GPU, with no audio lost. One manifest line was needed.
+> Results: [`spike-results/stt-in-extension.md`](spike-results/stt-in-extension.md).
 
 ### 8.1 How a browser extension uses the GPU
 
@@ -627,12 +632,15 @@ the store disclosure (§10.4).
   one fixed, versioned URL you control, pin the SHA-256 in the package and verify after
   download, cache in Cache Storage / OPFS. Download as a stream straight to storage;
   holding a several-hundred-MB model in memory first is a known out-of-memory failure.
-- Add `"content_security_policy": {"extension_pages": "script-src 'self'
-  'wasm-unsafe-eval'; object-src 'self'"}` — WASM will not compile without it.
+- `"content_security_policy": {"extension_pages": "script-src 'self'
+  'wasm-unsafe-eval'; object-src 'self'"}` is required — WASM will not compile without
+  it (confirmed in S3) — and is now in `manifest.json`. No host permission is needed for
+  the model download.
 - CPU threads need a cross-origin isolated page (the `cross_origin_embedder_policy` and
-  `cross_origin_opener_policy` manifest keys). Measured benefit: modest for the Fast tier
-  (11× on one thread, 13–24× on four) and decisive only for Whisper on CPU. So isolation
-  is **optional** — adopt it only if spike S3 shows it does not disturb tab capture.
+  `cross_origin_opener_policy` manifest keys). S3 showed isolation does not disturb tab
+  capture, but its only beneficiary is Whisper on the CPU (3× → 6.5×); the Fast tier runs
+  at 17–18× either way. **Not adopted**: it changes how every extension page may load
+  cross-origin resources, for a tier the plan does not depend on.
 - A pinned runtime is fetched by `scripts/vendor_stt_runtime.py` with integrity checks;
   the library's own WASM cache must be switched off, because it re-serves the loader from
   a `blob:` URL that the extension's content security policy blocks.
@@ -807,7 +815,7 @@ A reviewer has no API key. Two measures:
 |---|---|---|
 | S1 ✅ | Can a viewer's GPU transcribe live in the browser? | **Passed 2026-11-11** on Intel Arc, plus simulated no-GPU / software-GPU / single-thread machines ([results](spike-results/stt-gpu-benchmark.md)). Still open: reports from NVIDIA, AMD and Apple GPUs |
 | S2 | Does each provider return a grounded, strict-JSON verdict from an extension context? | Gate + verify working for all four from the offscreen document. **For Gemini, decide one call or two** |
-| S3 | Does the speech worker live happily in the offscreen document? | WebGPU session + tab capture together; streamed model download to storage; cross-origin isolation for threads does not break capture |
+| S3 ✅ | Does the speech worker live happily in the offscreen document? | **Passed 2026-11-11** ([results](spike-results/stt-in-extension.md)): live capture + transcription on CPU and GPU with no audio lost; 643 MB model download works; isolation works but is not needed |
 
 **Phase 1 — app shell on the existing backend (1–2 weeks).** New-tab app, open on
 install, welcome wizard, providers screen (Anthropic and OpenRouter keys through today's
@@ -819,8 +827,11 @@ worker, YouTube/Rumble channel resolution, `usage` on backend frames, history an
 screens, import from `fact_checker.db`, export and delete. *Done means:* a week of mixed
 Twitch / YouTube / Kick viewing shows up correctly attributed, with spend.
 
-**Phase 3 — local GPU speech (2–3 weeks, gated on S1 and S3).** GPU probe, model
-download UX, benchmark, speech worker with VAD, device and model settings, drop policy.
+**Phase 3 — local GPU speech (2–3 weeks; S1 and S3 have passed).** The probe, ladder,
+self-test, speech worker, segmenter and drop policy exist from the spikes
+(`extension/engine/stt/`). Remaining: wire them into the real session flow (popup →
+service worker → offscreen), neural voice-activity detection, model download UX, the
+crash guard, device and model settings.
 Until Phase 4 lands, feed its transcripts to the existing backend over the debug text
 path to test it on real streams. *Done means:* live transcripts on a stream with the
 backend's speech model switched off.

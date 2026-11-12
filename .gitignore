@@ -22,3 +22,7 @@ extension/vendor/transformers/
 
 # Speech benchmark reports from this machine (scripts/run_stt_bench.mjs)
 docs/spike-results/raw/
+
+# Browser-spike working files: Chrome profiles (hold downloaded models) and
+# patched extension copies. Kept on disk rather than in /tmp, which is RAM.
+.stt-bench/

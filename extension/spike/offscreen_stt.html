@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Live speech spike — offscreen document</title>
+  </head>
+  <body>
+    <!--
+      Spike S3 only. An offscreen document (Chrome allows one per extension)
+      that pairs the PRODUCTION tab-audio capture (offscreen/audio_capture.js)
+      with local speech-to-text, to prove the two coexist. Driven by
+      spike/live_stt.html over a BroadcastChannel.
+    -->
+    <script type="module" src="offscreen_stt.mjs"></script>
+  </body>
+</html>

@@ -1,0 +1,202 @@
+{
+  "schema": 1,
+  "modelId": "whisper-base.en",
+  "variantId": "webgpu-mixed",
+  "device": "webgpu",
+  "extensionId": "bkdmidiaaipkifgbgdcbeagfnefkecbo",
+  "controllerIsolated": false,
+  "environment": {
+    "crossOriginIsolated": false,
+    "hardwareConcurrency": 8,
+    "gpu": {
+      "webgpuAvailable": true,
+      "kind": "hardware",
+      "usable": true,
+      "reason": null,
+      "error": null,
+      "vendor": "intel",
+      "architecture": "xe-2lpg",
+      "device": "",
+      "description": "",
+      "isFallbackAdapter": false,
+      "shaderF16": true,
+      "features": [
+        "atomic-vec2u-min-max",
+        "bgra8unorm-storage",
+        "clip-distances",
+        "core-features-and-limits",
+        "depth-clip-control",
+        "depth32float-stencil8",
+        "dual-source-blending",
+        "float32-blendable",
+        "float32-filterable",
+        "indirect-first-instance",
+        "primitive-index",
+        "rg11b10ufloat-renderable",
+        "shader-f16",
+        "subgroup-size-control",
+        "subgroups",
+        "texture-component-swizzle",
+        "texture-compression-bc",
+        "texture-compression-bc-sliced-3d",
+        "texture-compression-etc2",
+        "texture-compression-unaligned",
+        "texture-formats-tier1",
+        "texture-formats-tier2",
+        "timestamp-query"
+      ],
+      "limits": {
+        "maxBufferSize": 4294967292,
+        "maxStorageBufferBindingSize": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupStorageSize": 49152,
+        "maxStorageBuffersPerShaderStage": 16
+      },
+      "powerPreference": "high-performance",
+      "label": "intel (xe-2lpg)"
+    },
+    "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36"
+  },
+  "load": {
+    "loadMs": 1445.7000000029802,
+    "warmupMs": 433.19999999552965,
+    "numThreads": 1,
+    "crossOriginIsolated": false,
+    "workerProbe": {
+      "webgpuAvailable": true,
+      "kind": "hardware",
+      "usable": true,
+      "reason": null,
+      "error": null,
+      "vendor": "intel",
+      "architecture": "xe-2lpg",
+      "device": "",
+      "description": "",
+      "isFallbackAdapter": false,
+      "shaderF16": true,
+      "features": [
+        "atomic-vec2u-min-max",
+        "bgra8unorm-storage",
+        "clip-distances",
+        "core-features-and-limits",
+        "depth-clip-control",
+        "depth32float-stencil8",
+        "dual-source-blending",
+        "float32-blendable",
+        "float32-filterable",
+        "indirect-first-instance",
+        "primitive-index",
+        "rg11b10ufloat-renderable",
+        "shader-f16",
+        "subgroup-size-control",
+        "subgroups",
+        "texture-component-swizzle",
+        "texture-compression-bc",
+        "texture-compression-bc-sliced-3d",
+        "texture-compression-etc2",
+        "texture-compression-unaligned",
+        "texture-formats-tier1",
+        "texture-formats-tier2",
+        "timestamp-query"
+      ],
+      "limits": {
+        "maxBufferSize": 4294967292,
+        "maxStorageBufferBindingSize": 4294967292,
+        "maxComputeInvocationsPerWorkgroup": 1024,
+        "maxComputeWorkgroupStorageSize": 49152,
+        "maxStorageBuffersPerShaderStage": 16
+      },
+      "powerPreference": "high-performance"
+    },
+    "sessionGpu": {
+      "vendor": "intel",
+      "architecture": "xe-2lpg",
+      "description": "",
+      "isFallbackAdapter": false,
+      "shaderF16": true
+    }
+  },
+  "capture": {
+    "capturedSeconds": 45.48119999999553,
+    "receivedSeconds": 45.25,
+    "maxFrameGapMs": 257.79999999701977,
+    "lateFrames": 0,
+    "endReason": null
+  },
+  "stats": {
+    "framesReceived": 181,
+    "samplesReceived": 724000,
+    "segmentsClosed": 5,
+    "segmentsTranscribed": 5,
+    "segmentsDropped": 0,
+    "droppedSeconds": 0,
+    "utteranceErrors": 0,
+    "inferenceMs": 3963,
+    "transcribedSeconds": 42.69,
+    "maxLagMs": 851.7000000029802,
+    "maxBacklogS": 9.989999999999998
+  },
+  "realTimeFactor": 0.09283204497540408,
+  "medianLagMs": 798.8999999985099,
+  "maxLagMs": 851.7000000029802,
+  "wordErrorRate": 0.12598425196850394,
+  "text": "Welcome back to the stream everyone we are live. Did you know the Eiffel Tower is 450 meters tall? Look it up. Cat. Honestly this half. is terrible, the developers have no idea what they are doing. I'm going to push the left lane and take the tower before their jungler responds. Someone sent a great wall of china is visible from space with the naked eye and that just acts messy as one eight million dollar awards No other player is close. Trust me, our team is winning the whole tournament this year. Easy. I'm away. The speed of light is about 300,000 km per second. Anyway, remember to hit that follow button and use code stream for 10% off.",
+  "transcripts": [
+    {
+      "text": "Welcome back to the stream everyone we are live. Did you know the Eiffel Tower is 450 meters tall? Look it up. Cat. Honestly this half.",
+      "startS": 0.72,
+      "endS": 10.709999999999999,
+      "inferenceMs": 851,
+      "waitMs": 0.10000000149011612,
+      "lagMs": 851.7000000029802,
+      "forced": true
+    },
+    {
+      "text": "is terrible, the developers have no idea what they are doing. I'm going to push the left lane and take the tower before their jungler responds.",
+      "startS": 10.709999999999999,
+      "endS": 18.689999999999998,
+      "inferenceMs": 847.2999999970198,
+      "waitMs": 0,
+      "lagMs": 847.8999999985099,
+      "forced": true
+    },
+    {
+      "text": "Someone sent a great wall of china is visible from space with the naked eye and that just acts messy as one eight million dollar awards",
+      "startS": 18.689999999999998,
+      "endS": 27.3,
+      "inferenceMs": 768.8999999985099,
+      "waitMs": 0,
+      "lagMs": 769.7000000029802,
+      "forced": true
+    },
+    {
+      "text": "No other player is close. Trust me, our team is winning the whole tournament this year. Easy. I'm away.",
+      "startS": 27.3,
+      "endS": 33.99,
+      "inferenceMs": 697.3000000044703,
+      "waitMs": 0,
+      "lagMs": 697.5,
+      "forced": true
+    },
+    {
+      "text": "The speed of light is about 300,000 km per second. Anyway, remember to hit that follow button and use code stream for 10% off.",
+      "startS": 33.99,
+      "endS": 43.41,
+      "inferenceMs": 798.5,
+      "waitMs": 0,
+      "lagMs": 798.8999999985099,
+      "forced": false
+    }
+  ],
+  "runner": {
+    "label": "live-csp-whisper-gpu-stock",
+    "mode": "live",
+    "manifest": "csp",
+    "headless": false,
+    "chromeFlags": [
+      "--enable-unsafe-extension-debugging",
+      "--allowlisted-extension-id=bkdmidiaaipkifgbgdcbeagfnefkecbo"
+    ],
+    "chromeVersion": "Chrome/157.0.8103.50"
+  }
+}
