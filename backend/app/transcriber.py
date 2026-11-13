@@ -615,7 +615,32 @@ Transcriber = FasterWhisperTranscriber
 
 #: STT_BACKEND value -> loader. Torch is imported lazily inside the factory
 #: so the default install never needs it (mirrors llm_provider's registry).
-_STT_BACKENDS: tuple[str, ...] = ("faster-whisper", "torch", "parakeet")
+class NullTranscriber(BaseTranscriber):
+    """``STT_BACKEND=none``: no speech model in this process.
+
+    The backend then serves transcript sessions only — the client does the
+    transcription (the extension's in-browser engine) and sends text. Audio
+    sessions are refused at the handshake (``app/ws.py``), so
+    :meth:`_run_model` is unreachable in a correctly wired app; it raises
+    rather than return silence so a wiring mistake is loud.
+    """
+
+    BACKEND_NAME = "none"
+
+    def load(self) -> None:
+        """Nothing to load."""
+
+    def _run_model(self, audio: np.ndarray) -> Iterable[RawSegment]:
+        raise RuntimeError(
+            "this backend has no speech model (STT_BACKEND=none); "
+            "audio cannot be transcribed here"
+        )
+
+    def describe(self) -> str:
+        return "off — transcripts come from the client (STT_BACKEND=none)"
+
+
+_STT_BACKENDS: tuple[str, ...] = ("faster-whisper", "torch", "parakeet", "none")
 
 
 def create_transcriber(settings: "Settings") -> BaseTranscriber:
@@ -641,6 +666,8 @@ def create_transcriber(settings: "Settings") -> BaseTranscriber:
             compute_type=settings.whisper_compute_type,
             language=settings.whisper_language_or_none,
         )
+    if backend == "none":
+        return NullTranscriber(model_name="none")
     if backend == "parakeet":
         from app.stt_parakeet import ParakeetTranscriber
 

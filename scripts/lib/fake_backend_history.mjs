@@ -212,7 +212,7 @@ export const liveSessionFrames = () => [
 ];
 
 const WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-const OPCODE = Object.freeze({TEXT: 0x1, CLOSE: 0x8, PING: 0x9, PONG: 0xa});
+const OPCODE = Object.freeze({TEXT: 0x1, BINARY: 0x2, CLOSE: 0x8, PING: 0x9, PONG: 0xa});
 
 /**
  * Complete a WebSocket handshake on an HTTP upgrade and return a connection
@@ -222,8 +222,10 @@ const OPCODE = Object.freeze({TEXT: 0x1, CLOSE: 0x8, PING: 0x9, PONG: 0xa});
  * @param {import("node:http").IncomingMessage} request
  * @param {import("node:net").Socket} socket
  * @param {(text: string, connection: {sendJson: Function, close: Function}) => void} onText
+ * @param {(byteLength: number) => void} [onBinary] - told the size of each
+ *   binary frame (the audio), which is otherwise read and dropped
  */
-export const acceptWebSocket = (request, socket, onText) => {
+export const acceptWebSocket = (request, socket, onText, onBinary = () => {}) => {
   const accept = createHash("sha1")
     .update(`${request.headers["sec-websocket-key"]}${WEBSOCKET_GUID}`)
     .digest("base64");
@@ -307,6 +309,8 @@ export const acceptWebSocket = (request, socket, onText) => {
       pending = pending.subarray(end);
       if (opcode === OPCODE.TEXT) {
         onText(payload.toString("utf8"), connection);
+      } else if (opcode === OPCODE.BINARY) {
+        onBinary(payload.length);
       } else if (opcode === OPCODE.PING) {
         sendFrame(OPCODE.PONG, payload);
       } else if (opcode === OPCODE.CLOSE) {

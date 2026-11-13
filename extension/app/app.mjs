@@ -10,6 +10,7 @@
 import {StatusPill} from "./components.mjs";
 import {initApp, useAppState} from "./lib/app_store.mjs";
 import {initLedger} from "./lib/ledger_store.mjs";
+import {initSpeech} from "./lib/speech_actions.mjs";
 import {html, render, useEffect, useState} from "./lib/html.mjs";
 import {ROUTES, landingRoute, parseRoute} from "./lib/routes.mjs";
 import {HistoryView} from "./views/history.mjs";
@@ -152,4 +153,7 @@ initApp().catch((error) => {
 // and Usage screens and must not stop the rest of the app from starting.
 initLedger().catch((error) => {
   console.error("[fact-checker] history failed to start:", error);
+});
+initSpeech().catch((error) => {
+  console.error("[fact-checker] speech settings failed to load:", error);
 });

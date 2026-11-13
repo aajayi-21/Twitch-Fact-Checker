@@ -75,6 +75,8 @@ const describeSessionGpu = (device) => {
 /**
  * @typedef {object} TranscriberConfig
  * @property {string} repo - Hugging Face model repository
+ * @property {string} [revision] - exact commit to download (models.mjs);
+ *   omitted, the repository's current head is used
  * @property {"webgpu"|"wasm"} device
  * @property {string|object} dtype - precision, or a per-file precision map
  * @property {number} numThreads - WASM threads (1 unless cross-origin isolated)
@@ -109,6 +111,7 @@ const describeSessionGpu = (device) => {
  */
 export const loadTranscriber = async ({
   repo,
+  revision,
   device,
   dtype,
   numThreads,
@@ -127,6 +130,9 @@ export const loadTranscriber = async ({
     dtype,
     progress_callback: makeDownloadReporter(onDownloadProgress),
   };
+  if (revision) {
+    pipelineOptions.revision = revision;
+  }
   if (device === "webgpu") {
     const opened = await openGpuDevice({powerPreference, forceFallbackAdapter});
     workerProbe = opened.probe;

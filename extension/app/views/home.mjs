@@ -13,12 +13,14 @@ import {
   periodRange,
   summarizeUsage,
 } from "../../ledger/queries.mjs";
+import {SPEECH_ENGINE, describeSpeechState} from "../../engine/stt/speech_setup.mjs";
 import {LABELS} from "../../ledger/records.mjs";
 import {Button, Card, LabelChip, Notice, StatusPill} from "../components.mjs";
 import {refreshBackend, useAppState} from "../lib/app_store.mjs";
 import {formatCost, formatDateTime, labelName, platformLabel, plural} from "../lib/format.mjs";
 import {html, useMemo} from "../lib/html.mjs";
 import {useLedger} from "../lib/ledger_store.mjs";
+import {useSpeech} from "../lib/speech_actions.mjs";
 import {ROUTES} from "../lib/routes.mjs";
 import {describeStages} from "../lib/setup_model.mjs";
 import {ImportHistory} from "./import_history.mjs";
@@ -95,9 +97,14 @@ const LatestResults = ({verdicts}) => html`
 export const HomeView = ({navigate}) => {
   const {backendState, backendMessage, health, setup, summary, settings} = useAppState();
   const ledger = useLedger();
+  const browserSpeech = useSpeech();
   const up = backendState === "up";
   const configured = Boolean(setup?.configured);
-  const speech = describeSpeech(health);
+  // Speech is the backend's job unless the viewer moved it into the browser.
+  const speech =
+    browserSpeech.loaded && browserSpeech.state.settings.engine === SPEECH_ENGINE.BROWSER
+      ? describeSpeechState(browserSpeech.state, browserSpeech.plan)
+      : describeSpeech(health);
 
   const today = useMemo(() => {
     const range = periodRange(PERIODS.TODAY);
@@ -151,7 +158,18 @@ export const HomeView = ({navigate}) => {
         >
           <p class="card-line">${up ? settings?.backendUrl : "Speech recognition and checking run here."}</p>
           ${speech
-            ? html`<p class="card-line"><${StatusPill} state=${speech.state}>${speech.text}<//></p>`
+            ? html`<p class="card-line">
+                <${StatusPill} state=${speech.state}>${speech.text}<//>
+                ${speech.state === "warn" && browserSpeech.state.settings.engine === SPEECH_ENGINE.BROWSER
+                  ? html`${" "}<button
+                        type="button"
+                        class="link-button"
+                        onClick=${() => navigate(ROUTES.SETTINGS)}
+                      >
+                        Set up
+                      </button>`
+                  : null}
+              </p>`
             : null}
         <//>
         <${Card}

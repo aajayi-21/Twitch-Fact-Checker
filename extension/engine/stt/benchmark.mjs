@@ -30,6 +30,7 @@ const MAX_WASM_THREADS = 4;
 /**
  * @typedef {object} BenchJob
  * @property {string} repo - Hugging Face model repository
+ * @property {string} [revision] - exact commit to download
  * @property {"webgpu"|"wasm"} device
  * @property {string} dtype
  * @property {Float32Array[]} segments - 16 kHz mono clips
@@ -153,6 +154,7 @@ export const benchmarkModel = async (
     const result = await runJobInWorker(
       {
         repo: model.repo,
+        revision: model.revision,
         device: rung.device,
         dtype: rung.dtype,
         segments,

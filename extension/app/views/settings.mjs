@@ -34,7 +34,9 @@ import {
   setTopicEnabled,
   topicsMasterState,
 } from "../lib/settings_rules.mjs";
+import {HAS_OFFSCREEN_CAPTURE} from "../../shared/capabilities.js";
 import {ImportHistory} from "./import_history.mjs";
+import {SpeechCard} from "./speech_card.mjs";
 
 const SENSITIVITY_OPTIONS = Object.freeze([
   {value: "low", label: "Low", hint: "Only clear, significant claims"},
@@ -274,6 +276,12 @@ export const SettingsView = () => {
           />
         <//>
       <//>
+
+      ${
+        // In-browser speech needs Chrome's offscreen document; elsewhere the
+        // backend always transcribes and there is nothing to choose.
+        HAS_OFFSCREEN_CAPTURE ? html`<${SpeechCard} />` : null
+      }
 
       <${DataCard} settings=${settings} save=${save} />
 

@@ -91,6 +91,9 @@ ErrorCode = Literal[
     # Fatal: the speech engine is unrecoverable (the CPU reload failed too or
     # was disabled). Also used to reject new connections until a restart.
     "stt_failure",
+    # Fatal: an audio session was opened on a backend started without a
+    # speech model (STT_BACKEND=none). The client must transcribe itself.
+    "stt_disabled",
 ]
 
 
@@ -119,7 +122,12 @@ class ClientHello(BaseModel):
 
     type: Literal["hello"]
     version: Literal[1]
-    format: Literal["pcm_s16le"]
+    # "pcm_s16le": the client streams audio and this backend transcribes it.
+    # "transcript": the client transcribes (the extension's in-browser speech
+    # engine) and sends :class:`ClientTranscript` frames; binary frames are
+    # ignored. A backend that predates the second value rejects the hello,
+    # which is how a client learns it is not supported.
+    format: Literal["pcm_s16le", "transcript"]
     sample_rate: Literal[16000]
     channels: Literal[1]
     sensitivity: Sensitivity = "medium"
@@ -150,6 +158,20 @@ class ClientConfig(BaseModel):
     type: Literal["config"]
     sensitivity: Sensitivity | None = None
     enabled_topics: list[str] | None = None
+
+
+class ClientTranscript(BaseModel):
+    """One utterance transcribed by the client (``format: "transcript"``).
+
+    The mirror image of :class:`TranscriptFrame`: same fields, opposite
+    direction. Times are seconds into the stream. Bounded in length so a
+    misbehaving client cannot push an unbounded prompt into the gate.
+    """
+
+    type: Literal["transcript"]
+    text: str = Field(min_length=1, max_length=2000)
+    start: float = Field(ge=0.0)
+    end: float = Field(ge=0.0)
 
 
 class ClientStop(BaseModel):

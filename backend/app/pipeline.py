@@ -58,11 +58,13 @@ from app.models import (
     ClientConfig,
     ClientFrameMessage,
     ClientHello,
+    ClientTranscript,
     ErrorFrame,
     GateClaim,
     Sensitivity,
     StatusFrame,
     TranscriptFrame,
+    TranscriptSegment,
     UsageFrame,
     Verdict,
     VerdictFrame,
@@ -257,6 +259,13 @@ class SessionPipeline:
         # flush phase has taken over.
         self._send_claims = hello.send_claims
         self._flushing = False
+        # hello format "transcript": the client runs speech-to-text and sends
+        # text. This session then never touches the STT engine — no STT
+        # loop, binary frames ignored — and everything from the gate onward
+        # is unchanged.
+        self._client_transcribes = hello.format == "transcript"
+        self._last_client_transcript = ""
+        self._ignored_audio_frames = 0
         self._stream_title = hello.stream_title
         self._speech_seconds = 0.0
         self._audio_seconds = 0.0
@@ -506,7 +515,8 @@ class SessionPipeline:
         try:
             async with asyncio.TaskGroup() as task_group:
                 task_group.create_task(self._recv_loop(), name="recv")
-                task_group.create_task(self._stt_loop(), name="stt")
+                if not self._client_transcribes:
+                    task_group.create_task(self._stt_loop(), name="stt")
                 task_group.create_task(self._gate_loop(), name="gate")
                 task_group.create_task(self._verify_loop(), name="verify")
                 task_group.create_task(self._send_loop(), name="send")
@@ -755,6 +765,16 @@ class SessionPipeline:
     # ------------------------------------------------------------------ #
 
     def _handle_audio(self, pcm_bytes: bytes) -> None:
+        if self._client_transcribes:
+            # A transcript session has no use for audio. Say so once; a
+            # client streaming it anyway would otherwise fill the ring.
+            self._ignored_audio_frames += 1
+            if self._ignored_audio_frames == 1:
+                logger.warning(
+                    "ignoring audio: this session sends transcripts "
+                    '(hello format "transcript")'
+                )
+            return
         self._audio_seconds += len(pcm_bytes) / 2 / 16000
         try:
             dropped_s = self._ring.append(pcm_bytes)
@@ -816,12 +836,61 @@ class SessionPipeline:
             )
         elif frame_type == "frame":
             self._handle_video_frame(data)
+        elif frame_type == "transcript":
+            self._handle_client_transcript(data)
         elif frame_type == "stop":
             logger.info("client requested graceful stop; flushing")
             self._graceful_stop = True
             self._stop_requested.set()
         else:
             logger.warning("ignoring unknown client frame type: %r", frame_type)
+
+    def _handle_client_transcript(self, data: dict[str, Any]) -> None:
+        """Take one client-transcribed utterance into the gate's buffer.
+
+        The counterpart of :meth:`_transcribe_and_route` for transcript
+        sessions: same bookkeeping, no model. Nothing is echoed back — the
+        client already has the text. An utterance identical to the one just
+        before it is dropped: speech models repeat themselves on silence and
+        music ("Thank you." over and over), and the engine-side filters that
+        catch that for local audio never see this text.
+        """
+        if not self._client_transcribes:
+            logger.warning(
+                "ignoring a transcript frame on an audio session "
+                '(the hello did not say format "transcript")'
+            )
+            return
+        try:
+            frame = ClientTranscript.model_validate(data)
+        except ValidationError as exc:
+            logger.warning("ignoring invalid transcript frame: %s", exc)
+            return
+        text = " ".join(frame.text.split())
+        if not text:
+            return
+        if text.casefold() == self._last_client_transcript:
+            self._text_state.drop_counts["client_repeat"] = (
+                self._text_state.drop_counts.get("client_repeat", 0) + 1
+            )
+            return
+        self._last_client_transcript = text.casefold()
+        end = max(frame.end, frame.start)
+        self._gate.add_transcript(
+            TranscriptSegment(
+                text=text,
+                start=frame.start,
+                end=end,
+                # The client's engine reports neither; these are the values
+                # of a confident segment, since its own checks already ran.
+                avg_logprob=0.0,
+                no_speech_prob=0.0,
+            )
+        )
+        self._speech_seconds += end - frame.start
+        self._last_emitted_end = max(self._last_emitted_end, end)
+        # No audio arrives in this mode; the stream clock is the transcript's.
+        self._audio_seconds = max(self._audio_seconds, end)
 
     def _handle_video_frame(self, data: dict[str, Any]) -> None:
         """Ring-buffer one captured frame; invalid/oversize frames drop."""
@@ -1113,7 +1182,8 @@ class SessionPipeline:
         self._flushing = True
         try:
             await self._drain_outbound_direct()
-            await self._flush_stt()
+            if not self._client_transcribes:
+                await self._flush_stt()
             pending_claims = self._drain_verify_queue()
             pending_claims.extend(
                 QueuedClaim(

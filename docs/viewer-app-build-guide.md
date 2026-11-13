@@ -881,14 +881,41 @@ Still open from this phase:
 - Retention is applied by a daily alarm and was exercised by calling the sweep directly,
   not by waiting a day.
 
-**Phase 3 — local GPU speech (2–3 weeks; S1 and S3 have passed).** The probe, ladder,
-self-test, speech worker, segmenter and drop policy exist from the spikes
-(`extension/engine/stt/`). Remaining: wire them into the real session flow (popup →
-service worker → offscreen), neural voice-activity detection, model download UX, the
-crash guard, device and model settings.
-Until Phase 4 lands, feed its transcripts to the existing backend over the debug text
-path to test it on real streams. *Done means:* live transcripts on a stream with the
-backend's speech model switched off.
+**Phase 3 ✅ — local speech in real sessions (built 2026-11-12).** A viewer can choose
+"This browser" under Settings → Speech recognition, download and test a model, and from
+then on a capture session transcribes in the offscreen document and sends the backend
+**text, not audio**.
+
+- **Backend:** a transcript session (`hello` `format: "transcript"`, `transcript` frames)
+  feeds the same gate → verify path with no speech engine involved, and
+  `STT_BACKEND=none` starts the backend with no model at all (about three seconds, and it
+  refuses audio sessions with `stt_disabled`). This replaces the plan's "debug text path":
+  a real session keeps batching, dedupe, persistence and the history frames.
+- **Extension:** `engine/stt/speech_setup.mjs` (what this device decided, and the rules),
+  `session_speech.mjs` (load, crash-guard calls, GPU → CPU recovery), the Speech card,
+  model revisions pinned to a commit, a bundled eleven-second self-test clip.
+- **Crash guard:** a marker is stored before the GPU is first used and cleared when that
+  use returns; a marker with nobody holding the GPU lock at the next start blocks the
+  GPU until the viewer re-tests. A GPU lost mid-session moves to the model's CPU build.
+
+*Done means:* live transcripts on a stream with the backend's speech model switched off.
+**Met in the test harness, not yet on a real stream:** `scripts/run_browser_speech_e2e.mjs`
+downloads the real model, runs the self-test through the UI, captures a tab playing 43 s
+of recorded speech and checks the text that reaches a model-less backend — on the dev
+machine, Moonshine Base on the CPU (10× real time, 13 % word error rate on the clip) and
+Whisper Base on the Intel Arc GPU (4.5×, 14 %), with no audio frame sent in either. The
+real backend was separately started with `STT_BACKEND=none` and handshaken both ways.
+
+Not built in this phase, and where each belongs:
+
+| Item | Status |
+|---|---|
+| Neural voice-activity detection | **Open.** Segmentation is still energy-based, so music and crowd noise reach the model. The backend drops an utterance repeated verbatim, which catches the commonest hallucination, not all of them |
+| Speech step in the welcome wizard | Deferred to Phase 4, when the browser engine becomes the default path |
+| Stepping down a tier when the queue grows | Open. Today the oldest waiting audio is dropped and counted |
+| Model files from a URL we control, with a pinned SHA-256 | Partly: downloads are pinned to a Hugging Face commit, which is immutable; self-hosting belongs with the store work (Phase 6) |
+| Hosted speech fallback | Phase 5, unchanged |
+| GPUs other than Intel Arc | Still untested; the ladder and self-test are what protect them |
 
 **Phase 4 — in-extension pipeline and four providers (3–4 weeks, gated on S2).** Prompt
 export, JavaScript gate and verify, the four provider modules, budgets, demo mode.

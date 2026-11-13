@@ -8,10 +8,11 @@
  * chunks; a segment is emitted as soon as a long-enough pause follows speech,
  * or when unbroken speech reaches the length cap.
  *
- * This is an ENERGY-based detector — good enough to measure the pipeline,
- * not the production voice-activity detector. Music, crowd noise and game
- * audio will defeat it; Phase 3 replaces the `isSpeech` decision with a
- * neural VAD and keeps everything else.
+ * This is an ENERGY-based detector. It is what live sessions use today, and
+ * its known weakness is that music, crowd noise and game audio count as
+ * "speech" and are sent to the model. A neural voice-activity detector is
+ * the planned replacement for the `isSpeech` decision (build guide §11,
+ * phase 3 "not built"); everything else here stays.
  *
  * Pure (no browser APIs): unit-tested under Node.
  */
