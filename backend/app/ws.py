@@ -29,6 +29,12 @@ from app.pipeline import STT_FAILURE_MESSAGE, SessionPipeline
 from app.sessions import SessionLimitExceeded, SessionRegistry
 from app.stt_supervisor import SttSupervisor
 
+STT_DISABLED_MESSAGE = (
+    "This backend was started without a speech model (STT_BACKEND=none), so "
+    "it cannot transcribe audio. Set the extension's speech engine to "
+    '"This browser", or restart the backend with a speech model.'
+)
+
 NOT_CONFIGURED_MESSAGE = (
     "Backend has no API key yet — add one in the extension options."
 )
@@ -161,10 +167,24 @@ async def audio_ws(websocket: WebSocket) -> None:
     # An unrecoverable speech engine (app/stt_supervisor.py) is process-wide:
     # refuse new sessions with the same fatal code the dying session got, so
     # the extension stops reconnecting into a dead engine.
+    client_transcribes = hello.format == "transcript"
+    if not client_transcribes and not websocket.app.state.settings.stt_enabled:
+        await _reject(
+            websocket,
+            code="stt_disabled",
+            message=STT_DISABLED_MESSAGE,
+            close_code=1011,
+        )
+        return
     supervisor: SttSupervisor | None = getattr(
         websocket.app.state, "stt_supervisor", None
     )
-    if supervisor is not None and supervisor.state == "failed":
+    # A session whose client transcribes does not need this engine at all.
+    if (
+        not client_transcribes
+        and supervisor is not None
+        and supervisor.state == "failed"
+    ):
         await _reject(
             websocket, code="stt_failure", message=STT_FAILURE_MESSAGE, close_code=1011
         )

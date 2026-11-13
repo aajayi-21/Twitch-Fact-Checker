@@ -28,12 +28,29 @@
  *  - opening the app tab on install, and for content scripts (OPEN_OPTIONS),
  *  - routing the captured tab's ad-break reports (AD_STATE) to the session
  *    owner, which drops audio while an ad plays (shared/ad_pause.js),
+ *  - choosing where speech is transcribed: when the viewer picked "This
+ *    browser", the start settings carry the tested model configuration
+ *    (engine/stt/speech_setup.mjs) and the offscreen document sends text
+ *    instead of audio; this worker also keeps the GPU crash guard,
  *  - recording the session in the viewer's ledger (ledger/): every verdict,
  *    claim and usage frame, attributed to the channel on screen, plus the
  *    daily retention sweep,
  *  - closing the offscreen document on CAPTURE_ENDED.
  */
 
+import {
+  SPEECH_ENGINE,
+  beginGpuAttempt,
+  blockGpu,
+  endGpuAttempt,
+  planBrowserSpeech,
+} from "../engine/stt/speech_setup.mjs";
+import {
+  browserMajorVersion,
+  loadGuardedSpeechState,
+  loadRuntimeVersion,
+  updateSpeechState,
+} from "../engine/stt/speech_store.mjs";
 import * as ledger from "../ledger/ledger.mjs";
 import {createSessionRecorder} from "../ledger/session_recorder.mjs";
 import {identityFromPage} from "../ledger/stream_identity.mjs";
@@ -81,6 +98,7 @@ const IDLE_SESSION = Object.freeze({
   reconnectAttempt: 0,
   lastError: null,
   adPaused: false,
+  speech: null,
 });
 
 /**
@@ -284,9 +302,39 @@ const handleCaptureStart = async (tabId) => {
   const settings = await loadSettings();
   // Identity is best-effort: a tabs.get failure must not abort the start.
   const tab = await chrome.tabs.get(tabId).catch(() => null);
+  // Where speech is transcribed. Only Chrome can do it in the browser (it
+  // needs the offscreen document); Firefox always uses the backend.
+  let speechConfig = null;
+  if (HAS_OFFSCREEN_CAPTURE) {
+    const {state: speechState, tripped} = await loadGuardedSpeechState();
+    if (tripped) {
+      console.warn("[fact-checker] GPU speech blocked after an unfinished attempt");
+    }
+    if (speechState.settings.engine === SPEECH_ENGINE.BROWSER) {
+      const plan = planBrowserSpeech(speechState, {
+        browserMajor: browserMajorVersion(),
+        runtimeVersion: (await loadRuntimeVersion()) ?? "missing",
+      });
+      if (!plan.ready) {
+        // The viewer asked for in-browser speech and it cannot run. Say so
+        // rather than quietly sending their audio somewhere else.
+        console.error(`[fact-checker] in-browser speech not ready: ${plan.reason}`);
+        await writeCaptureSession({
+          status: "error",
+          tabId: null,
+          wsState: "closed",
+          lastError: ERR.ERR_SPEECH_NOT_READY,
+        });
+        return;
+      }
+      speechConfig = plan.config;
+    }
+  }
   const identity = await resolveTabIdentity(tab);
   recordSafely("capture start", recorder.captureStarting(tabId, identity));
   const offscreenSettings = {
+    // Non-null: transcribe in the offscreen document and send text.
+    speech: speechConfig,
     backendUrl: settings.backendUrl,
     sensitivity: settings.sensitivity,
     topics: getEnabledTopicSlugs(settings.topics),
@@ -499,6 +547,22 @@ const handleAdState = async (sender, payload) => {
 };
 
 /**
+ * SPEECH_GPU_ATTEMPT from the offscreen document: store the crash-guard
+ * marker ("begin") or clear it ("end"). The caller waits for this.
+ */
+const handleGpuAttempt = async ({phase, variantId} = {}) => {
+  await updateSpeechState((state) =>
+    phase === "begin"
+      ? beginGpuAttempt(state, {
+          context: "session",
+          variantId: String(variantId ?? "unknown"),
+          at: new Date().toISOString(),
+        })
+      : endGpuAttempt(state)
+  );
+};
+
+/**
  * PAGE_IDENTITY from a content script: the page moved to another stream, or
  * its channel link appeared. Only the captured tab matters.
  */
@@ -544,6 +608,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || message.target !== TARGET.BACKGROUND) {
     return false;
   }
+  if (message.type === MSG.SPEECH_GPU_ATTEMPT) {
+    // Answered only once the marker is stored: "begin" must be on disk
+    // before the offscreen document touches the GPU.
+    handleGpuAttempt(message.payload)
+      .catch((error) => {
+        console.error("[fact-checker] storing the GPU attempt failed:", error);
+      })
+      .finally(() => sendResponse({stored: true}));
+    return true;
+  }
   if (message.type === MSG.CONTENT_READY) {
     buildSessionStateReply(sender)
       .then(sendResponse)
@@ -582,6 +656,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         break;
       case MSG.PAGE_IDENTITY:
         await handlePageIdentity(sender, message.payload);
+        break;
+      case MSG.SPEECH_GPU_FAILED:
+        await updateSpeechState((state) =>
+          blockGpu(state, {
+            at: new Date().toISOString(),
+            reason: String(message.payload?.reason ?? "The GPU failed during a session."),
+          })
+        );
         break;
       // Firefox capture path (content script -> this page's WebSocket).
       case MSG.AUDIO_CHUNK:

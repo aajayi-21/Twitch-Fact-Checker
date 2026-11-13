@@ -269,6 +269,12 @@ def create_app() -> FastAPI:
             "whisper_model": settings.stt_model_name,
             "stt_segmentation": settings.resolved_stt_segmentation,
             "stt": stt.snapshot(),
+            # What a session may send: audio for this backend to transcribe
+            # (false under STT_BACKEND=none), and/or text the client
+            # transcribed itself. A backend without the second key predates
+            # transcript sessions.
+            "accepts_audio": settings.stt_enabled,
+            "accepts_transcripts": True,
             "configured": configured,
             "llm_provider": runtime.settings.llm_provider if configured else None,
             "gate_provider": (

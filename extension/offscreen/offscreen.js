@@ -24,17 +24,31 @@
  * session stays "capturing" but every audio and video frame is dropped
  * instead of sent — see shared/ad_pause.js. `session.adPaused` mirrors the
  * gate for the popup.
+ *
+ * Speech: by default every audio frame goes to the backend, which
+ * transcribes it. When the viewer chose "This browser" (the start settings
+ * then carry a tested `speech` config), frames go to a model running in a
+ * worker of this document instead, and only the resulting TEXT is sent —
+ * the session handshakes with format "transcript". `session.speech` mirrors
+ * the model's state for the popup.
  */
 
+import {LiveTranscriber} from "../engine/stt/live_transcriber.mjs";
+import {SPEECH_STATUS, SessionSpeech} from "../engine/stt/session_speech.mjs";
+import {GPU_LOCK_NAME} from "../engine/stt/speech_store.mjs";
 import {AdPauseGate, buildBoundarySilenceFrames} from "../shared/ad_pause.js";
 import {ERR, MSG, TARGET, makeMsg} from "../shared/messages.js";
 import {AudioCapture} from "./audio_capture.js";
 import {BackendSocket} from "./ws_client.js";
 
 const AUDIO_SAMPLE_RATE = 16000;
+// On Stop, how long to wait for the model to finish the last utterance.
+const SPEECH_FLUSH_TIMEOUT_MS = 4000;
 
 let capture = null;
 let socket = null;
+/** @type {SessionSpeech|null} in-browser speech, when the viewer chose it */
+let speech = null;
 let sessionSettings = null;
 const adPause = new AdPauseGate();
 
@@ -46,6 +60,7 @@ let session = {
   reconnectAttempt: 0,
   lastError: null,
   adPaused: false,
+  speech: null,
 };
 
 /**
@@ -101,6 +116,8 @@ const teardown = async () => {
   const activeCapture = capture;
   socket = null;
   capture = null;
+  speech?.dispose();
+  speech = null;
   if (activeSocket) {
     activeSocket.onEvent = null;
     activeSocket.onStateChange = null;
@@ -132,8 +149,121 @@ const endSessionWithError = async (lastError, reason) => {
     reconnectAttempt: 0,
     lastError,
     adPaused: false,
+    speech: null,
   });
   await sendCaptureEnded(reason);
+};
+
+/** One frame of stream audio to whichever engine transcribes this session. */
+const transcribeFrame = (pcmFrame) => {
+  if (speech) {
+    speech.pushFrame(pcmFrame);
+  } else {
+    socket?.sendAudio(pcmFrame);
+  }
+};
+
+/**
+ * An utterance transcribed in this browser: send the text to the backend
+ * and, when the viewer wants the live caption, to the overlay as well (the
+ * backend does not echo text it was sent).
+ */
+const handleLocalTranscript = (transcript) => {
+  const text = transcript.text.trim();
+  if (!text) {
+    return;
+  }
+  const frame = {type: "transcript", text, start: transcript.startS, end: transcript.endS};
+  socket?.sendJson(frame);
+  if (sessionSettings?.sendTranscripts) {
+    forwardBackendEvent(frame);
+  }
+};
+
+const handleSpeechStatus = (status) => {
+  if (status.status === SPEECH_STATUS.DEGRADED) {
+    // Same notice the backend sends when ITS engine falls back to the CPU.
+    forwardBackendEvent({
+      type: "error",
+      code: "stt_degraded",
+      message: "Speech recognition moved to the CPU after a GPU problem; captions may lag.",
+      fatal: false,
+    });
+  }
+  writeSession({speech: {engine: "browser", ...status}}).catch((error) => {
+    console.error("[fact-checker] speech-state persistence failed:", error);
+  });
+};
+
+// Held while the GPU is being brought up, so another context can tell a
+// stored "attempt in progress" marker that is live from one a crash left
+// behind (engine/stt/speech_store.mjs).
+let releaseGpuLock = null;
+
+const holdGpuLock = () =>
+  new Promise((acquired) => {
+    if (!navigator.locks) {
+      acquired();
+      return;
+    }
+    navigator.locks
+      .request(GPU_LOCK_NAME, () => {
+        acquired();
+        return new Promise((release) => {
+          releaseGpuLock = release;
+        });
+      })
+      .catch((error) => {
+        console.warn("[fact-checker] GPU lock unavailable:", error);
+        acquired();
+      });
+  });
+
+/** Tell the service worker about GPU use; resolves once it is stored. */
+const reportGpuAttempt = async (attempt) => {
+  if (attempt.phase === "begin") {
+    await holdGpuLock();
+  }
+  try {
+    await chrome.runtime.sendMessage(
+      makeMsg(TARGET.BACKGROUND, MSG.SPEECH_GPU_ATTEMPT, attempt)
+    );
+  } catch (error) {
+    console.warn("[fact-checker] GPU attempt not recorded:", error);
+  }
+  if (attempt.phase === "end") {
+    releaseGpuLock?.();
+    releaseGpuLock = null;
+  }
+};
+
+const startBrowserSpeech = (config) => {
+  speech = new SessionSpeech({
+    config,
+    createTranscriber: (callbacks, options) => new LiveTranscriber(callbacks, options),
+    onTranscript: handleLocalTranscript,
+    onStatus: handleSpeechStatus,
+    onGpuAttempt: reportGpuAttempt,
+    onGpuFailed: (reason) => {
+      console.error(`[fact-checker] GPU speech failed: ${reason}`);
+      chrome.runtime
+        .sendMessage(makeMsg(TARGET.BACKGROUND, MSG.SPEECH_GPU_FAILED, {reason}))
+        .catch((error) => {
+          console.warn("[fact-checker] GPU failure not recorded:", error);
+        });
+    },
+    onFailed: (reason) => {
+      console.error(`[fact-checker] in-browser speech failed: ${reason}`);
+      endSessionWithError(ERR.ERR_SPEECH_FAILED, "speech_failed").catch((error) => {
+        console.error("[fact-checker] speech-failure handling failed:", error);
+      });
+    },
+  });
+  // Not awaited: audio is already flowing, and frames wait in the worker's
+  // queue while the model loads.
+  speech.start().catch((error) => {
+    console.error("[fact-checker] speech start failed:", error);
+  });
 };
 
 const handleAudioFrame = (pcmFrame) => {
@@ -148,15 +278,15 @@ const handleAudioFrame = (pcmFrame) => {
       console.error("[fact-checker] ad-state persistence failed:", error);
     });
   }
-  socket?.sendAudio(pcmFrame);
+  transcribeFrame(pcmFrame);
 };
 
 /**
  * OFFSCREEN_AD_STATE: the captured tab started or finished an ad break.
  * Repeated `active: true` messages are heartbeats that keep the pause alive
  * (it lapses on its own otherwise — see shared/ad_pause.js). The first one
- * also sends a second of silence so the backend's VAD closes the streamer's
- * last utterance rather than splicing it onto post-ad speech.
+ * also sends a second of silence so the transcriber's segmenter closes the
+ * streamer's last utterance rather than splicing it onto post-ad speech.
  */
 const handleAdState = ({active} = {}) => {
   if (!capture) {
@@ -167,7 +297,7 @@ const handleAdState = ({active} = {}) => {
     adPause.resume();
   } else if (adPause.pause()) {
     for (const silenceFrame of buildBoundarySilenceFrames()) {
-      socket?.sendAudio(silenceFrame);
+      transcribeFrame(silenceFrame);
     }
   }
   if (session.adPaused === paused) {
@@ -298,6 +428,7 @@ const handleStart = async ({streamId, tabId, settings}) => {
     reconnectAttempt: 0,
     lastError: null,
     adPaused: false,
+    speech: null,
   });
   try {
     await captureStarted;
@@ -311,7 +442,8 @@ const handleStart = async ({streamId, tabId, settings}) => {
     hello: {
       type: "hello",
       version: 1,
-      format: "pcm_s16le",
+      // "transcript": this document transcribes and sends text, not audio.
+      format: sessionSettings.speech ? "transcript" : "pcm_s16le",
       sample_rate: AUDIO_SAMPLE_RATE,
       channels: 1,
       sensitivity: sessionSettings.sensitivity,
@@ -334,6 +466,9 @@ const handleStart = async ({streamId, tabId, settings}) => {
     onGiveUp: handleSocketGiveUp,
   });
   socket.connect();
+  if (sessionSettings.speech) {
+    startBrowserSpeech(sessionSettings.speech);
+  }
 };
 
 /**
@@ -348,8 +483,10 @@ const handleStop = async ({reason = "user_stop"} = {}) => {
   await writeSession({status: "stopping"});
   const activeSocket = socket;
   const activeCapture = capture;
+  const activeSpeech = speech;
   socket = null;
   capture = null;
+  speech = null;
   adPause.resume();
   if (activeCapture) {
     activeCapture.onFrame = null;
@@ -361,6 +498,30 @@ const handleStop = async ({reason = "user_stop"} = {}) => {
     } catch (error) {
       console.warn("[fact-checker] capture stop failed:", error);
     }
+  }
+  if (activeSpeech) {
+    // The last utterance is still in the model: let it finish (bounded) so
+    // its text reaches the backend before the final gate pass. `socket` is
+    // already null, so send through the captured reference.
+    activeSpeech.onTranscript = (transcript) => {
+      const text = transcript.text.trim();
+      if (text) {
+        activeSocket?.sendJson({
+          type: "transcript",
+          text,
+          start: transcript.startS,
+          end: transcript.endS,
+        });
+      }
+    };
+    await activeSpeech.finish(SPEECH_FLUSH_TIMEOUT_MS);
+    const {segmentsDropped, droppedSeconds} = activeSpeech.stats;
+    if (segmentsDropped > 0) {
+      console.info(
+        `[fact-checker] speech fell behind: dropped ${segmentsDropped} utterance(s), ${droppedSeconds.toFixed(1)} s`
+      );
+    }
+    activeSpeech.dispose();
   }
   if (activeSocket) {
     // Forward flush frames only — no state-machine re-entry: "ready" cannot
@@ -389,6 +550,7 @@ const handleStop = async ({reason = "user_stop"} = {}) => {
     reconnectAttempt: 0,
     lastError: reason === "tab_closed" ? ERR.ERR_TAB_CLOSED : null,
     adPaused: false,
+    speech: null,
   });
   await sendCaptureEnded(reason);
 };

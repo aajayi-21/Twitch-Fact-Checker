@@ -257,6 +257,8 @@ class TestUnconfiguredSurface:
             "server_version": "0.1.0",
             "whisper_model": "fake-whisper.en",
             "stt_segmentation": "window",
+            "accepts_audio": True,
+            "accepts_transcripts": True,
             "configured": False,
             "llm_provider": None,
             "gate_provider": None,

@@ -29,6 +29,7 @@ const runJob = async (job) => {
   reportProgress("load");
   const transcriber = await loadTranscriber({
     repo: job.repo,
+    revision: job.revision,
     device: job.device,
     dtype: job.dtype,
     numThreads: job.numThreads,

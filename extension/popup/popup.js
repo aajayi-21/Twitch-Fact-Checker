@@ -53,6 +53,15 @@ const ERROR_COPY = {
   // page_session.js); the speech engine's unrecoverable failure gets copy.
   "backend:stt_failure":
     "Transcription engine failed — restart the backend, then click Start.",
+  [ERR.ERR_SPEECH_NOT_READY]:
+    "Speech recognition in this browser is not set up — open the dashboard, Settings → Speech.",
+  [ERR.ERR_SPEECH_FAILED]:
+    "Speech recognition in this browser stopped working. Re-run its test in Settings → Speech.",
+  "backend:stt_disabled":
+    "This backend has no speech model. Switch speech to “This browser” in Settings → Speech.",
+  // An older backend rejects the transcript-session handshake.
+  "backend:bad_hello":
+    "The backend is too old for in-browser speech. Update it, or switch speech back to the backend.",
 };
 
 const STATUS_LABEL = {
@@ -198,6 +207,18 @@ const render = () => {
     elements.hintLine.textContent =
       "This page can't be captured — open a stream on Twitch, YouTube, Kick, " +
       "or Rumble (or any audible tab).";
+  } else if (active && session.speech?.status === "loading") {
+    // In-browser speech: the model is still loading (or downloading), so
+    // nothing is being transcribed yet.
+    const percent = session.speech.downloadPercent;
+    elements.hintLine.hidden = false;
+    elements.hintLine.textContent =
+      `Loading the speech model (${session.speech.modelLabel})` +
+      (Number.isFinite(percent) ? ` — downloading ${percent}%` : "…");
+  } else if (active && session.speech?.status === "degraded") {
+    elements.hintLine.hidden = false;
+    elements.hintLine.textContent =
+      "Speech is running on the CPU after a GPU problem; captions may lag.";
   } else {
     elements.hintLine.hidden = true;
   }

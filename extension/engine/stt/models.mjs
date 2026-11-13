@@ -79,6 +79,11 @@ export const STT_VARIANTS = Object.freeze({
  * @property {string} id
  * @property {string} label
  * @property {string} repo - Hugging Face repository id
+ * @property {string} [revision] - the exact commit of `repo` to download.
+ *   Model weights are fetched at first use, not shipped in the package, so
+ *   the commit is pinned here: a git commit id names its content, which
+ *   makes the download immutable. Set on every model offered to viewers;
+ *   bump it deliberately and re-run the benchmark when you do.
  * @property {"fast"|"balanced"|"accurate"} tier
  * @property {string[]} variants - STT_VARIANTS keys, preference order
  * @property {Record<string, number>} downloadMb - per variant
@@ -102,6 +107,7 @@ export const STT_MODELS = Object.freeze([
     id: "moonshine-base",
     label: "Moonshine Base",
     repo: "onnx-community/moonshine-base-ONNX",
+    revision: "b1e9b6aae3c3c7298f10c3798393fdf38e8fbbad",
     tier: "fast",
     variants: ["wasm-q8", "webgpu-fp32"],
     downloadMb: {"wasm-q8": 63, "webgpu-fp32": 247},
@@ -111,6 +117,7 @@ export const STT_MODELS = Object.freeze([
     id: "whisper-base.en",
     label: "Whisper Base (English)",
     repo: "onnx-community/whisper-base.en",
+    revision: "51eefc0af78b103839eda9e7e4f4186acc6517fe",
     tier: "balanced",
     variants: ["webgpu-mixed", "webgpu-fp32", "wasm-q8"],
     downloadMb: {"webgpu-mixed": 250, "webgpu-fp32": 291, "wasm-q8": 77},
@@ -133,11 +140,38 @@ export const STT_MODELS = Object.freeze([
     id: "parakeet-ctc-0.6b",
     label: "Parakeet CTC 0.6B",
     repo: "onnx-community/parakeet-ctc-0.6b-ONNX",
+    revision: "7df2cab7aed886b8b7f80d68a8214007e4847601",
     tier: "accurate",
     variants: ["webgpu-q4f16", "webgpu-q4", "wasm-q8"],
     downloadMb: {"webgpu-q4f16": 455, "webgpu-q4": 643, "wasm-q8": 612},
     maxSegmentS: 10,
   },
+]);
+
+/**
+ * The three choices a viewer is offered, from the measurements in
+ * docs/spike-results/stt-gpu-benchmark.md. The other catalogue entries stay
+ * for the developer benchmark.
+ */
+export const SPEECH_TIERS = Object.freeze([
+  Object.freeze({
+    tier: "fast",
+    modelId: "moonshine-base",
+    label: "Fast",
+    summary: "Runs on any computer, no GPU needed. The smallest download.",
+  }),
+  Object.freeze({
+    tier: "balanced",
+    modelId: "whisper-base.en",
+    label: "Balanced",
+    summary: "English only. Needs a GPU to keep up with live speech.",
+  }),
+  Object.freeze({
+    tier: "accurate",
+    modelId: "parakeet-ctc-0.6b",
+    label: "Accurate",
+    summary: "The most accurate, and the fastest on a capable GPU. A large download.",
+  }),
 ]);
 
 /**

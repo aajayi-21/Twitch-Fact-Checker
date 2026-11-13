@@ -341,7 +341,13 @@ class Settings(BaseSettings):
     #     install); markedly more accurate than whisper-small.en and cheap on
     #     variable-length VAD clips. Model: PARAKEET_MODEL. Device/dtype come
     #     from WHISPER_DEVICE / WHISPER_COMPUTE_TYPE.
-    stt_backend: Literal["faster-whisper", "torch", "parakeet"] = "faster-whisper"
+    #   "none" — load no speech model at all. Only transcript sessions are
+    #     accepted: the extension transcribes in the browser and sends text
+    #     (hello ``format: "transcript"``). Starts in a second and frees the
+    #     memory a model would hold.
+    stt_backend: Literal["faster-whisper", "torch", "parakeet", "none"] = (
+        "faster-whisper"
+    )
     # Hugging Face repo id for STT_BACKEND=parakeet. v3 is the Parakeet with
     # official transformers weights (25 European languages, auto-detected).
     parakeet_model: str = "nvidia/parakeet-tdt-0.6b-v3"
@@ -366,7 +372,14 @@ class Settings(BaseSettings):
         """The active STT engine's model id (healthz / ready frame / logs)."""
         if self.stt_backend == "parakeet":
             return self.parakeet_model
+        if self.stt_backend == "none":
+            return "none"
         return self.whisper_model
+
+    @property
+    def stt_enabled(self) -> bool:
+        """Whether this backend can transcribe audio itself."""
+        return self.stt_backend != "none"
 
     @property
     def whisper_language_or_none(self) -> str | None:

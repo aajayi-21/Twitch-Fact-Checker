@@ -30,6 +30,14 @@ export const MSG = Object.freeze({
   OFFSCREEN_AD_STATE: "OFFSCREEN_AD_STATE",
   // offscreen -> service worker
   BACKEND_EVENT: "BACKEND_EVENT",
+  // In-browser speech crash guard ({phase: "begin"|"end", variantId}): sent
+  // just before the GPU is first used and when that use returns. ANSWERED
+  // (sendResponse) once stored, because "begin" must be on disk before the
+  // GPU is touched. See engine/stt/speech_setup.mjs.
+  SPEECH_GPU_ATTEMPT: "SPEECH_GPU_ATTEMPT",
+  // The GPU failed during a session ({reason}); do not use it again until
+  // the viewer re-runs the speech test.
+  SPEECH_GPU_FAILED: "SPEECH_GPU_FAILED",
   CAPTURE_ENDED: "CAPTURE_ENDED",
   SESSION_UPDATE: "SESSION_UPDATE",
   // service worker -> content script (via chrome.tabs.sendMessage)
@@ -83,6 +91,12 @@ export const ERR = Object.freeze({
   // The backend hot-swapped to a freshly saved API key/provider and closed
   // the session (WS fatal error frame {"code":"credentials_updated"}).
   ERR_CREDENTIALS_UPDATED: "ERR_CREDENTIALS_UPDATED",
+  // "This browser" is the chosen speech engine but it has no tested, usable
+  // configuration (never set up, stale after an update, or GPU blocked).
+  ERR_SPEECH_NOT_READY: "ERR_SPEECH_NOT_READY",
+  // In-browser speech stopped working mid-session with nothing to fall
+  // back to.
+  ERR_SPEECH_FAILED: "ERR_SPEECH_FAILED",
 });
 
 /**

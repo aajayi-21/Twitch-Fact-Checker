@@ -333,6 +333,36 @@ node --test "extension/tests/*.test.mjs"   # unit tests (no dependencies)
 node scripts/run_app_e2e.mjs               # the app in a real Chrome, against a fake backend
 ```
 
+## Speech in the browser (optional)
+
+By default the backend transcribes. The extension can do it instead, inside Chrome, and
+send the backend only text:
+
+1. Once, from the project folder: `python scripts/vendor_stt_runtime.py` (fetches the
+   pinned speech runtime into `extension/vendor/transformers/`, which is not checked in),
+   then reload the extension.
+2. Dashboard → **Settings → Speech recognition → This browser**, pick a model, and press
+   **Download and test**. The test transcribes a short built-in clip and only approves a
+   configuration that is both right and fast enough on your machine.
+3. Press Start on a stream as usual.
+
+| Model | Runs on | Download |
+|---|---|---|
+| Fast (Moonshine Base) | any computer | about 63 MB |
+| Balanced (Whisper Base, English) | needs a GPU | about 250 MB |
+| Accurate (Parakeet CTC 0.6B) | best on a capable GPU | about 455 MB |
+
+With speech in the browser the backend no longer needs its own model. `STT_BACKEND=none`
+in `backend/.env` starts it without one — it comes up in a few seconds and uses far less
+memory, and it then accepts only sessions that send text.
+
+Chrome only (Firefox has no offscreen document, so there the backend always
+transcribes). Detection of music and noise is still basic; see the build guide.
+
+```bash
+node scripts/run_browser_speech_e2e.mjs    # real model, real capture, model-less fake backend
+```
+
 ## Analytics & dashboard
 
 Every session records its funnel to `backend/fact_checker.db`: which claims were
