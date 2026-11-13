@@ -13,6 +13,7 @@ import {ENGINE_MODE, initEngine, useEngine} from "./lib/engine_actions.mjs";
 import {initLedger} from "./lib/ledger_store.mjs";
 import {initSpeech, useSpeech} from "./lib/speech_actions.mjs";
 import {html, render, useEffect, useState} from "./lib/html.mjs";
+import {PRIVACY_POLICY_URL} from "./lib/links.mjs";
 import {ROUTES, landingRoute, parseRoute} from "./lib/routes.mjs";
 import {HistoryView} from "./views/history.mjs";
 import {HomeView} from "./views/home.mjs";
@@ -103,6 +104,9 @@ const Sidebar = ({route}) => {
       <div class="sidebar-footer">
         <${StatusPill} state=${readiness.state}>${readiness.text}<//>
         <a class="sidebar-link" href=${`#${ROUTES.WELCOME}`}>Setup guide</a>
+        <a class="sidebar-link" href=${PRIVACY_POLICY_URL} target="_blank" rel="noopener noreferrer">
+          Privacy policy
+        </a>
         <span class="version">Version ${chrome.runtime.getManifest().version}</span>
       </div>
     </aside>

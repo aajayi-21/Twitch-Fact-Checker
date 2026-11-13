@@ -967,8 +967,48 @@ Not built, or different from §3 and §9:
 **Phase 5 — hosted speech fallback (about a week).** OpenAI and Gemini transcription for
 machines that fail the benchmark.
 
-**Phase 6 — store (1 week of work, plus review time).** `LICENSE`, privacy policy,
-build script, CI, listing assets, unlisted submission, then AMO and Edge.
+**Phase 6 ◐ — store packaging (prepared 2026-11-13; nothing submitted, by decision).**
+Everything that can be made ready without publishing is ready. The owner's instruction is
+not to deploy the app publicly yet, on the store or any other way, and no licence has been
+chosen, so the submission itself, AMO and Edge are on hold.
+
+- **Package:** `scripts/build_extension.py` derives a clean manifest per browser from
+  the development one (instead of the three hand-kept manifest files §10.2 proposed —
+  one source of truth, and development is unchanged), copies only release files, zips
+  reproducibly, and fails on what a store would reject: an over-long description (the
+  old one was 179 characters against a limit of 132), an unlisted permission, a missing
+  file, remote or inline code. Chrome zip: 8.6 MB.
+- **Permissions:** the Chrome package asks for no host at install. The backend's
+  addresses became optional and are requested when someone chooses the local backend;
+  Gemini's host when a Gemini key is added.
+- **Reviewer path with no key** (§10.6): the welcome flow's key step can be skipped, and
+  the last step then plays a bundled clip through the real speech model and the real
+  pipeline with answers recorded from a real run. The screen says it is a recording.
+- **Disclosure corrected:** the first setup step said only the sentence being checked
+  goes to the AI provider. The transcript text goes there too, so that claims can be
+  found; it now says so, and links the privacy policy.
+- **Documents:** `docs/privacy-policy.md`, `docs/store/listing.md` (copy, one
+  justification per permission, data-use answers, reviewer instructions),
+  `docs/store/submission-checklist.md`, `extension/THIRD_PARTY_NOTICES.md`.
+- **Images:** `scripts/make_store_assets.mjs` renders five 1280×800 screenshots and the
+  promo tile from the real UI with made-up history.
+- **CI:** `.github/workflows/ci.yml` runs the backend tests, the prompt-export check and
+  the extension tests, and builds both packages. It does not attach the zips to the run:
+  on a public repository that is a public download.
+
+Verified by installing `dist/chrome` into a clean Chrome profile: the no-key path
+(13 of 13 checks, free) and a full run with an OpenRouter key (31 of 31).
+
+Open, in the order they matter:
+
+| Item | State |
+|---|---|
+| Licence | **Not chosen.** §10.1 blocker 1 stands. The MIT-for-`extension/` plan assumed the extension was useless without the backend; that is no longer true |
+| Submission, privacy-policy hosting, developer account, release tag | On hold; the owner's to do (`docs/store/submission-checklist.md`) |
+| Firefox package | Built and linted, with AMO's data-collection declaration. **Not run in Firefox** since Phase 1 |
+| Edge | Not loaded in Edge |
+| "What changed" notice on update (§10.4) | Not built; needed before a release that changes data flow |
+| Publishing from CI (§10.5 step 4) | Not built; needs the store item to exist |
 
 Start the developer account, `LICENSE` and privacy policy during Phase 1 — they are
 cheap, and the first review is the slow one.

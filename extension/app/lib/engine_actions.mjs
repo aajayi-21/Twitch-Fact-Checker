@@ -108,8 +108,42 @@ const change = async (update) => {
   await refresh();
 };
 
-/** @param {"companion"|"browser"} mode - takes effect at the next Start */
-export const setEngineMode = (mode) => change((state) => ({...state, mode}));
+// The local backend's addresses. In the store package these are OPTIONAL
+// permissions, so that installing asks for nothing about "your local
+// network"; they are requested here, at the moment someone chooses the
+// backend. In a development copy they are already granted and this is a
+// no-op. (WebSocket connections need no host permission at all.)
+export const BACKEND_ORIGINS = Object.freeze([
+  "http://127.0.0.1/*",
+  "http://localhost/*",
+  "https://127.0.0.1/*",
+  "https://localhost/*",
+]);
+
+/**
+ * Choose the engine. Takes effect at the next Start.
+ *
+ * Call directly from the click handler: choosing the backend may show the
+ * browser's permission prompt, which needs a user gesture.
+ *
+ * @param {"companion"|"browser"} mode
+ * @throws {PermissionDeclined} when the backend is chosen and access to it
+ *   is refused; the stored choice is then left as it was
+ */
+export const setEngineMode = async (mode) => {
+  if (mode === ENGINE_MODE.COMPANION) {
+    const origins = [...BACKEND_ORIGINS];
+    // Ask only when it is not already granted (it always is in a
+    // development copy, where these are required permissions).
+    const granted =
+      (await chrome.permissions.contains({origins})) ||
+      (await chrome.permissions.request({origins}));
+    if (!granted) {
+      throw new PermissionDeclined("the local backend");
+    }
+  }
+  await change((state) => ({...state, mode}));
+};
 
 /**
  * @param {"gate"|"verify"} stage
