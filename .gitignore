@@ -26,3 +26,6 @@ docs/spike-results/raw/
 # Browser-spike working files: Chrome profiles (hold downloaded models) and
 # patched extension copies. Kept on disk rather than in /tmp, which is RAM.
 .stt-bench/
+
+# Store packages (scripts/build_extension.py)
+dist/

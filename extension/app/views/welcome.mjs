@@ -26,8 +26,10 @@ import {
   setEngineMode,
   useEngine,
 } from "../lib/engine_actions.mjs";
+import {DEMO_RECORDING, runDemo} from "../lib/demo_run.mjs";
 import {BROWSER_PROVIDERS, describeProviderError} from "../lib/engine_model.mjs";
 import {html, useEffect, useState} from "../lib/html.mjs";
+import {PRIVACY_POLICY_URL} from "../lib/links.mjs";
 import {ROUTES} from "../lib/routes.mjs";
 import {KEY_PROVIDERS, describeConnection, describeStages} from "../lib/setup_model.mjs";
 import {useSpeech} from "../lib/speech_actions.mjs";
@@ -59,8 +61,9 @@ const HowItWorksStep = ({onNext, alreadyAgreed}) => html`
         browser, or by the backend program if you choose to run one.
       </li>
       <li>
-        <strong>Claims go to the AI provider whose key you add.</strong> Only the sentence being
-        checked is sent, so the provider can search the web and judge it. You pay that
+        <strong>The words go to the AI provider whose key you add; the audio does not.</strong>
+        The text of what is said is sent in short batches so the provider can pick out factual
+        claims, and each claim is sent again to be checked against the web. You pay that
         provider directly for what you use.
       </li>
       <li>
@@ -72,6 +75,10 @@ const HowItWorksStep = ({onNext, alreadyAgreed}) => html`
         so you can check for yourself.
       </li>
     </ul>
+    <p class="field-help">
+      The full detail is in the${" "}
+      <${ExternalLink} href=${PRIVACY_POLICY_URL}>privacy policy<//>.
+    </p>
     <div class="form-actions">
       <${Button} variant="primary" onClick=${onNext}>
         ${alreadyAgreed ? "Continue" : "I understand — continue"}
@@ -90,11 +97,16 @@ const EngineStep = ({onNext, onBack}) => {
     onboarding.completedAt || !HAS_OFFSCREEN_CAPTURE ? engine.state.mode : ENGINE_MODE.BROWSER
   );
   const [saving, setSaving] = useState(false);
+  const [problem, setProblem] = useState(null);
   const proceed = async () => {
     setSaving(true);
+    setProblem(null);
     try {
+      // Choosing the backend may ask for permission to reach it.
       await setEngineMode(mode);
       onNext();
+    } catch (error) {
+      setProblem(describeProviderError(error, "The local backend"));
     } finally {
       setSaving(false);
     }
@@ -117,6 +129,7 @@ const EngineStep = ({onNext, onBack}) => {
             This browser can only use the local backend; running inside the browser needs Chrome
             or Edge.
           <//>`}
+      ${problem ? html`<${Notice} tone="warn">${problem}<//>` : null}
       <div class="form-actions">
         <${Button} variant="primary" onClick=${proceed} busy=${saving}>Continue<//>
         <${Button} variant="ghost" onClick=${onBack} disabled=${saving}>Back<//>
@@ -189,6 +202,16 @@ const BrowserProviderStep = ({onNext, onBack}) => {
               }}
               onCancel=${replacing ? () => setReplacing(false) : onBack}
             />
+            ${engine.plan.ready
+              ? null
+              : html`<p class="field-help">
+                  No key yet?${" "}
+                  <button type="button" class="link-button" onClick=${onNext}>
+                    Skip this for now
+                  </button>
+                  ${" "}— you can still set up speech and watch a recorded example, and add a key
+                  later under AI provider.
+                </p>`}
           `
         : null}
     <//>
@@ -336,6 +359,98 @@ const VerdictPreview = ({verdict}) => html`
   </article>
 `;
 
+/**
+ * The last step for someone with no key: the bundled clip, transcribed here
+ * and now, with verdicts that were recorded from a real run.
+ */
+const DemoStep = ({onFinish, onBack}) => {
+  const speech = useSpeech();
+  const [running, setRunning] = useState(false);
+  const [done, setDone] = useState(false);
+  const [heard, setHeard] = useState([]);
+  const [checking, setChecking] = useState(null);
+  const [verdicts, setVerdicts] = useState([]);
+  const [error, setError] = useState(null);
+  const ready = Boolean(speech.plan?.ready);
+
+  const run = async () => {
+    setRunning(true);
+    setDone(false);
+    setError(null);
+    setHeard([]);
+    setVerdicts([]);
+    setChecking(null);
+    try {
+      await runDemo({
+        config: speech.plan.config,
+        onFrame: (frame) => {
+          if (frame.type === "transcript") {
+            setHeard((lines) => [...lines, frame.text]);
+          } else if (frame.type === "status" && frame.stage === "verifying") {
+            setChecking(frame.claim);
+          } else if (frame.type === "verdict") {
+            setChecking(null);
+            setVerdicts((list) => [...list, frame]);
+          }
+        },
+      });
+      setDone(true);
+    } catch (demoError) {
+      setError(String(demoError?.message ?? demoError));
+    } finally {
+      setRunning(false);
+      setChecking(null);
+    }
+  };
+
+  return html`
+    <${Card} title="See it work — no key needed">
+      <p class="lede">
+        This plays a 43-second recording of a made-up stream through the speech model on your
+        computer, then shows how its claims are judged.
+      </p>
+      <${Notice} tone="info">
+        A recorded example. The speech is turned into text on this computer, right now. The
+        verdicts were recorded on ${DEMO_RECORDING.recordedAt} from a real run with
+        ${" "}${DEMO_RECORDING.model}, so nothing is sent anywhere and no key is used.
+      <//>
+      ${ready
+        ? null
+        : html`<${Notice} tone="warn">
+            Go back one step and download and test a speech model first.
+          <//>`}
+      ${heard.length > 0
+        ? html`<div class="demo-heard" aria-live="polite">
+            <span class="setting-label">Heard</span>
+            <p>${heard.join(" ")}</p>
+          </div>`
+        : null}
+      ${verdicts.map(
+        (verdict) => html`<${VerdictPreview} key=${verdict.id} verdict=${verdict} />`
+      )}
+      ${checking ? html`<p class="muted" role="status">Checking: “${checking}”</p>` : null}
+      ${done
+        ? html`<${Notice} tone="success">
+            ${verdicts.length} claims judged; the opinions, the game talk and the sponsor read
+            were left alone. With your own key the same thing happens on a live stream.
+          <//>`
+        : null}
+      ${error ? html`<${Notice} tone="error">The demo could not finish: ${error}<//>` : null}
+      <div class="form-actions">
+        ${done
+          ? html`<${Button} variant="primary" onClick=${onFinish}>Finish<//>`
+          : html`<${Button} variant="primary" onClick=${run} busy=${running} disabled=${!ready}>
+              ${running ? "Listening…" : "Play the recorded example"}
+            <//>`}
+        ${done
+          ? html`<${Button} onClick=${run}>Play it again<//>`
+          : html`<${Button} onClick=${onFinish} disabled=${running}>Skip<//>`}
+        <${Button} variant="ghost" onClick=${onBack} disabled=${running}>Back<//>
+      </div>
+    <//>
+  `;
+};
+
 const describeTestError = (error) => {
   if (error?.name === "ProviderError") {
     return describeProviderError(error, "Your AI provider");
@@ -440,7 +555,11 @@ export const WelcomeView = ({navigate}) => {
           html`<${BackendStep} onNext=${next} onBack=${back} />`,
           html`<${ProviderStep} onNext=${next} onBack=${back} />`,
         ]),
-    html`<${TryItStep} onFinish=${finish} onBack=${back} browserEngine=${browserEngine} />`,
+    // No key on the browser engine: there is nothing to make a real check
+    // with, so the last step is the recorded example instead.
+    browserEngine && !engine.plan.ready
+      ? html`<${DemoStep} onFinish=${finish} onBack=${back} />`
+      : html`<${TryItStep} onFinish=${finish} onBack=${back} browserEngine=${browserEngine} />`,
   ][step];
 
   return html`

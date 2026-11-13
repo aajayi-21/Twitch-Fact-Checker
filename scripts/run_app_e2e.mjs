@@ -747,7 +747,13 @@ const main = async () => {
 
     console.log("\nWelcome: how it works");
     const disclosure = await app.text();
-    check("explains what is captured and where it goes", /Audio stays on this computer/.test(disclosure) && /can be wrong/.test(disclosure));
+    check(
+      "explains what is captured and where it goes, and links the privacy policy",
+      /Audio stays on this computer/.test(disclosure) &&
+        /The words go to the AI provider.*the audio does not/s.test(disclosure) &&
+        /can be wrong/.test(disclosure) &&
+        (await app.eval(`[...document.querySelectorAll("a")].some((link) => link.href.endsWith("/docs/privacy-policy.md"))`))
+    );
     await screenshot(page, "welcome-how-it-works");
     await app.click("I understand");
     await app.waitForText("Where should it run?");

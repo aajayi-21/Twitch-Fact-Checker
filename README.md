@@ -363,6 +363,28 @@ contradiction alerts, on-screen (vision) claims, Ollama, and Firefox.
 node scripts/run_browser_engine_e2e.mjs --provider anthropic
 ```
 
+## Building the store package
+
+Not published anywhere; this only produces the files.
+
+```bash
+python scripts/vendor_stt_runtime.py     # once: the pinned speech runtime
+python scripts/build_extension.py        # -> dist/chrome/, dist/firefox/ and a zip of each
+python scripts/build_extension.py --check   # lint only
+```
+
+The build derives a clean manifest per browser from `extension/manifest.json`, leaves
+out tests and tooling, and fails on anything a store would reject that it can detect.
+`dist/chrome` can be loaded unpacked to try exactly what would be uploaded:
+
+```bash
+node scripts/run_browser_engine_e2e.mjs --demo --extension dist/chrome   # free, no key
+```
+
+Listing copy, permission justifications, the privacy policy and the submission steps are
+in `docs/store/` and `docs/privacy-policy.md`. Store images are regenerated from the
+real UI with `node scripts/make_store_assets.mjs`.
+
 ## Speech in the browser (optional)
 
 By default the backend transcribes. The extension can do it instead, inside Chrome, and

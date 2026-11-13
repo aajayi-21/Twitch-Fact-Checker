@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Live Stream Fact-Checker",
   "version": "0.1.0",
-  "description": "Live fact-checks a stream on Twitch, YouTube, Kick, or Rumble: captures tab audio, transcribes it on your computer, and overlays sourced TRUE/FALSE/MISLEADING/UNVERIFIED verdicts.",
+  "description": "Fact-checks what is said in a live stream you are watching and shows sourced verdicts over the player.",
   "minimum_chrome_version": "116",
   "permissions": ["tabCapture", "offscreen", "storage", "activeTab", "alarms", "unlimitedStorage"],
   "host_permissions": [

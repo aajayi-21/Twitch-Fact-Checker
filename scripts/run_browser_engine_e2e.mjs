@@ -31,8 +31,15 @@
  *     node scripts/run_browser_engine_e2e.mjs --provider anthropic
  *     node scripts/run_browser_engine_e2e.mjs --provider openrouter --headed
  *
+ * With --demo there is no key and no provider call at all: the welcome flow
+ * is walked the way a store reviewer would walk it — skip the key, set up
+ * speech, play the recorded example — and the run costs nothing.
+ *
  * Options:
- *   --provider ID        anthropic | openrouter | openai | gemini (required)
+ *   --provider ID        anthropic | openrouter | openai | gemini
+ *   --demo               no key: check the recorded example instead (free)
+ *   --extension DIR      the extension to load (default: extension/; use
+ *                        dist/chrome to test the store package)
  *   --headed             show the browser window
  *   --screens DIR        where to save screenshots (default .stt-bench/screens)
  *   --timeout-s N        limit for the model download and self-test (default 900)
@@ -65,13 +72,16 @@ const KEY_VARIABLES = Object.freeze({
 const CLI_SPEC = {
   values: {
     "--provider": "provider",
+    "--extension": "extension",
     "--screens": "screens",
     "--timeout-s": "timeoutS",
     "--chrome": "chrome",
   },
-  flags: {"--headed": ["headed", true]},
+  flags: {"--headed": ["headed", true], "--demo": ["demo", true]},
   defaults: {
     provider: null,
+    extension: EXTENSION_DIR,
+    demo: false,
     screens: path.join(WORK_DIR, "screens"),
     timeoutS: "900",
     chrome: "google-chrome",
@@ -97,22 +107,99 @@ const readKey = async (providerId) => {
 };
 
 const results = [];
+
+/** Print the tally; the process exit code. */
+const summarize = () => {
+  const failed = results.filter((result) => !result.pass);
+  console.log(`\n${results.length - failed.length} of ${results.length} checks passed.`);
+  return failed.length === 0 ? 0 : 1;
+};
+
 const check = (name, condition, detail = "") => {
   results.push({name, pass: Boolean(condition)});
   console.log(`${condition ? "  ok  " : "  FAIL"}  ${name}${detail && !condition ? ` — ${detail}` : ""}`);
 };
 
+/** The manifest Chrome actually loaded, read from an extension page. */
+const page0Manifest = async (chrome, extensionId) => {
+  const probe = await chrome.openPage(`chrome-extension://${extensionId}/popup/popup.html`);
+  const manifest = await probe.evaluate("chrome.runtime.getManifest()");
+  await probe.send("Page.close").catch(() => {});
+  return manifest;
+};
+
+/**
+ * The path of someone with no API key (a first-time viewer, a store
+ * reviewer): skip the key, set up speech, play the recorded example.
+ */
+const demoChecks = async ({click, waitForText, text, run, stored, page, screenshot, ledger}) => {
+  console.log("\nNo key: the recorded example");
+  await click("Skip this for now");
+  await waitForText("Speech recognition");
+  check("the key step can be skipped", (await stored("local", "providerKeys")) === null);
+  await click("Download and test");
+  const startedAt = Date.now();
+  for (;;) {
+    const body = await text();
+    if (/Works on this device|cannot transcribe live speech|could not finish/.test(body)) {
+      break;
+    }
+    if (Date.now() - startedAt > 900_000) {
+      throw new Error("the speech self-test did not finish");
+    }
+    await pause(1000);
+  }
+  check("the speech model downloads and passes its self-test", (await text()).includes("Works on this device"));
+  await click("Continue");
+  await waitForText("See it work — no key needed");
+  check(
+    "the example is labelled as recorded, with the date and model",
+    /A recorded example\..*recorded on \d{4}-\d\d-\d\d.*claude-haiku/s.test(await text())
+  );
+  await click("Play the recorded example");
+  await waitForText("claims judged", 180_000);
+  const demo = await text();
+  const labels = await run(`[...document.querySelectorAll(".verdict .verdict-label")].map((node) => node.innerText)`);
+  console.log(`        verdicts shown: ${labels.join(", ")}`);
+  check("the clip is transcribed on this computer", /Heard\s+\S/.test(demo) && /eiffel/i.test(demo));
+  check(
+    "the recorded verdicts appear as the claims are heard",
+    labels.filter((label) => label === "FALSE").length === 2 && labels.filter((label) => label === "TRUE").length === 2,
+    labels.join(", ")
+  );
+  check("…with their sources", (await run(`document.querySelectorAll(".verdict-sources a").length`)) >= 4);
+  await screenshot(page, "demo");
+  const history = await ledger();
+  check(
+    "the example leaves nothing in the history",
+    history.sessions.length === 0 && history.verdicts.length === 0 && history.usage.length === 0
+  );
+  await click("Finish");
+  await waitForText("Latest results");
+  const home = await text();
+  check("Home then says an API key is still needed", home.includes("Needs an API key") && home.includes("Add an API key"));
+  const problems = page.consoleLines.filter(
+    (line) => /^\[(error|exception)\]/.test(line) && !/Failed to load resource|ERR_CONNECTION_REFUSED/.test(line)
+  );
+  check("no errors in the app's console", problems.length === 0, problems.slice(0, 3).join(" | "));
+};
+
 const main = async () => {
   const options = parseCli(process.argv.slice(2), CLI_SPEC);
-  if (!KEY_VARIABLES[options.provider]) {
-    throw new Error(`--provider must be one of: ${Object.keys(KEY_VARIABLES).join(", ")}`);
+  const sourceDir = path.resolve(options.extension);
+  if (options.demo) {
+    options.provider = "demo";
+  } else if (!KEY_VARIABLES[options.provider]) {
+    throw new Error(`--provider must be one of: ${Object.keys(KEY_VARIABLES).join(", ")} (or use --demo)`);
   }
-  const apiKey = await readKey(options.provider);
+  // In demo mode there is no key; a value that can never appear keeps the
+  // "the key leaked" checks meaningful without special cases.
+  const apiKey = options.demo ? "no-key-in-demo-mode-\u0000" : await readKey(options.provider);
   if (!apiKey) {
     throw new Error(`no ${KEY_VARIABLES[options.provider]} in .env.spike — add one to run this provider`);
   }
   try {
-    await stat(path.join(EXTENSION_DIR, "vendor", "transformers", "transformers.js"));
+    await stat(path.join(sourceDir, "vendor", "transformers", "transformers.js"));
   } catch {
     throw new Error("the speech runtime is not vendored: run `python scripts/vendor_stt_runtime.py` first");
   }
@@ -126,7 +213,7 @@ const main = async () => {
 
   const extensionPath = path.join(WORK_DIR, "ext-engine-e2e");
   await rm(extensionPath, {recursive: true, force: true});
-  await cp(EXTENSION_DIR, extensionPath, {recursive: true});
+  await cp(sourceDir, extensionPath, {recursive: true});
   // A clean profile every time: that is the point of this test.
   const profileDir = path.join(WORK_DIR, "profile-engine-e2e");
   await rm(profileDir, {recursive: true, force: true});
@@ -153,7 +240,12 @@ const main = async () => {
     const {id: extensionId} = await chrome.send("Extensions.loadUnpacked", {path: extensionPath});
     const appUrl = `chrome-extension://${extensionId}/app/app.html`;
 
-    console.log(`\nInstall (clean profile, no backend running) — provider: ${options.provider}`);
+    console.log(
+      `\nInstall (clean profile, no backend running) — ${options.demo ? "no key (demo)" : `provider: ${options.provider}`}` +
+        ` — ${path.relative(REPO_ROOT, sourceDir) || "."}`
+    );
+    const installed = await page0Manifest(chrome, extensionId);
+    console.log(`        version ${installed.version}; host permissions asked at install: ${JSON.stringify(installed.host_permissions ?? [])}`);
     let welcome = null;
     for (let attempt = 0; attempt < 40 && !welcome; attempt += 1) {
       await pause(150);
@@ -206,12 +298,14 @@ const main = async () => {
       }
       return session;
     };
+    // Set once the player tab is open. Looked up as "the active tab", not by
+    // URL: the store package holds no permission for the test page's host,
+    // and without one a URL query matches nothing.
+    let playerTabId = null;
     const startCapture = () =>
-      run(`(async () => {
-        const [tab] = await chrome.tabs.query({url: "${staticServer.origin}/*"});
-        await chrome.runtime.sendMessage({target: "background", type: "CAPTURE_START", payload: {tabId: tab.id}});
-        return true;
-      })()`);
+      run(`chrome.runtime
+        .sendMessage({target: "background", type: "CAPTURE_START", payload: {tabId: ${playerTabId}}})
+        .then(() => true)`);
 
     console.log("\nWelcome flow");
     await waitForText("What this extension does");
@@ -229,6 +323,11 @@ const main = async () => {
       "all four providers are offered",
       ["OpenRouter", "Anthropic", "OpenAI", "Gemini"].every((name) => keyStep.includes(name))
     );
+
+    if (options.demo) {
+      await demoChecks({click, waitForText, text, run, stored, page, screenshot, ledger});
+      return summarize();
+    }
 
     await run(`(() => {
       document.querySelector('input[name="welcome-provider"][value="${options.provider}"]').click();
@@ -313,6 +412,14 @@ const main = async () => {
 
     console.log("\nLive session: a tab playing recorded speech with four checkable claims");
     const player = await chrome.openPage(`${staticServer.origin}/fixture/player.html?delay=100000`);
+    await player.send("Page.bringToFront");
+    await pause(300);
+    playerTabId = await run(
+      `chrome.tabs.query({active: true, lastFocusedWindow: true}).then(([tab]) => tab?.id ?? null)`
+    );
+    if (typeof playerTabId !== "number") {
+      throw new Error("could not find the player tab");
+    }
     await page.send("Page.bringToFront");
     await startCapture();
     let session = await waitForSession(
@@ -418,9 +525,7 @@ const main = async () => {
     staticServer.close();
   }
 
-  const failed = results.filter((result) => !result.pass);
-  console.log(`\n${results.length - failed.length} of ${results.length} checks passed.`);
-  return failed.length === 0 ? 0 : 1;
+  return summarize();
 };
 
 main().then(

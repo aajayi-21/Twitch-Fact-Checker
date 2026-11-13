@@ -1,0 +1,76 @@
+# Checks every push and pull request, and builds the store packages.
+#
+#   backend    the Python test suite (which also covers the store build
+#              script), and that the prompts exported to the extension are
+#              not stale
+#   extension  the extension's unit tests (plain Node, no dependencies)
+#   package    builds and checks the Chrome and Firefox store packages. The
+#              zips are NOT attached to the run: on a public repository an
+#              artifact is a public download, and the app is not being
+#              distributed yet. Add an upload step when it is.
+#
+# Nothing here calls an AI provider or needs a secret. The browser end-to-end
+# scripts (scripts/run_*_e2e.mjs) are run by hand: they need a real Chrome
+# with tab capture, and one of them makes paid provider calls.
+
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - name: Install dependencies
+        run: uv sync --inexact
+      - name: Tests
+        run: uv run --no-sync pytest -m "not slow" -q
+      - name: Prompts exported to the extension are up to date
+        run: uv run --no-sync python scripts/export_prompts.py --check
+
+  extension:
+    name: Extension unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Tests
+        run: node --test "extension/tests/*.test.mjs"
+
+  package:
+    name: Store packages
+    runs-on: ubuntu-latest
+    needs: [backend, extension]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Tags decide the version stamped into the packages.
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Fetch the pinned speech runtime
+        run: python scripts/vendor_stt_runtime.py
+      - name: Check and build
+        run: python scripts/build_extension.py
