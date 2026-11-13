@@ -4,6 +4,13 @@
 [`viewer-app-build-guide.md`](../viewer-app-build-guide.md): "does each provider return a
 web-grounded verdict as strict JSON from an extension context?"*
 
+> **Update 2026-11-13.** The two providers tested here have since run the whole pipeline
+> from inside the extension with no backend at all — install, key, speech, claim
+> detection and verification on a recorded stream — see phase 4 in the
+> [build guide](../viewer-app-build-guide.md). The extension's OpenRouter default is now
+> `google/gemini-3.5-flash-lite`; the backend's default (§4.1) is still unchanged. OpenAI
+> and Gemini remain untested live.
+
 ## 1. Answer
 
 **Yes for the two providers tested live; the other two are built and unit-tested but have

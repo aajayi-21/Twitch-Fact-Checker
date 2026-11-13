@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Live Stream Fact-Checker",
   "version": "0.1.0",
-  "description": "Live fact-checks a stream on Twitch, YouTube, Kick, or Rumble: captures tab audio, transcribes it on a local backend, and overlays sourced TRUE/FALSE/MISLEADING/UNVERIFIED verdicts.",
+  "description": "Live fact-checks a stream on Twitch, YouTube, Kick, or Rumble: captures tab audio, transcribes it on your computer, and overlays sourced TRUE/FALSE/MISLEADING/UNVERIFIED verdicts.",
   "minimum_chrome_version": "116",
   "permissions": ["tabCapture", "offscreen", "storage", "activeTab", "alarms", "unlimitedStorage"],
   "host_permissions": [
@@ -15,6 +15,7 @@
     "wss://127.0.0.1/*",
     "wss://localhost/*"
   ],
+  "optional_host_permissions": ["https://generativelanguage.googleapis.com/*"],
   "browser_specific_settings": {
     "gecko": {
       "id": "live-stream-fact-checker@local",

@@ -199,6 +199,18 @@ export const countLedgerRows = () =>
     return Object.fromEntries(DATA_STORES.map((name, index) => [name, counts[index]]));
   });
 
+/**
+ * Usage rows from `sinceIso` onward — what the spending limits are checked
+ * against, without loading the whole history.
+ *
+ * @param {string} sinceIso
+ * @returns {Promise<object[]>}
+ */
+export const loadUsageSince = (sinceIso) =>
+  transact([STORE.USAGE], "readonly", (stores) =>
+    done(stores[STORE.USAGE].index("ts").getAll(IDBKeyRange.lowerBound(sinceIso)))
+  );
+
 /** @returns {Promise<object|undefined>} */
 export const getSession = (sessionId) =>
   transact([STORE.SESSIONS], "readonly", (stores) => done(stores[STORE.SESSIONS].get(sessionId)));

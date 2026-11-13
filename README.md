@@ -333,6 +333,36 @@ node --test "extension/tests/*.test.mjs"   # unit tests (no dependencies)
 node scripts/run_app_e2e.mjs               # the app in a real Chrome, against a fake backend
 ```
 
+## Running it with no backend (browser engine)
+
+The extension can do the whole job itself, with your own API key and nothing else
+installed. This is what a new install is offered first.
+
+1. Once, from the project folder: `python scripts/vendor_stt_runtime.py`, then load (or
+   reload) the extension. Its welcome tab opens.
+2. Follow the five steps: agree → **This browser** → paste an API key → download and
+   test a speech model → run the sample check.
+3. Press Start on a stream.
+
+| Provider | State |
+|---|---|
+| OpenRouter, Anthropic | Tested end to end from a clean profile with no backend running |
+| OpenAI, Gemini | Built to their published APIs; not yet run against the live services |
+
+Keys are checked with the provider before they are stored, kept in this browser only
+(`chrome.storage.local`, out of reach of web pages), and shown afterwards only by their
+last four characters. **AI provider** also holds the spending limits — on by default at
+150 fact-checks a day and $10 a month — and the switch back to the local backend.
+
+What the backend still does that this engine does not: the Jev pre-screen,
+contradiction alerts, on-screen (vision) claims, Ollama, and Firefox.
+
+```bash
+# Real, paid calls (about five cents): install -> key -> speech -> verdicts, no backend.
+# Reads the key from a git-ignored .env.spike.
+node scripts/run_browser_engine_e2e.mjs --provider anthropic
+```
+
 ## Speech in the browser (optional)
 
 By default the backend transcribes. The extension can do it instead, inside Chrome, and

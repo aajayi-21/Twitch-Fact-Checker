@@ -1,8 +1,13 @@
 /**
  * The "add an API key" form, used by the welcome flow and the providers
- * screen. The key goes to the local backend once, which checks it live with
- * the provider and stores it in its own `.env`; it is never kept in the
- * browser, and it is cleared from the field as soon as it is accepted.
+ * screens, for both engines.
+ *
+ * With the local backend (the defaults below) the key goes to the backend
+ * once, which checks it live with the provider and stores it in its own
+ * `.env`; it is never kept in the browser. With the browser engine the
+ * caller passes its own `save`, `help` and `describeError`: the key is
+ * checked from here and stored in this browser. Either way the field is
+ * cleared as soon as the key is accepted.
  */
 
 import {Button, ExternalLink, Notice} from "../components.mjs";
@@ -30,8 +35,18 @@ const describeSaveError = (error, providerLabel) => {
  * @param {object} props.provider - an entry of setup_model.mjs KEY_PROVIDERS
  * @param {() => void} [props.onSaved]
  * @param {() => void} [props.onCancel] - shows a Cancel button when given
+ * @param {(providerId: string, apiKey: string) => Promise<void>} [props.save]
+ * @param {(error: unknown, providerLabel: string) => string} [props.describeError]
+ * @param {any} [props.help] - what happens to the key, in a sentence
  */
-export const KeyForm = ({provider, onSaved, onCancel}) => {
+export const KeyForm = ({
+  provider,
+  onSaved,
+  onCancel,
+  save = saveProviderKey,
+  describeError = describeSaveError,
+  help = null,
+}) => {
   const [apiKey, setApiKey] = useState("");
   const [revealed, setRevealed] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -46,12 +61,12 @@ export const KeyForm = ({provider, onSaved, onCancel}) => {
     setSaving(true);
     setError(null);
     try {
-      await saveProviderKey(provider.id, apiKey.trim());
+      await save(provider.id, apiKey.trim());
       setApiKey("");
       setRevealed(false);
       onSaved?.();
     } catch (saveError) {
-      setError(describeSaveError(saveError, provider.label));
+      setError(describeError(saveError, provider.label));
     } finally {
       setSaving(false);
     }
@@ -82,8 +97,8 @@ export const KeyForm = ({provider, onSaved, onCancel}) => {
         </button>
       </div>
       <p class="field-help" id=${`${inputId}-help`}>
-        Sent once to the backend on this computer, which checks it with ${provider.label} and
-        stores it there. It is not kept in the browser.${" "}
+        ${help ??
+        `Sent once to the backend on this computer, which checks it with ${provider.label} and stores it there. It is not kept in the browser.`}${" "}
         <${ExternalLink} href=${provider.keyUrl}>Get a key<//>
       </p>
       ${error ? html`<${Notice} tone="error">${error}<//>` : null}

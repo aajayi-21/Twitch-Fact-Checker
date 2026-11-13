@@ -243,7 +243,10 @@ const main = async () => {
     await run(`Promise.all([
       chrome.storage.sync.set({settings: {backendUrl: ${JSON.stringify(backendUrl)}}}),
       chrome.storage.local.set({onboarding: {consentAt: "x", completedAt: "x"}}),
-      chrome.storage.local.remove("speech"),
+      // The profile is reused between runs (to keep the downloaded model),
+      // so put back everything this test depends on: default speech
+      // settings, and the local backend as the engine.
+      chrome.storage.local.remove(["speech", "engine", "providerKeys"]),
     ])`);
     // Installing the extension opens its welcome tab, which can take over
     // this one; go back to Settings explicitly before reloading.
@@ -260,7 +263,12 @@ const main = async () => {
       "says when the backend has no speech model of its own",
       before.includes("started without a speech model")
     );
-    await click("This browser");
+    // By name: Settings also has "This browser" as an engine choice, and
+    // this test keeps the backend as the engine.
+    await run(`(() => {
+      document.querySelector('input[name="speech-engine"][value="browser"]').click();
+      return true;
+    })()`);
     await waitForText("Download and test");
     await run(`(() => {
       const option = document.querySelector('input[name="speech-model"][value=${JSON.stringify(options.model)}]');

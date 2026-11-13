@@ -750,8 +750,24 @@ const main = async () => {
     check("explains what is captured and where it goes", /Audio stays on this computer/.test(disclosure) && /can be wrong/.test(disclosure));
     await screenshot(page, "welcome-how-it-works");
     await app.click("I understand");
-    await app.waitForText("Start the local backend");
+    await app.waitForText("Where should it run?");
     check("consent is recorded on this device", Boolean(await app.eval(`chrome.storage.local.get("onboarding").then((s) => s.onboarding?.consentAt)`)));
+
+    console.log("\nWelcome: where it runs");
+    check(
+      "a first run is steered to the engine that needs no install",
+      (await app.eval(`document.querySelector('input[name="welcome-engine"]:checked')?.value`)) === "browser"
+    );
+    await screenshot(page, "welcome-engine");
+    // This script exercises the local-backend path; the browser engine has
+    // its own (scripts/run_browser_engine_e2e.mjs).
+    await app.click("Local backend");
+    await app.click("Continue");
+    await app.waitForText("Start the local backend");
+    check(
+      "choosing the local backend is stored",
+      (await app.eval(`chrome.storage.local.get("engine").then((s) => s.engine?.mode)`)) === "companion"
+    );
 
     console.log("\nWelcome: backend");
     if (usingFake) {

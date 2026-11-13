@@ -31,17 +31,31 @@
  * worker of this document instead, and only the resulting TEXT is sent —
  * the session handshakes with format "transcript". `session.speech` mirrors
  * the model's state for the popup.
+ *
+ * Engine: when the start settings carry an `engine` (the viewer chose "This
+ * browser" for checking too), there is no backend and no WebSocket at all.
+ * The transcripts go to a BrowserPipeline in this document, which calls the
+ * viewer's AI provider directly and emits the same frames a backend would;
+ * they take the same path to the overlay and the history.
  */
 
+import {BrowserPipeline} from "../engine/pipeline/browser_pipeline.mjs";
+import {getProvider} from "../engine/providers/index.mjs";
 import {LiveTranscriber} from "../engine/stt/live_transcriber.mjs";
 import {SPEECH_STATUS, SessionSpeech} from "../engine/stt/session_speech.mjs";
 import {GPU_LOCK_NAME} from "../engine/stt/speech_store.mjs";
+import {priceCall} from "../ledger/pricing.mjs";
 import {AdPauseGate, buildBoundarySilenceFrames} from "../shared/ad_pause.js";
 import {ERR, MSG, TARGET, makeMsg} from "../shared/messages.js";
 import {AudioCapture} from "./audio_capture.js";
 import {BackendSocket} from "./ws_client.js";
 
 const AUDIO_SAMPLE_RATE = 16000;
+// Stops the viewer did not ask for leave a reason behind for the popup.
+const STOP_REASON_ERRORS = Object.freeze({
+  tab_closed: ERR.ERR_TAB_CLOSED,
+  key_removed: ERR.ERR_KEY_REMOVED,
+});
 // On Stop, how long to wait for the model to finish the last utterance.
 const SPEECH_FLUSH_TIMEOUT_MS = 4000;
 
@@ -49,6 +63,8 @@ let capture = null;
 let socket = null;
 /** @type {SessionSpeech|null} in-browser speech, when the viewer chose it */
 let speech = null;
+/** @type {BrowserPipeline|null} in-browser claim checking (no backend) */
+let pipeline = null;
 let sessionSettings = null;
 const adPause = new AdPauseGate();
 
@@ -118,6 +134,8 @@ const teardown = async () => {
   capture = null;
   speech?.dispose();
   speech = null;
+  pipeline?.dispose();
+  pipeline = null;
   if (activeSocket) {
     activeSocket.onEvent = null;
     activeSocket.onStateChange = null;
@@ -174,7 +192,11 @@ const handleLocalTranscript = (transcript) => {
     return;
   }
   const frame = {type: "transcript", text, start: transcript.startS, end: transcript.endS};
-  socket?.sendJson(frame);
+  if (pipeline) {
+    pipeline.addTranscript(text);
+  } else {
+    socket?.sendJson(frame);
+  }
   if (sessionSettings?.sendTranscripts) {
     forwardBackendEvent(frame);
   }
@@ -388,6 +410,52 @@ const handleServerFrame = (frame) => {
 };
 
 /**
+ * Run the whole session in this document: speech here, claims checked by
+ * the viewer's provider. `engine` comes from the service worker, which read
+ * the keys from storage (this document cannot).
+ */
+const startBrowserEngine = (engine) => {
+  const stage = ({providerId, model, apiKey}) => ({
+    provider: getProvider(providerId),
+    model,
+    apiKey,
+  });
+  pipeline = new BrowserPipeline({
+    gate: stage(engine.gate),
+    verify: stage(engine.verify),
+    emit: forwardBackendEvent,
+    sensitivity: sessionSettings.sensitivity,
+    enabledTopics: Array.isArray(sessionSettings.topics) ? sessionSettings.topics : null,
+    budgets: engine.budgets,
+    spent: engine.spent,
+    // The same price table the history uses, so the monthly limit and the
+    // Usage screen agree.
+    priceUsage: (frame) =>
+      priceCall({
+        provider: frame.provider,
+        model: frame.model,
+        inputTokens: frame.input_tokens,
+        cachedInputTokens: frame.cached_input_tokens,
+        outputTokens: frame.output_tokens,
+        webSearches: frame.web_searches,
+        reportedCostUsd: frame.cost_usd ?? null,
+      }).costUsd,
+  });
+  pipeline.start();
+  // The same first frame a backend sends, so the session becomes "capturing"
+  // and the history opens a session — marked as this engine's.
+  handleServerFrame({
+    type: "ready",
+    // From the service worker: chrome.runtime.getManifest does not exist in
+    // an offscreen document.
+    server_version: sessionSettings.appVersion ?? "browser",
+    model: sessionSettings.speech.modelLabel,
+    engine: "browser",
+  });
+  startBrowserSpeech(sessionSettings.speech);
+};
+
+/**
  * OFFSCREEN_START: redeem the stream id IMMEDIATELY (it expires in seconds),
  * then connect the WebSocket. Capture first, WebSocket second.
  */
@@ -427,6 +495,7 @@ const handleStart = async ({streamId, tabId, settings}) => {
     wsState: "connecting",
     reconnectAttempt: 0,
     lastError: null,
+    errorDetail: null,
     adPaused: false,
     speech: null,
   });
@@ -435,6 +504,10 @@ const handleStart = async ({streamId, tabId, settings}) => {
   } catch (error) {
     console.error("[fact-checker] stream-id redemption failed:", error);
     await endSessionWithError(ERR.ERR_CAPTURE_FAILED, "capture_failed");
+    return;
+  }
+  if (sessionSettings.engine) {
+    startBrowserEngine(sessionSettings.engine);
     return;
   }
   socket = new BackendSocket({
@@ -484,9 +557,11 @@ const handleStop = async ({reason = "user_stop"} = {}) => {
   const activeSocket = socket;
   const activeCapture = capture;
   const activeSpeech = speech;
+  const activePipeline = pipeline;
   socket = null;
   capture = null;
   speech = null;
+  pipeline = null;
   adPause.resume();
   if (activeCapture) {
     activeCapture.onFrame = null;
@@ -499,13 +574,24 @@ const handleStop = async ({reason = "user_stop"} = {}) => {
       console.warn("[fact-checker] capture stop failed:", error);
     }
   }
-  if (activeSpeech) {
+  const keyRemoved = reason === "key_removed";
+  if (keyRemoved) {
+    // The viewer took the key away: not one more call is made with it. The
+    // pipeline goes first, so nothing still being transcribed can reach it.
+    activePipeline?.dispose();
+    activeSpeech?.dispose();
+  } else if (activeSpeech) {
     // The last utterance is still in the model: let it finish (bounded) so
     // its text reaches the backend before the final gate pass. `socket` is
     // already null, so send through the captured reference.
     activeSpeech.onTranscript = (transcript) => {
       const text = transcript.text.trim();
-      if (text) {
+      if (!text) {
+        return;
+      }
+      if (activePipeline) {
+        activePipeline.addTranscript(text);
+      } else {
         activeSocket?.sendJson({
           type: "transcript",
           text,
@@ -522,6 +608,16 @@ const handleStop = async ({reason = "user_stop"} = {}) => {
       );
     }
     activeSpeech.dispose();
+  }
+  if (activePipeline && !keyRemoved) {
+    // Look at the last words, finish the checks already under way (bounded),
+    // and let their verdicts reach the overlay and the history.
+    try {
+      await activePipeline.stop();
+    } catch (error) {
+      console.warn("[fact-checker] pipeline stop failed:", error);
+      activePipeline.dispose();
+    }
   }
   if (activeSocket) {
     // Forward flush frames only — no state-machine re-entry: "ready" cannot
@@ -548,7 +644,7 @@ const handleStop = async ({reason = "user_stop"} = {}) => {
     startedAt: null,
     wsState: "closed",
     reconnectAttempt: 0,
-    lastError: reason === "tab_closed" ? ERR.ERR_TAB_CLOSED : null,
+    lastError: STOP_REASON_ERRORS[reason] ?? null,
     adPaused: false,
     speech: null,
   });
@@ -565,6 +661,10 @@ const handleStop = async ({reason = "user_stop"} = {}) => {
  * next start — documented behavior.)
  */
 const handleConfigChange = ({sensitivity, topics} = {}) => {
+  if (pipeline) {
+    pipeline.applyConfig({sensitivity, topics});
+    return;
+  }
   // Guard socket === null: a config message can race session teardown.
   if (!socket) {
     return;
@@ -598,6 +698,9 @@ chrome.runtime.onMessage.addListener((message) => {
     case MSG.OFFSCREEN_START:
       handleStart(message.payload).catch((error) => {
         console.error("[fact-checker] OFFSCREEN_START failed:", error);
+        // Kept with the session so a failed start can be diagnosed without
+        // opening this document's console.
+        session = {...session, errorDetail: String(error?.stack ?? error).slice(0, 600)};
         endSessionWithError(ERR.ERR_CAPTURE_FAILED, "capture_failed").catch(
           (cleanupError) => {
             console.error("[fact-checker] cleanup failed:", cleanupError);

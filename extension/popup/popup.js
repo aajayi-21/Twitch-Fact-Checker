@@ -4,12 +4,17 @@
  * - Preflights GET /healthz (1.5 s AbortSignal.timeout) against the http(s)
  *   origin derived from the configured ws:// backendUrl; while offline the
  *   Start button is disabled.
+ * - With the browser engine chosen (engine/engine_setup.mjs) there is no
+ *   backend to preflight: Start needs a provider key instead, and the
+ *   backend line says the checker runs in this browser.
  * - Status is never messaged: it is read from
  *   chrome.storage.session["captureSession"] and kept live via
  *   chrome.storage.onChanged (persisted by the service worker on every
  *   transition, relayed from the offscreen document via SESSION_UPDATE).
  */
 
+import {ENGINE_MODE, planBrowserEngine} from "../engine/engine_setup.mjs";
+import {loadEngineState, loadProviderKeys} from "../engine/engine_store.mjs";
 import {APP_ROUTE, openAppTab} from "../shared/app_tab.js";
 import {ERR, MSG, TARGET, makeMsg} from "../shared/messages.js";
 import {
@@ -53,6 +58,7 @@ const ERROR_COPY = {
   // page_session.js); the speech engine's unrecoverable failure gets copy.
   "backend:stt_failure":
     "Transcription engine failed — restart the backend, then click Start.",
+  [ERR.ERR_KEY_REMOVED]: "Stopped because the API key in use was removed.",
   [ERR.ERR_SPEECH_NOT_READY]:
     "Speech recognition in this browser is not set up — open the dashboard, Settings → Speech.",
   [ERR.ERR_SPEECH_FAILED]:
@@ -103,6 +109,9 @@ const state = {
   // null = field absent (older backend) -> the cost line stays hidden.
   checksToday: null,
   estCostTodayUsd: null,
+  // The browser engine: no backend involved; Start needs a provider key.
+  browserEngine: false,
+  browserEngineReady: false,
 };
 
 /**
@@ -132,7 +141,10 @@ const isCapturableTab = () => {
 };
 
 const render = () => {
-  const {session, backendOnline, backendChecked} = state;
+  const {session} = state;
+  // With the browser engine there is no backend to wait for.
+  const backendOnline = state.browserEngine || state.backendOnline;
+  const backendChecked = state.browserEngine || state.backendChecked;
   const active = ACTIVE_STATUSES.has(session.status);
   const capturingElsewhere =
     active &&
@@ -141,7 +153,10 @@ const render = () => {
     session.tabId !== state.activeTab.id;
 
   // Backend line.
-  if (!backendChecked) {
+  if (state.browserEngine) {
+    elements.backendLine.textContent = "Runs in this browser";
+    elements.backendLine.dataset.state = "online";
+  } else if (!backendChecked) {
     elements.backendLine.textContent = "Checking backend…";
     elements.backendLine.dataset.state = "checking";
   } else if (backendOnline) {
@@ -169,7 +184,9 @@ const render = () => {
   // One-line error copy (only when the session is not running).
   const errorCopy =
     !active && session.lastError
-      ? ERROR_COPY[session.lastError] ?? `Stopped: ${session.lastError}`
+      ? session.lastError === ERR.ERR_NOT_CONFIGURED && state.browserEngine
+        ? "No API key yet — add one under AI provider."
+        : (ERROR_COPY[session.lastError] ?? `Stopped: ${session.lastError}`)
       : null;
   elements.errorLine.hidden = !errorCopy;
   if (errorCopy) {
@@ -177,7 +194,7 @@ const render = () => {
   }
 
   // Today's usage readout (feature-detected: hidden on older backends).
-  const showCost = backendOnline && state.checksToday !== null;
+  const showCost = !state.browserEngine && backendOnline && state.checksToday !== null;
   elements.costLine.hidden = !showCost;
   if (showCost) {
     const costPart = Number.isFinite(state.estCostTodayUsd)
@@ -193,8 +210,9 @@ const render = () => {
 
   // Setup state: backend reachable but no API key configured yet. Shown
   // above the start controls; Start stays disabled until a key is added.
-  const needsSetup =
-    backendChecked && backendOnline && !state.backendConfigured;
+  const needsSetup = state.browserEngine
+    ? !state.browserEngineReady
+    : backendChecked && backendOnline && !state.backendConfigured;
   elements.setupCard.hidden = !(needsSetup && !active);
 
   // Buttons.
@@ -225,6 +243,9 @@ const render = () => {
 };
 
 const checkBackendHealth = async () => {
+  if (state.browserEngine) {
+    return; // nothing to check: the engine is this extension
+  }
   if (!state.healthUrl) {
     state.backendOnline = false;
     state.backendChecked = true;
@@ -336,6 +357,11 @@ const init = async () => {
   const stored = await chrome.storage.session.get(CAPTURE_SESSION_KEY);
   if (stored[CAPTURE_SESSION_KEY]) {
     state.session = stored[CAPTURE_SESSION_KEY];
+  }
+  const engine = await loadEngineState();
+  state.browserEngine = engine.mode === ENGINE_MODE.BROWSER;
+  if (state.browserEngine) {
+    state.browserEngineReady = planBrowserEngine(engine, await loadProviderKeys()).ready;
   }
   render();
   await checkBackendHealth();
