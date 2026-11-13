@@ -6,6 +6,8 @@
 export const ROUTES = Object.freeze({
   WELCOME: "/welcome",
   HOME: "/home",
+  HISTORY: "/history",
+  USAGE: "/usage",
   PROVIDERS: "/providers",
   SETTINGS: "/settings",
 });

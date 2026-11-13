@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "description": "Live fact-checks a stream on Twitch, YouTube, Kick, or Rumble: captures tab audio, transcribes it on a local backend, and overlays sourced TRUE/FALSE/MISLEADING/UNVERIFIED verdicts.",
   "minimum_chrome_version": "116",
-  "permissions": ["tabCapture", "offscreen", "storage", "activeTab"],
+  "permissions": ["tabCapture", "offscreen", "storage", "activeTab", "alarms", "unlimitedStorage"],
   "host_permissions": [
     "http://127.0.0.1/*",
     "http://localhost/*",
@@ -52,7 +52,7 @@
         "https://www.kick.com/*",
         "https://rumble.com/*"
       ],
-      "js": ["content/overlay.js", "content/capture.js", "content/content.js"],
+      "js": ["content/overlay.js", "content/capture.js", "content/page_identity.js", "content/content.js"],
       "run_at": "document_idle"
     }
   ],

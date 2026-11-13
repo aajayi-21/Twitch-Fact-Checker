@@ -86,6 +86,9 @@ const api = createBackendApi({
   getOrigin: () => (state.settings ? deriveBackendHttpOrigin(state.settings.backendUrl) : null),
 });
 
+/** The backend client, for screens that call it directly (history import). */
+export const backendApi = api;
+
 let pollTimer = null;
 
 const schedulePoll = () => {

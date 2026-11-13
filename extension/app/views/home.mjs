@@ -1,18 +1,29 @@
 /**
  * Home: is everything ready, what has it done today, and what to do next.
+ *
+ * The status cards describe the engine (the local backend and its AI
+ * provider). Everything below them — today's numbers, the latest results,
+ * the all-time split — is read from the viewer's own history.
  */
 
-import {Button, Card, ExternalLink, Notice, StatusPill} from "../components.mjs";
-import {deriveBackendHttpOrigin} from "../../shared/settings.js";
+import {
+  PERIODS,
+  countLabels,
+  filterVerdicts,
+  periodRange,
+  summarizeUsage,
+} from "../../ledger/queries.mjs";
+import {LABELS} from "../../ledger/records.mjs";
+import {Button, Card, LabelChip, Notice, StatusPill} from "../components.mjs";
 import {refreshBackend, useAppState} from "../lib/app_store.mjs";
-import {html} from "../lib/html.mjs";
+import {formatCost, formatDateTime, labelName, platformLabel, plural} from "../lib/format.mjs";
+import {html, useMemo} from "../lib/html.mjs";
+import {useLedger} from "../lib/ledger_store.mjs";
 import {ROUTES} from "../lib/routes.mjs";
 import {describeStages} from "../lib/setup_model.mjs";
+import {ImportHistory} from "./import_history.mjs";
 
-const LABEL_ORDER = Object.freeze(["TRUE", "FALSE", "MISLEADING", "UNVERIFIED"]);
-
-const formatMoney = (amount) =>
-  Number.isFinite(amount) ? `$${amount < 1 ? amount.toFixed(3) : amount.toFixed(2)}` : "—";
+const LATEST_RESULTS = 5;
 
 /** How the speech engine is doing, from /healthz. */
 const describeSpeech = (health) => {
@@ -37,17 +48,19 @@ const Stat = ({value, label}) => html`
 `;
 
 const LabelBreakdown = ({labels}) => {
-  const total = LABEL_ORDER.reduce((sum, label) => sum + (labels?.[label] ?? 0), 0);
+  const total = LABELS.reduce((sum, label) => sum + (labels?.[label] ?? 0), 0);
   if (total === 0) {
-    return html`<p class="muted">No verdicts yet. They will appear here once you have checked a stream.</p>`;
+    return html`<p class="muted">
+      No results yet. They will appear here once you have checked a stream.
+    </p>`;
   }
   return html`
     <ul class="label-bars">
-      ${LABEL_ORDER.map((label) => {
+      ${LABELS.map((label) => {
         const count = labels?.[label] ?? 0;
         return html`
           <li key=${label} class="label-bar" data-label=${label}>
-            <span class="label-bar-name">${label[0] + label.slice(1).toLowerCase()}</span>
+            <span class="label-bar-name">${labelName(label)}</span>
             <span class="label-bar-track"
               ><span class="label-bar-fill" style=${`width: ${(count / total) * 100}%`}></span
             ></span>
@@ -59,14 +72,48 @@ const LabelBreakdown = ({labels}) => {
   `;
 };
 
+/** The newest few results. */
+const LatestResults = ({verdicts}) => html`
+  <ul class="latest-list">
+    ${verdicts.map(
+      (verdict) => html`
+        <li key=${verdict.id} class="latest" data-label=${verdict.label}>
+          <${LabelChip} label=${verdict.label} />
+          <span class="latest-claim">${verdict.claim_text}</span>
+          <span class="result-meta">
+            ${verdict.channel_id
+              ? `${verdict.channel_name ?? verdict.channel_id} · ${platformLabel(verdict.platform)}`
+              : platformLabel(verdict.platform)}
+            ${" · "}${formatDateTime(verdict.checked_at)}
+          </span>
+        </li>
+      `
+    )}
+  </ul>
+`;
+
 export const HomeView = ({navigate}) => {
   const {backendState, backendMessage, health, setup, summary, settings} = useAppState();
+  const ledger = useLedger();
   const up = backendState === "up";
   const configured = Boolean(setup?.configured);
   const speech = describeSpeech(health);
-  const origin = settings ? deriveBackendHttpOrigin(settings.backendUrl) : null;
-  const today = summary?.today;
-  const totals = summary?.totals;
+
+  const today = useMemo(() => {
+    const range = periodRange(PERIODS.TODAY);
+    return {
+      ...summarizeUsage(ledger, range),
+      claims: ledger.claims.filter((claim) => Date.parse(claim.gated_at) >= range.fromMs).length,
+    };
+  }, [ledger]);
+  const allTime = useMemo(() => summarizeUsage(ledger), [ledger]);
+  const latest = useMemo(
+    () => filterVerdicts(ledger.verdicts).slice(0, LATEST_RESULTS),
+    [ledger.verdicts]
+  );
+  // Results from before this app kept its own history are still in the backend.
+  const backendSessions = summary?.totals?.sessions ?? 0;
+  const canImport = ledger.loaded && ledger.sessions.length === 0 && up && backendSessions > 0;
 
   return html`
     <div class="page">
@@ -122,31 +169,51 @@ export const HomeView = ({navigate}) => {
         <//>
       </div>
 
+      ${canImport
+        ? html`<${Card} title="Bring your past results across">
+            <p class="lede">
+              The local backend holds ${plural(backendSessions, "earlier session")}. Import them to
+              see them under History and Usage.
+            </p>
+            <${ImportHistory} compact />
+          <//>`
+        : null}
+
       <${Card} title="Today">
         <div class="stat-row">
-          <${Stat} value=${health?.checks_today ?? today?.verify_calls ?? "—"} label="fact-checks" />
-          <${Stat} value=${today?.claims ?? "—"} label="claims heard" />
-          <${Stat} value=${today?.sessions ?? "—"} label="sessions" />
-          <${Stat}
-            value=${`≈ ${formatMoney(health?.est_cost_today_usd ?? today?.est_cost_usd)}`}
-            label="estimated spend"
-          />
+          <${Stat} value=${today.checks} label="fact-checks" />
+          <${Stat} value=${today.claims} label="claims heard" />
+          <${Stat} value=${today.sessions} label="sessions" />
+          <${Stat} value=${formatCost(today.total.cost)} label="spend" />
         </div>
       <//>
 
       <${Card}
-        title="All time"
-        aside=${totals
-          ? html`<span class="muted">${totals.verify_calls} checks · ≈ ${formatMoney(totals.est_cost_usd)}</span>`
+        title="Latest results"
+        aside=${latest.length > 0
+          ? html`<button type="button" class="link-button" onClick=${() => navigate(ROUTES.HISTORY)}>
+              See all ${ledger.verdicts.length}
+            </button>`
           : null}
       >
-        <${LabelBreakdown} labels=${totals?.labels} />
-        ${up && origin
-          ? html`<p class="card-line">
-              <${ExternalLink} href=${`${origin}/dashboard`}>Open the full analytics page<//>
-              <span class="muted"> — per-channel results and past sessions.</span>
-            </p>`
+        ${latest.length > 0
+          ? html`<${LatestResults} verdicts=${latest} />`
+          : html`<p class="muted">
+              ${ledger.loaded
+                ? "Nothing checked yet. Results appear here as a stream is checked."
+                : "Loading…"}
+            </p>`}
+      <//>
+
+      <${Card}
+        title="All time"
+        aside=${allTime.checks > 0
+          ? html`<button type="button" class="link-button" onClick=${() => navigate(ROUTES.USAGE)}>
+              ${plural(allTime.checks, "check")} · ${formatCost(allTime.total.cost)}
+            </button>`
           : null}
+      >
+        <${LabelBreakdown} labels=${countLabels(ledger.verdicts)} />
       <//>
     </div>
   `;

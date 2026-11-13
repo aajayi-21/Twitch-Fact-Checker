@@ -93,6 +93,7 @@ from app.prompts import (
     build_verify_messages,
 )
 from app.rate_limit import QuotaCooldown
+from app.usage import chat_completion_usage, report_response_usage
 
 logger = logging.getLogger(__name__)
 
@@ -532,6 +533,9 @@ class OpenRouterClaimGate(ClaimGate):
         response = await self._client.with_options(
             timeout=httpx.Timeout(self._gate_timeout_s, connect=CONNECT_TIMEOUT_S)
         ).chat.completions.create(**kwargs)
+        report_response_usage(
+            chat_completion_usage(response, "gate", "openrouter", self._model)
+        )
         if not response.choices:
             raise GateError("gate response contained no choices")
         choice = response.choices[0]
@@ -871,9 +875,24 @@ class OpenRouterFactChecker(FactChecker):
             kwargs["temperature"] = 0.0
         if response_format is not None:
             kwargs["response_format"] = response_format
-        return await self._client.with_options(
+        response = await self._client.with_options(
             timeout=httpx.Timeout(self._verify_timeout_s, connect=CONNECT_TIMEOUT_S)
         ).chat.completions.create(**kwargs)
+        # The web plugin runs one search per request and bills it whether or
+        # not the response counts it, so assume one when it was attached.
+        searched = any(
+            plugin.get("id") == "web" for plugin in extra_body.get("plugins", [])
+        )
+        report_response_usage(
+            chat_completion_usage(
+                response,
+                "verify",
+                "openrouter",
+                self._verify_model,
+                assumed_web_searches=1 if searched else 0,
+            )
+        )
+        return response
 
     def _translate_api_error(
         self, exc: Exception, stage: str, fallback_on_unsupported: bool

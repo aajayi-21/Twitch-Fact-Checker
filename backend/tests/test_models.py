@@ -16,6 +16,7 @@ from app.models import (
     Source,
     StatusFrame,
     TranscriptSegment,
+    UsageFrame,
     Verdict,
     VerdictFrame,
     VerdictPayload,
@@ -252,6 +253,67 @@ class TestServerFrames:
             "server_version": "0.1.0",
             "model": "distil-small.en",
         }
+
+    def test_ready_frame_carries_the_session_id_when_set(self) -> None:
+        frame = ReadyFrame(
+            server_version="0.1.0", model="distil-small.en", session_id="abc123"
+        )
+        assert frame.model_dump()["session_id"] == "abc123"
+
+    def test_verdict_frame_provenance_is_omitted_unless_set(self) -> None:
+        verdict = Verdict(
+            claim="A claim.", label="TRUE", explanation="Yes.", sources=[]
+        )
+        bare = VerdictFrame.from_verdict(verdict).model_dump()
+        assert not {"claim_id", "latency_ms", "provider", "model"} & set(bare)
+        full = VerdictFrame.from_verdict(
+            verdict,
+            claim_id="c1",
+            latency_ms=2300,
+            provider="anthropic",
+            model="claude-haiku-5-5",
+        ).model_dump()
+        assert full["claim_id"] == "c1"
+        assert full["latency_ms"] == 2300
+        assert full["provider"] == "anthropic"
+        assert full["model"] == "claude-haiku-5-5"
+
+    def test_usage_frame_shape(self) -> None:
+        frame = UsageFrame(
+            stage="gate",
+            provider="anthropic",
+            model="claude-haiku-5-5",
+            input_tokens=268,
+            cached_input_tokens=2959,
+            output_tokens=120,
+            web_searches=0,
+        )
+        # No provider-reported cost and no verdict: both keys are absent.
+        assert frame.model_dump() == {
+            "type": "usage",
+            "stage": "gate",
+            "provider": "anthropic",
+            "model": "claude-haiku-5-5",
+            "input_tokens": 268,
+            "cached_input_tokens": 2959,
+            "output_tokens": 120,
+            "web_searches": 0,
+        }
+
+    def test_usage_frame_keeps_exact_cost_and_verdict_link(self) -> None:
+        frame = UsageFrame(
+            stage="verify",
+            provider="openrouter",
+            model="google/gemini-3.5-flash-lite",
+            input_tokens=2100,
+            cached_input_tokens=0,
+            output_tokens=90,
+            web_searches=1,
+            cost_usd=0.0078,
+            verdict_id="v1",
+        ).model_dump()
+        assert frame["cost_usd"] == 0.0078
+        assert frame["verdict_id"] == "v1"
 
     def test_status_frame_stage_defaults_to_verifying_without_topic_key(self) -> None:
         # "verifying" frames stay byte-identical to the pre-topic wire shape.

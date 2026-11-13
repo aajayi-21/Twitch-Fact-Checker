@@ -792,14 +792,17 @@ class Database:
 
         return await self._run(_read)
 
-    async def fetch_sessions(self, limit: int) -> list[dict[str, Any]]:
+    async def fetch_sessions(self, limit: int, offset: int = 0) -> list[dict[str, Any]]:
+        """Sessions newest first; ``offset`` pages through the whole table."""
+
         def _read() -> list[dict[str, Any]]:
             conn = self._require_conn()
             return [
                 dict(row)
                 for row in conn.execute(
-                    "SELECT * FROM sessions ORDER BY started_at DESC LIMIT ?",
-                    (limit,),
+                    "SELECT * FROM sessions ORDER BY started_at DESC, id"
+                    " LIMIT ? OFFSET ?",
+                    (limit, offset),
                 )
             ]
 

@@ -28,9 +28,15 @@
  *  - opening the app tab on install, and for content scripts (OPEN_OPTIONS),
  *  - routing the captured tab's ad-break reports (AD_STATE) to the session
  *    owner, which drops audio while an ad plays (shared/ad_pause.js),
+ *  - recording the session in the viewer's ledger (ledger/): every verdict,
+ *    claim and usage frame, attributed to the channel on screen, plus the
+ *    daily retention sweep,
  *  - closing the offscreen document on CAPTURE_ENDED.
  */
 
+import * as ledger from "../ledger/ledger.mjs";
+import {createSessionRecorder} from "../ledger/session_recorder.mjs";
+import {identityFromPage} from "../ledger/stream_identity.mjs";
 import {APP_ROUTE, openAppTab} from "../shared/app_tab.js";
 import {HAS_OFFSCREEN_CAPTURE} from "../shared/capabilities.js";
 import {ERR, MSG, TARGET, makeMsg} from "../shared/messages.js";
@@ -47,6 +53,11 @@ const chrome = globalThis.browser ?? globalThis.chrome;
 const OFFSCREEN_DOCUMENT_PATH = "offscreen/offscreen.html";
 const CAPTURED_TAB_KEY = "capturedTabId";
 const CAPTURE_SESSION_KEY = "captureSession";
+const LEDGER_RECORDER_KEY = "ledgerRecorder";
+const RETENTION_ALARM = "ledger-retention";
+// How long capture start waits for the page to say who owns the stream.
+// Identity is a nicety; a slow page must not delay the capture.
+const PAGE_IDENTITY_TIMEOUT_MS = 400;
 
 const ACTIVE_ICON_PATHS = {
   16: "icons/icon16.png",
@@ -71,6 +82,36 @@ const IDLE_SESSION = Object.freeze({
   lastError: null,
   adPaused: false,
 });
+
+/**
+ * Writes the session into the viewer's history. Its small running state
+ * (which ledger session is open, what the tab shows) lives in
+ * chrome.storage.session because this worker is restarted at will.
+ */
+const recorder = createSessionRecorder({
+  ledger,
+  memory: {
+    get: async () =>
+      (await chrome.storage.session.get(LEDGER_RECORDER_KEY))[LEDGER_RECORDER_KEY] ?? null,
+    set: async (state) => {
+      if (state === null) {
+        await chrome.storage.session.remove(LEDGER_RECORDER_KEY);
+      } else {
+        await chrome.storage.session.set({[LEDGER_RECORDER_KEY]: state});
+      }
+    },
+  },
+});
+
+/**
+ * History is a record, not part of the capture path: a failed write is
+ * logged and the session carries on.
+ */
+const recordSafely = (what, work) => {
+  work.catch((error) => {
+    console.error(`[fact-checker] history: ${what} failed:`, error);
+  });
+};
 
 const getCapturedTabId = async () => {
   const stored = await chrome.storage.session.get(CAPTURED_TAB_KEY);
@@ -166,48 +207,45 @@ const notifySessionState = async (tabId, running) => {
 };
 
 /**
- * Session identity (backend analytics): platform/channel/title derived from
- * the captured tab, best-effort. Keyed like content.js's PLATFORM_ADAPTERS
- * (hostname minus leading www.). No "tabs" permission needed — activeTab,
- * granted by the popup interaction that triggers CAPTURE_START, exposes the
- * tab's url/title.
+ * Ask the tab's content script who owns the stream (the channel link under
+ * the player). Null when there is no content script, it predates this
+ * message, or it does not answer in time — all normal.
+ *
+ * @param {number} tabId
+ * @returns {Promise<{ownerHref: string|null, ownerName: string|null}|null>}
  */
-const PLATFORM_BY_HOSTNAME = Object.freeze({
-  "twitch.tv": "twitch",
-  "youtube.com": "youtube",
-  "kick.com": "kick",
-  "rumble.com": "rumble",
-});
-
-// Best-effort " - Twitch"-style suffix strip from tab titles.
-const TITLE_SUFFIX_RE = /\s*[-–—|·]\s*(Twitch|YouTube|Kick|Rumble)\s*$/i;
+const askPageForOwner = async (tabId) => {
+  try {
+    const reply = await Promise.race([
+      chrome.tabs.sendMessage(tabId, {type: MSG.GET_PAGE_IDENTITY, payload: {}}),
+      new Promise((resolve) => setTimeout(() => resolve(null), PAGE_IDENTITY_TIMEOUT_MS)),
+    ]);
+    return reply && typeof reply === "object" ? reply : null;
+  } catch (error) {
+    console.debug("[fact-checker] page identity not available:", error);
+    return null;
+  }
+};
 
 /**
- * Derive {platform, channel, streamTitle} from a tab, all-null on any
- * failure — every field is optional on the wire. Channel is the first path
- * segment for twitch/kick only (YouTube/Rumble URLs carry video ids, not
- * channel slugs).
+ * What a tab is showing: platform, channel, stream URL and title. Every
+ * field is best-effort and may be null. No "tabs" permission needed —
+ * activeTab, granted by the popup interaction that triggers CAPTURE_START,
+ * exposes the tab's url/title.
  *
  * @param {chrome.tabs.Tab|null} tab
- * @returns {{platform: string|null, channel: string|null, streamTitle: string|null}}
  */
-const deriveSessionIdentity = (tab) => {
-  const identity = {platform: null, channel: null, streamTitle: null};
+const resolveTabIdentity = async (tab) => {
   if (!tab) {
-    return identity;
+    return identityFromPage();
   }
-  try {
-    identity.streamTitle = tab.title?.replace(TITLE_SUFFIX_RE, "").trim() || null;
-    const url = new URL(tab.url ?? "");
-    const hostname = url.hostname.replace(/^www\./, "");
-    identity.platform = PLATFORM_BY_HOSTNAME[hostname] ?? null;
-    if (identity.platform === "twitch" || identity.platform === "kick") {
-      identity.channel = url.pathname.split("/").filter(Boolean)[0] ?? null;
-    }
-  } catch (error) {
-    console.debug("[fact-checker] session identity derivation failed:", error);
-  }
-  return identity;
+  const owner = await askPageForOwner(tab.id);
+  return identityFromPage({
+    url: tab.url ?? "",
+    title: tab.title ?? "",
+    ownerHref: owner?.ownerHref ?? null,
+    ownerName: owner?.ownerName ?? null,
+  });
 };
 
 /**
@@ -246,6 +284,8 @@ const handleCaptureStart = async (tabId) => {
   const settings = await loadSettings();
   // Identity is best-effort: a tabs.get failure must not abort the start.
   const tab = await chrome.tabs.get(tabId).catch(() => null);
+  const identity = await resolveTabIdentity(tab);
+  recordSafely("capture start", recorder.captureStarting(tabId, identity));
   const offscreenSettings = {
     backendUrl: settings.backendUrl,
     sensitivity: settings.sensitivity,
@@ -253,7 +293,10 @@ const handleCaptureStart = async (tabId) => {
     sendTranscripts: settings.showTranscript,
     // Opt-in frame capture; next-start-only (same precedent as backendUrl).
     captureVideo: Boolean(settings.captureVideo),
-    ...deriveSessionIdentity(tab),
+    // Session identity for the backend's own analytics (hello frame).
+    platform: identity.platform,
+    channel: identity.channelId,
+    streamTitle: identity.streamTitle,
   };
   if (!HAS_OFFSCREEN_CAPTURE) {
     // Firefox: open the socket here, then ask the content script to start
@@ -268,6 +311,7 @@ const handleCaptureStart = async (tabId) => {
     } catch (error) {
       console.error("[fact-checker] content capture start failed:", error);
       await pageSession.captureFailed();
+      recordSafely("capture end", recorder.captureEnded());
       return;
     }
     await setCapturedTabId(tabId);
@@ -286,6 +330,7 @@ const handleCaptureStart = async (tabId) => {
       await runStartSequence(tabId, offscreenSettings);
     } catch (secondError) {
       console.error("[fact-checker] start sequence failed twice:", secondError);
+      recordSafely("capture end", recorder.captureEnded());
       await closeOffscreenDocument();
       await writeCaptureSession({
         status: "error",
@@ -330,6 +375,7 @@ const handleCaptureStop = async (reason) => {
       "[fact-checker] offscreen unreachable during stop; cleaning up directly:",
       error
     );
+    recordSafely("capture end", recorder.captureEnded());
     await closeOffscreenDocument();
     await setCapturedTabId(null);
     await setToolbarIcon(false);
@@ -347,6 +393,7 @@ const handleCaptureStop = async (reason) => {
  */
 const handleCaptureEnded = async (reason) => {
   console.info(`[fact-checker] capture ended (reason: ${reason ?? "unknown"})`);
+  recordSafely("capture end", recorder.captureEnded());
   const capturedTabId = await getCapturedTabId();
   await setCapturedTabId(null);
   await setToolbarIcon(false);
@@ -361,6 +408,8 @@ const relayBackendEvent = async (payload) => {
   if (typeof tabId !== "number" || !payload.event) {
     return;
   }
+  // Not awaited: the overlay must not wait on a database write.
+  recordSafely("engine event", recorder.engineEvent(tabId, payload.event));
   try {
     await chrome.tabs.sendMessage(tabId, {
       type: MSG.OVERLAY_EVENT,
@@ -374,9 +423,10 @@ const relayBackendEvent = async (payload) => {
 };
 
 /**
- * POST one 👍/👎 to the backend. Fire-and-forget by contract: failures are
- * logged, never surfaced — the backend is the system of record and a lost
- * rating is not worth interrupting the viewer.
+ * Record one 👍/👎 in the viewer's history and POST it to the backend, which
+ * keeps its own copy for prompt evaluation. The POST is fire-and-forget by
+ * contract: failures are logged, never surfaced — a lost rating is not
+ * worth interrupting the viewer.
  */
 const handleSubmitFeedback = async (payload) => {
   const verdictId = payload?.verdictId;
@@ -385,6 +435,15 @@ const handleSubmitFeedback = async (payload) => {
     console.warn("[fact-checker] SUBMIT_FEEDBACK with bad payload:", payload);
     return;
   }
+  recordSafely(
+    "feedback",
+    recorder.feedback({
+      verdictId,
+      rating,
+      correctedLabel: payload.correctedLabel ?? null,
+      note: payload.note ?? null,
+    })
+  );
   const settings = await loadSettings();
   const origin = deriveBackendHttpOrigin(settings.backendUrl);
   if (!origin) {
@@ -397,8 +456,8 @@ const handleSubmitFeedback = async (payload) => {
       body: JSON.stringify({
         verdict_id: verdictId,
         rating,
-        corrected_label: null,
-        note: null,
+        corrected_label: payload.correctedLabel ?? null,
+        note: payload.note ?? null,
       }),
       signal: AbortSignal.timeout(5000),
     });
@@ -437,6 +496,29 @@ const handleAdState = async (sender, payload) => {
     // The document can close between hasDocument() and delivery.
     console.debug("[fact-checker] OFFSCREEN_AD_STATE not delivered:", error);
   }
+};
+
+/**
+ * PAGE_IDENTITY from a content script: the page moved to another stream, or
+ * its channel link appeared. Only the captured tab matters.
+ */
+const handlePageIdentity = async (sender, payload) => {
+  const capturedTabId = await getCapturedTabId();
+  if (capturedTabId === null || sender.tab?.id !== capturedTabId) {
+    return;
+  }
+  await recorder.identityChanged(
+    capturedTabId,
+    identityFromPage({
+      // The content script reports its own location: sender.tab.url is only
+      // filled in for hosts the extension holds a permission for, and the
+      // stream sites are reached through content-script matches alone.
+      url: payload?.url ?? sender.url ?? "",
+      title: payload?.title ?? "",
+      ownerHref: payload?.ownerHref ?? null,
+      ownerName: payload?.ownerName ?? null,
+    })
+  );
 };
 
 const buildSessionStateReply = async (sender) => {
@@ -498,6 +580,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case MSG.AD_STATE:
         await handleAdState(sender, message.payload);
         break;
+      case MSG.PAGE_IDENTITY:
+        await handlePageIdentity(sender, message.payload);
+        break;
       // Firefox capture path (content script -> this page's WebSocket).
       case MSG.AUDIO_CHUNK:
         pageSession.submitAudio(message.payload?.pcmB64);
@@ -531,6 +616,29 @@ chrome.runtime.onInstalled.addListener(({reason}) => {
   openAppTab(APP_ROUTE.WELCOME).catch((error) => {
     console.error("[fact-checker] opening the welcome page failed:", error);
   });
+});
+
+/**
+ * History retention: once a day, delete sessions older than the viewer's
+ * setting (0 = keep until deleted by hand). `alarms.create` with the same
+ * name replaces the existing alarm, so calling this on every worker start
+ * is safe and keeps the alarm alive across updates.
+ */
+chrome.alarms?.create(RETENTION_ALARM, {delayInMinutes: 1, periodInMinutes: 24 * 60});
+chrome.alarms?.onAlarm.addListener((alarm) => {
+  if (alarm.name !== RETENTION_ALARM) {
+    return;
+  }
+  loadSettings()
+    .then((settings) => recorder.applyRetention(settings.historyRetentionDays))
+    .then((removed) => {
+      if (removed > 0) {
+        console.info(`[fact-checker] history retention removed ${removed} session(s)`);
+      }
+    })
+    .catch((error) => {
+      console.error("[fact-checker] history retention sweep failed:", error);
+    });
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {

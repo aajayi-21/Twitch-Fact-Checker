@@ -206,6 +206,9 @@ export const start = async (tabId, settings) => {
         ? [...sessionSettings.topics]
         : null,
       send_transcripts: Boolean(sessionSettings.sendTranscripts),
+      // Ask for per-claim outcome frames, which the service worker
+      // records in the viewer's history (older backends ignore this).
+      send_claims: true,
       platform: sessionSettings.platform ?? null,
       channel: sessionSettings.channel ?? null,
       stream_title: sessionSettings.streamTitle ?? null,

@@ -54,6 +54,7 @@ from app.logging_setup import session_id_var
 from app.models import (
     ErrorCode,
     TOPICS,
+    ClaimFrame,
     ClientConfig,
     ClientFrameMessage,
     ClientHello,
@@ -62,11 +63,13 @@ from app.models import (
     Sensitivity,
     StatusFrame,
     TranscriptFrame,
+    UsageFrame,
     Verdict,
     VerdictFrame,
     resolve_enabled_topics,
 )
 from app.rate_limit import QuotaCooldown, TokenBucket
+from app.usage import UsageEvent, collect_usage
 from app.segmenter import (
     SegmentPlan,
     SpanFn,
@@ -249,6 +252,11 @@ class SessionPipeline:
         self._session_id = uuid4().hex
         self._platform = hello.platform
         self._channel = hello.channel
+        # Opt-in claim frames (ClientHello.send_claims), and which emitter
+        # they use: the send loop's queue while live, the socket once the
+        # flush phase has taken over.
+        self._send_claims = hello.send_claims
+        self._flushing = False
         self._stream_title = hello.stream_title
         self._speech_seconds = 0.0
         self._audio_seconds = 0.0
@@ -624,12 +632,18 @@ class SessionPipeline:
             if not self._gate.should_run(time.monotonic()):
                 continue
             gate_started = time.monotonic()
-            try:
-                claims = await self._gate.run()
-            except GateError as exc:
-                logger.warning(
-                    "gate pass failed (batch dropped): %s%s", exc, self._jev_suffix()
-                )
+            with collect_usage() as gate_usage:
+                try:
+                    claims = await self._gate.run()
+                except GateError as exc:
+                    logger.warning(
+                        "gate pass failed (batch dropped): %s%s",
+                        exc,
+                        self._jev_suffix(),
+                    )
+                    claims = None
+            await self._emit_usage(gate_usage, self._emit_queued)
+            if claims is None:
                 await self._record_gate_pass("live")
                 continue
             await self._record_gate_pass("live", claims)
@@ -693,13 +707,17 @@ class SessionPipeline:
                 )
             except TimeoutError:
                 continue
-            try:
-                frame = await self._detector.add(claim)
-            except Exception as exc:
-                logger.warning(
-                    "contradiction check failed for %r: %s", claim.claim_text, exc
-                )
-                continue
+            # The judge is a gate-model call, so it is billed and reported
+            # like one.
+            with collect_usage() as judge_usage:
+                try:
+                    frame = await self._detector.add(claim)
+                except Exception as exc:
+                    logger.warning(
+                        "contradiction check failed for %r: %s", claim.claim_text, exc
+                    )
+                    frame = None
+            await self._emit_usage(judge_usage, self._emit_queued)
             if frame is None:
                 continue
             logger.info(
@@ -1020,29 +1038,45 @@ class SessionPipeline:
             claim.claim_text,
             " with a captured frame" if image_b64 else "",
         )
-        try:
-            verdict = await self._checker.check(
-                claim.claim_text, topic=claim.topic, image_b64=image_b64
-            )
-        except QuotaExceededError as exc:
-            logger.warning("quota exceeded: %s", exc)
-            await self._record_claim(claim, "verify_failed")
-            await emit(ErrorFrame(code="quota_cooldown", message=str(exc), fatal=False))
-            return
-        except VerificationError as exc:
-            logger.warning("verification failed for %r: %s", claim.claim_text, exc)
-            await self._record_claim(claim, "verify_failed")
-            await emit(
-                ErrorFrame(
-                    code="llm_failure",
-                    message=f"Fact-check failed: {exc}",
-                    fatal=False,
+        # A verify can make several provider calls (strict, fallback,
+        # extraction); the collector gathers all of them, and they are
+        # reported whether or not a verdict came out — a failed check was
+        # still billed.
+        with collect_usage() as verify_usage:
+            try:
+                verdict = await self._checker.check(
+                    claim.claim_text, topic=claim.topic, image_b64=image_b64
                 )
-            )
-            return
+            except QuotaExceededError as exc:
+                logger.warning("quota exceeded: %s", exc)
+                await self._record_claim(claim, "verify_failed")
+                await emit(
+                    ErrorFrame(code="quota_cooldown", message=str(exc), fatal=False)
+                )
+                await self._emit_usage(verify_usage, emit)
+                return
+            except VerificationError as exc:
+                logger.warning("verification failed for %r: %s", claim.claim_text, exc)
+                await self._record_claim(claim, "verify_failed")
+                await emit(
+                    ErrorFrame(
+                        code="llm_failure",
+                        message=f"Fact-check failed: {exc}",
+                        fatal=False,
+                    )
+                )
+                await self._emit_usage(verify_usage, emit)
+                return
         # Emit FIRST so persistence never adds wire latency.
-        frame = VerdictFrame.from_verdict(verdict)
+        frame = VerdictFrame.from_verdict(
+            verdict,
+            claim_id=claim.id,
+            latency_ms=int((time.monotonic() - verify_started_at) * 1000),
+            provider=self._settings.resolved_verify_provider,
+            model=self._settings.active_verify_model,
+        )
         await emit(frame)
+        await self._emit_usage(verify_usage, emit, verdict_id=verdict.id)
         # Then fan out to the non-socket consumers (chat bot, OBS overlay,
         # control panel). Placed HERE rather than inside the emitters because
         # _verify_claim is the one code path that runs in BOTH phases — the
@@ -1076,6 +1110,7 @@ class SessionPipeline:
 
     async def _flush_and_finish(self) -> None:
         """Flush STT, run a final gate pass, verify leftovers, close 1000."""
+        self._flushing = True
         try:
             await self._drain_outbound_direct()
             await self._flush_stt()
@@ -1193,12 +1228,18 @@ class SessionPipeline:
 
     async def _final_gate_pass(self) -> list[GateClaim]:
         """One unconditional gate run over any not-yet-gated transcript text."""
-        try:
-            claims = await self._gate.run()
-        except GateError as exc:
-            logger.warning(
-                "final gate pass failed (batch dropped): %s%s", exc, self._jev_suffix()
-            )
+        with collect_usage() as gate_usage:
+            try:
+                claims = await self._gate.run()
+            except GateError as exc:
+                logger.warning(
+                    "final gate pass failed (batch dropped): %s%s",
+                    exc,
+                    self._jev_suffix(),
+                )
+                claims = None
+        await self._emit_usage(gate_usage, self._send_direct)
+        if claims is None:
             await self._record_gate_pass("flush")
             return []
         await self._record_gate_pass("flush", claims)
@@ -1256,6 +1297,7 @@ class SessionPipeline:
             gate_pass_id = self._gate_pass_ids.pop(claim.id, None)
         else:
             gate_pass_id = self._gate_pass_ids.get(claim.id)
+        await self._emit_claim(claim, outcome)
         if self._db is None:
             return
         await self._db.record_claim(
@@ -1276,6 +1318,31 @@ class SessionPipeline:
             ),
             gate_pass_id=gate_pass_id,
         )
+
+    async def _emit_claim(self, claim: GateClaim, outcome: str) -> None:
+        """Tell an opted-in client what became of a claim. Best-effort.
+
+        Never raises: this runs inside the bookkeeping path, between a
+        verdict's wire frame and its database row, so a client that vanished
+        mid-flush must not cost the row. The next real send reports the
+        disconnect.
+        """
+        if not self._send_claims:
+            return
+        frame = ClaimFrame(
+            id=claim.id,
+            text=claim.claim_text,
+            topic=claim.topic,
+            check_worthiness=claim.check_worthiness,
+            outcome=outcome,  # type: ignore[arg-type]
+        )
+        if not self._flushing:
+            self._enqueue_or_drop(frame)
+            return
+        try:
+            await self._send_direct(frame)
+        except WebSocketDisconnect:
+            logger.debug("claim frame not sent: client disconnected")
 
     async def _record_verdict(
         self, claim: GateClaim, verdict: Verdict, verify_started_at: float
@@ -1344,6 +1411,29 @@ class SessionPipeline:
             channel=channel_key(self._platform, self._channel)[1],
             **identity,
         )
+
+    async def _emit_usage(
+        self,
+        events: Sequence[UsageEvent],
+        emit: FrameEmitter,
+        *,
+        verdict_id: str | None = None,
+    ) -> None:
+        """Send one :class:`UsageFrame` per collected provider call."""
+        for event in events:
+            await emit(
+                UsageFrame(
+                    stage=event.stage,
+                    provider=event.provider,
+                    model=event.model,
+                    input_tokens=event.input_tokens,
+                    cached_input_tokens=event.cached_input_tokens,
+                    output_tokens=event.output_tokens,
+                    web_searches=event.web_searches,
+                    cost_usd=event.cost_usd,
+                    verdict_id=verdict_id,
+                )
+            )
 
     async def _emit_queued(self, frame: BaseModel) -> None:
         """Live-phase emitter: hand the frame to the send loop's queue."""

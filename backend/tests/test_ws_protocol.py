@@ -355,6 +355,10 @@ class TestHandshake:
         with client.websocket_connect("/ws/audio") as session:
             session.send_json(make_hello())
             ready = session.receive_json()
+            # session_id is this session's analytics id: opaque, so it is
+            # checked for shape and the rest of the frame for exact content.
+            session_id = ready.pop("session_id")
+            assert isinstance(session_id, str) and len(session_id) == 32
             assert ready == {
                 "type": "ready",
                 "server_version": "0.1.0",
