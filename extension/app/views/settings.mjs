@@ -1,12 +1,20 @@
 /**
- * Settings: how sensitive the checker is, which topics it covers, and how
- * verdicts appear over the stream.
+ * Settings: how sensitive the checker is, which topics it covers, how
+ * verdicts appear over the stream, and what happens to the recorded history.
  *
  * Changes save as they are made (there is no Save button to forget) and
  * reach a running session through chrome.storage, exactly as before.
  */
 
-import {Card, Notice, Segmented, SettingRow, Toggle} from "../components.mjs";
+import {
+  Button,
+  Card,
+  ConfirmButton,
+  Notice,
+  Segmented,
+  SettingRow,
+  Toggle,
+} from "../components.mjs";
 import {
   DEFAULT_SETTINGS,
   TOPIC_COLORS,
@@ -14,7 +22,9 @@ import {
   TOPIC_SLUGS,
 } from "../../shared/settings.js";
 import {updateSettings, useAppState} from "../lib/app_store.mjs";
+import {plural} from "../lib/format.mjs";
 import {html, useEffect, useRef, useState} from "../lib/html.mjs";
+import {exportJson, removeEverything, useLedger} from "../lib/ledger_store.mjs";
 import {
   DURATION_MAX_S,
   DURATION_MIN_S,
@@ -24,6 +34,7 @@ import {
   setTopicEnabled,
   topicsMasterState,
 } from "../lib/settings_rules.mjs";
+import {ImportHistory} from "./import_history.mjs";
 
 const SENSITIVITY_OPTIONS = Object.freeze([
   {value: "low", label: "Low", hint: "Only clear, significant claims"},
@@ -38,7 +49,72 @@ const POSITIONS = Object.freeze([
   {value: "bottom-right", label: "Bottom right"},
 ]);
 
+const RETENTION_OPTIONS = Object.freeze([
+  [0, "Until I delete it"],
+  [365, "1 year"],
+  [90, "90 days"],
+  [30, "30 days"],
+]);
+
 const SAVED_NOTE_MS = 1800;
+
+/** History kept on this device: how long, and getting it in and out. */
+const DataCard = ({settings, save}) => {
+  const ledger = useLedger();
+  const [deleted, setDeleted] = useState(false);
+  const empty = ledger.sessions.length === 0 && ledger.verdicts.length === 0;
+  return html`
+    <${Card} title="Your data">
+      <p class="setting-help">
+        Your history — sessions, claims, results, ratings and usage — is stored in this browser
+        and nowhere else.
+        ${ledger.loaded
+          ? ` It holds ${plural(ledger.verdicts.length, "result")} from ${plural(ledger.sessions.length, "session")}.`
+          : ""}
+      </p>
+      <${SettingRow}
+        label="Keep history for"
+        help="Sessions older than this are removed automatically, within a day of the change."
+        htmlFor="history-retention"
+      >
+        <select
+          id="history-retention"
+          value=${String(settings.historyRetentionDays ?? 0)}
+          onChange=${(event) => save({historyRetentionDays: Number(event.currentTarget.value)})}
+        >
+          ${RETENTION_OPTIONS.map(
+            ([days, label]) => html`<option key=${days} value=${String(days)}>${label}</option>`
+          )}
+        </select>
+      <//>
+      <${SettingRow} label="Past results in the backend" stacked>
+        <${ImportHistory} />
+      <//>
+      <${SettingRow}
+        label="Export"
+        help="One JSON file with everything above. Results can also be exported as a spreadsheet from History."
+      >
+        <${Button} disabled=${empty} onClick=${() => exportJson()}>Export everything<//>
+      <//>
+      <${SettingRow}
+        label="Delete"
+        help="Removes the whole history from this browser. The backend's own database is not touched."
+      >
+        <${ConfirmButton}
+          disabled=${empty}
+          confirmLabel="Delete all history for good?"
+          onConfirm=${async () => {
+            await removeEverything();
+            setDeleted(true);
+          }}
+        >
+          Delete all history
+        <//>
+      <//>
+      ${deleted && empty ? html`<${Notice} tone="success">Your history has been deleted.<//>` : null}
+    <//>
+  `;
+};
 
 export const SettingsView = () => {
   const {settings} = useAppState();
@@ -198,6 +274,8 @@ export const SettingsView = () => {
           />
         <//>
       <//>
+
+      <${DataCard} settings=${settings} save=${save} />
 
       <${Card} title="Advanced">
         <${SettingRow}

@@ -169,6 +169,17 @@ class TestSessions:
         assert len(sessions) == 2
         assert sessions[0]["id"] == "s-a"
 
+    def test_offset_pages_through_every_session_exactly_once(
+        self, seeded_client: TestClient
+    ) -> None:
+        everything = seeded_client.get("/stats/sessions?limit=500").json()
+        paged = []
+        for offset in range(len(everything) + 1):
+            page = seeded_client.get(f"/stats/sessions?limit=1&offset={offset}").json()
+            paged.extend(page)
+        assert [s["id"] for s in paged] == [s["id"] for s in everything]
+        assert len(everything) > 1
+
     def test_detail_nests_claims_verdicts_sources_feedback(
         self, seeded_client: TestClient
     ) -> None:

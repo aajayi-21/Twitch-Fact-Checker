@@ -35,6 +35,9 @@ export const MSG = Object.freeze({
   // service worker -> content script (via chrome.tabs.sendMessage)
   OVERLAY_EVENT: "OVERLAY_EVENT",
   SESSION_STATE: "SESSION_STATE",
+  // Ask the page who owns the stream; the content script answers through
+  // sendResponse with {ownerHref, ownerName} (content/page_identity.js).
+  GET_PAGE_IDENTITY: "GET_PAGE_IDENTITY",
   // Firefox capture path only (no tabCapture/offscreen there): the content
   // script taps the page's own <video> and streams PCM back to the
   // background page. See shared/capabilities.js.
@@ -43,9 +46,14 @@ export const MSG = Object.freeze({
   // content script -> service worker
   CONTENT_READY: "CONTENT_READY",
   OPEN_OPTIONS: "OPEN_OPTIONS",
-  // content script -> service worker: 👍/👎 on a verdict; the SW POSTs it
-  // to the backend's /feedback endpoint (fire-and-forget).
+  // content script -> service worker: 👍/👎 on a verdict; the SW records it
+  // in the ledger and POSTs it to the backend's /feedback endpoint
+  // (fire-and-forget).
   SUBMIT_FEEDBACK: "SUBMIT_FEEDBACK",
+  // content script -> service worker: the page moved to another stream, or
+  // its channel link appeared ({url, title, ownerHref, ownerName}). The
+  // ledger uses it to attribute what follows to the right channel.
+  PAGE_IDENTITY: "PAGE_IDENTITY",
   // content script -> service worker: the player is showing an ad ({active}).
   // Sent on every change and re-sent as a heartbeat while an ad lasts; the
   // service worker routes it to whichever context owns the session.

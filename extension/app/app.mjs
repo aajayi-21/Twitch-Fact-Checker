@@ -1,5 +1,6 @@
 /**
- * The extension's full-tab app: welcome flow, home, AI provider, settings.
+ * The extension's full-tab app: welcome flow, home, history, usage, AI
+ * provider, settings.
  *
  * Opens in a new tab on install and from every "settings" entry point
  * (toolbar popup, overlay, chrome://extensions). No build step: Preact and
@@ -8,11 +9,14 @@
 
 import {StatusPill} from "./components.mjs";
 import {initApp, useAppState} from "./lib/app_store.mjs";
+import {initLedger} from "./lib/ledger_store.mjs";
 import {html, render, useEffect, useState} from "./lib/html.mjs";
 import {ROUTES, landingRoute, parseRoute} from "./lib/routes.mjs";
+import {HistoryView} from "./views/history.mjs";
 import {HomeView} from "./views/home.mjs";
 import {ProvidersView} from "./views/providers.mjs";
 import {SettingsView} from "./views/settings.mjs";
+import {UsageView} from "./views/usage.mjs";
 import {WelcomeView} from "./views/welcome.mjs";
 
 // Promise-safe API namespace (see shared/capabilities.js § namespace idiom).
@@ -20,12 +24,16 @@ const chrome = globalThis.browser ?? globalThis.chrome;
 
 const NAV_ITEMS = Object.freeze([
   {route: ROUTES.HOME, label: "Home"},
+  {route: ROUTES.HISTORY, label: "History"},
+  {route: ROUTES.USAGE, label: "Usage"},
   {route: ROUTES.PROVIDERS, label: "AI provider"},
   {route: ROUTES.SETTINGS, label: "Settings"},
 ]);
 
 const VIEWS = Object.freeze({
   [ROUTES.HOME]: HomeView,
+  [ROUTES.HISTORY]: HistoryView,
+  [ROUTES.USAGE]: UsageView,
   [ROUTES.PROVIDERS]: ProvidersView,
   [ROUTES.SETTINGS]: SettingsView,
 });
@@ -139,4 +147,9 @@ render(html`<${App} />`, root);
 initApp().catch((error) => {
   console.error("[fact-checker] app failed to start:", error);
   root.textContent = "The app could not start. Reload this tab, or reload the extension.";
+});
+// The history loads on its own: a problem reading it is shown on the History
+// and Usage screens and must not stop the rest of the app from starting.
+initLedger().catch((error) => {
+  console.error("[fact-checker] history failed to start:", error);
 });

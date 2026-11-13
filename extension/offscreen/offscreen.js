@@ -320,6 +320,9 @@ const handleStart = async ({streamId, tabId, settings}) => {
         ? [...sessionSettings.topics]
         : null,
       send_transcripts: Boolean(sessionSettings.sendTranscripts),
+      // Ask for per-claim outcome frames, which the service worker
+      // records in the viewer's history (older backends ignore this).
+      send_claims: true,
       // Session identity for backend analytics (optional fields; the hello
       // object is held by reference, so reconnects carry them too).
       platform: sessionSettings.platform ?? null,

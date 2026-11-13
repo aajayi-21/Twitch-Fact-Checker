@@ -851,10 +851,35 @@ today's `/setup/*` endpoints), settings migrated from `options/`, which is delet
 *Done means:* a developer-mode install is fully configurable without the old options
 page, and capture is unchanged — both checked by `scripts/run_app_e2e.mjs`.
 
-**Phase 2 — ledger, history, usage (1–2 weeks).** IndexedDB ledger written by the service
-worker, YouTube/Rumble channel resolution, `usage` on backend frames, history and usage
-screens, import from `fact_checker.db`, export and delete. *Done means:* a week of mixed
-Twitch / YouTube / Kick viewing shows up correctly attributed, with spend.
+**Phase 2 ✅ — ledger, history, usage (built 2026-11-12).** IndexedDB ledger written by
+the service worker, YouTube/Rumble channel resolution, usage frames from the backend,
+History and Usage screens, import from `fact_checker.db`, export and delete. Checked by
+247 unit tests and by `scripts/run_app_e2e.mjs`, which drives a scripted session through
+the real capture path into IndexedDB and reads it back on screen. *Done means:* a week of
+mixed Twitch / YouTube / Kick viewing shows up correctly attributed, with spend — **not
+yet observed on real streams**; see "still open" below.
+
+What was built differs from §5–§7 in these ways:
+
+| Plan | Built | Why |
+|---|---|---|
+| A `usage` object on verdict and gate frames | A separate `usage` frame per provider call (`backend/app/usage.py`, `UsageFrame`) | There is no gate frame to hang it on, and a verify that fails still costs money and has no verdict frame |
+| Claims recorded from existing frames | An opt-in `claim` frame (`ClientHello.send_claims`) | The wire only ever announced claims that were being checked; the history needs the ones that were heard and dropped too |
+| One ledger session per backend session | One ledger session per continuous stretch of **one channel**, carrying `backend_session_id` | A tab that moves to another channel mid-capture must not credit its watch time and spend to the first one. Import skips by `backend_session_id` |
+| `shared/pricing.json` | `ledger/pricing.mjs`, Anthropic models only | No build step to bundle JSON; OpenRouter reports exact cost, Ollama is free, and OpenAI/Gemini prices wait for their live runs (S2) |
+| Budgets on the usage screen | Not built | They need a guard in the pipeline; belongs with the browser engine in Phase 4 |
+| Verdict detail: source tiers, transcript context, re-check | Explanation, sources, model, latency, rating with correction, copy, delete | Tiers and transcript context are not on the wire; re-check needs the Phase 4 pipeline |
+
+Still open from this phase:
+
+- **YouTube and Rumble channel detection is unverified against the live sites.** It
+  reads the channel link under the player (`content/page_identity.js`); the selectors are
+  unit-tested against a fake page only. From the development machine YouTube was
+  unreachable and Rumble answered headless Chrome with a bot check. Twitch and Kick were
+  confirmed live. `node scripts/check_page_identity.mjs --headed URL…` checks any page.
+- The Jev pre-screen's calls are not reported as usage (they bypass the SDK call sites).
+- Retention is applied by a daily alarm and was exercised by calling the sweep directly,
+  not by waiting a day.
 
 **Phase 3 — local GPU speech (2–3 weeks; S1 and S3 have passed).** The probe, ladder,
 self-test, speech worker, segmenter and drop policy exist from the spikes

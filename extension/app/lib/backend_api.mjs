@@ -42,6 +42,8 @@ const TIMEOUTS_MS = Object.freeze({
   stages: 15_000,
   // A real gate call and one or more web-search verifications.
   testCheck: 90_000,
+  // One page of sessions, or one session with all its claims and verdicts.
+  history: 15_000,
 });
 
 const KIND_BY_STATUS = Object.freeze({
@@ -165,6 +167,41 @@ export const createBackendApi = ({getOrigin, fetchImpl = (...args) => fetch(...a
 
     /** Lifetime and today totals: sessions, claims, verdict labels, cost. */
     statsSummary: () => request("/stats/summary", {timeoutMs: TIMEOUTS_MS.status}),
+
+    /**
+     * One page of the backend's own session list, newest first (for
+     * importing past results into the viewer's history).
+     *
+     * @param {{limit: number, offset: number}} page
+     */
+    statsSessions: ({limit, offset}) =>
+      request(`/stats/sessions?limit=${limit}&offset=${offset}`, {
+        timeoutMs: TIMEOUTS_MS.history,
+      }),
+
+    /**
+     * One session with its claims, verdicts, sources and ratings.
+     *
+     * @param {string} sessionId
+     */
+    statsSession: (sessionId) =>
+      request(`/stats/sessions/${encodeURIComponent(sessionId)}`, {
+        timeoutMs: TIMEOUTS_MS.history,
+      }),
+
+    /**
+     * Send the viewer's rating of a verdict to the backend, which keeps its
+     * own copy for evaluating prompt changes.
+     *
+     * @param {{verdictId: string, rating: "up"|"down", correctedLabel?: string|null,
+     *   note?: string|null}} feedback
+     */
+    submitFeedback: ({verdictId, rating, correctedLabel = null, note = null}) =>
+      request("/feedback", {
+        method: "POST",
+        body: {verdict_id: verdictId, rating, corrected_label: correctedLabel, note},
+        timeoutMs: TIMEOUTS_MS.status,
+      }),
 
     /**
      * Run a sentence through the real pipeline (claim detection, then

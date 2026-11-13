@@ -79,6 +79,7 @@ from app.prompts import (
     build_verdict_extraction_messages,
 )
 from app.rate_limit import QuotaCooldown
+from app.usage import UsageStage, anthropic_usage, report_response_usage
 
 logger = logging.getLogger(__name__)
 
@@ -307,8 +308,14 @@ def select_sources(
     return []
 
 
-def _log_usage(response: Any, stage: str, model: str) -> None:
-    """Token and web-search counts at DEBUG (for watching credit spend)."""
+def _log_usage(response: Any, stage: str, model: str, usage_stage: UsageStage) -> None:
+    """Report the call's usage to the session, and log it at DEBUG.
+
+    ``stage`` is the human-readable step for the log line (e.g. "fallback
+    verify"); ``usage_stage`` is the coarse pipeline stage the viewer's
+    usage screen groups by.
+    """
+    report_response_usage(anthropic_usage(response, usage_stage, model))
     usage = getattr(response, "usage", None)
     if usage is None:
         return
@@ -436,7 +443,7 @@ class AnthropicClaimGate(ClaimGate):
         except anthropic.AnthropicError as exc:
             raise GateError(f"{what} call failed: {exc}") from exc
 
-        _log_usage(response, what, self._model)
+        _log_usage(response, what, self._model, "gate")
         if response.stop_reason == "refusal":
             raise GateError(f"{what} call declined by the model (refusal)")
         if response.stop_reason == "max_tokens":
@@ -687,7 +694,7 @@ class AnthropicFactChecker(FactChecker):
             raise self._translate_error(
                 exc, stage, structured=schema is not None and structured_fallback
             ) from exc
-        _log_usage(response, stage, self._model)
+        _log_usage(response, stage, self._model, "verify")
         return response
 
     def _translate_error(

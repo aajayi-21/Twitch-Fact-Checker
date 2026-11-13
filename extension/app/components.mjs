@@ -2,7 +2,7 @@
  * Small presentational components shared by the app's screens.
  */
 
-import {html} from "./lib/html.mjs";
+import {html, useEffect, useState} from "./lib/html.mjs";
 
 /**
  * @param {object} props
@@ -105,6 +105,98 @@ export const Toggle = ({id, checked, onChange, label}) => html`
     />
     <span class="toggle-track" aria-hidden="true"><span class="toggle-thumb"></span></span>
   </label>
+`;
+
+/**
+ * A button for something that cannot be undone: the first click arms it and
+ * changes its label, a second click within a few seconds does the deed.
+ *
+ * @param {object} props
+ * @param {string} props.confirmLabel - shown while armed, e.g. "Delete for good?"
+ * @param {() => void|Promise<void>} props.onConfirm
+ */
+export const ConfirmButton = ({confirmLabel, onConfirm, children, ...rest}) => {
+  const [armed, setArmed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (!armed) {
+      return undefined;
+    }
+    const timer = setTimeout(() => setArmed(false), 4000);
+    return () => clearTimeout(timer);
+  }, [armed]);
+  const onClick = async () => {
+    if (!armed) {
+      setArmed(true);
+      return;
+    }
+    setBusy(true);
+    try {
+      await onConfirm();
+    } finally {
+      setBusy(false);
+      setArmed(false);
+    }
+  };
+  return html`
+    <${Button}
+      variant=${armed ? "danger" : "ghost"}
+      busy=${busy}
+      onClick=${onClick}
+      onBlur=${() => setArmed(false)}
+      ...${rest}
+    >
+      ${armed ? confirmLabel : children}
+    <//>
+  `;
+};
+
+/** The coloured TRUE / FALSE / MISLEADING / UNVERIFIED chip. */
+export const LabelChip = ({label}) => html`
+  <span class="verdict-label" data-label=${label}>${label}</span>
+`;
+
+/**
+ * A row of tabs that switch what is shown below them.
+ *
+ * @param {object} props
+ * @param {string} props.label - accessible name
+ * @param {{id: string, label: string, count?: number}[]} props.tabs
+ * @param {string} props.active
+ * @param {(id: string) => void} props.onSelect
+ */
+export const Tabs = ({label, tabs, active, onSelect}) => html`
+  <div class="tabs" role="tablist" aria-label=${label}>
+    ${tabs.map(
+      (tab) => html`
+        <button
+          key=${tab.id}
+          type="button"
+          role="tab"
+          class="tab"
+          id=${`tab-${tab.id}`}
+          aria-selected=${tab.id === active ? "true" : "false"}
+          aria-controls=${`panel-${tab.id}`}
+          tabindex=${tab.id === active ? 0 : -1}
+          onClick=${() => onSelect(tab.id)}
+          onKeyDown=${(event) => {
+            const step = {ArrowRight: 1, ArrowLeft: -1}[event.key];
+            if (!step) {
+              return;
+            }
+            const index = tabs.findIndex((candidate) => candidate.id === active);
+            const next = tabs[(index + step + tabs.length) % tabs.length];
+            onSelect(next.id);
+            document.getElementById(`tab-${next.id}`)?.focus();
+          }}
+        >
+          ${tab.label}${Number.isFinite(tab.count)
+            ? html`<span class="tab-count">${tab.count}</span>`
+            : null}
+        </button>
+      `
+    )}
+  </div>
 `;
 
 /** Opens in a new tab without handing the page a reference back to the app. */

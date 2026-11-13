@@ -128,6 +128,10 @@ class ClientHello(BaseModel):
     # time (:func:`resolve_enabled_topics`), never rejected with a 1008.
     enabled_topics: list[str] | None = None
     send_transcripts: bool = True
+    # Opt-in :class:`ClaimFrame` stream: one frame per claim outcome, so the
+    # client can keep its own record of what was heard and what became of it.
+    # Off by default so older clients see exactly the frames they always did.
+    send_claims: bool = False
     # Session identity (optional — old clients omit them, old backends ignore
     # them): which stream this session is listening to, for per-channel
     # analytics. Never used for anything protocol-affecting.
@@ -287,12 +291,35 @@ class Verdict(BaseModel):
 # --------------------------------------------------------------------------- #
 
 
+def _without_nulls(data: dict[str, Any], *optional_keys: str) -> dict[str, Any]:
+    """Drop the named keys when they are ``None``.
+
+    Optional wire additions are OMITTED rather than sent as ``null``, so a
+    frame built without them stays byte-identical to the shape older clients
+    were written against.
+    """
+    for key in optional_keys:
+        if data.get(key) is None:
+            data.pop(key, None)
+    return data
+
+
 class ReadyFrame(BaseModel):
-    """Sent once after a valid hello."""
+    """Sent once after a valid hello.
+
+    ``session_id`` is this session's analytics id (the ``sessions`` primary
+    key). The extension records it in its own history so a later import of
+    this backend's database can recognise sessions it already has.
+    """
 
     type: Literal["ready"] = "ready"
     server_version: str
     model: str
+    session_id: str | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_unset(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        return _without_nulls(handler(self), "session_id")
 
 
 class TranscriptFrame(BaseModel):
@@ -329,8 +356,41 @@ class StatusFrame(BaseModel):
         return data
 
 
+ClaimOutcome = Literal[
+    "pending",
+    "below_threshold",
+    "topic_skipped",
+    "duplicate",
+    "queue_dropped",
+    "verify_failed",
+    "verified",
+]
+
+
+class ClaimFrame(BaseModel):
+    """What became of one gated claim (sent only when the hello opted in).
+
+    Mirrors the ``claims`` analytics row. A claim that is queued for
+    verification is announced as ``"pending"`` and announced AGAIN, with the
+    same ``id``, when it reaches ``"verified"`` or ``"verify_failed"`` — the
+    client upserts by id. Every other outcome is final when first sent.
+    """
+
+    type: Literal["claim"] = "claim"
+    id: str
+    text: str
+    topic: Topic
+    check_worthiness: float
+    outcome: ClaimOutcome
+
+
 class VerdictFrame(BaseModel):
-    """A :class:`Verdict` on the wire."""
+    """A :class:`Verdict` on the wire.
+
+    The four trailing fields are provenance for the viewer's history (which
+    claim row, how long the check took, which provider and model answered).
+    They are optional and omitted when unset — older clients ignore them.
+    """
 
     type: Literal["verdict"] = "verdict"
     id: str
@@ -341,10 +401,47 @@ class VerdictFrame(BaseModel):
     sources: list[Source]
     checked_at: str
     used_fallback: bool
+    claim_id: str | None = None
+    latency_ms: int | None = None
+    provider: str | None = None
+    model: str | None = None
 
     @classmethod
-    def from_verdict(cls, verdict: Verdict) -> "VerdictFrame":
-        return cls(**verdict.model_dump())
+    def from_verdict(cls, verdict: Verdict, **provenance: Any) -> "VerdictFrame":
+        return cls(**verdict.model_dump(), **provenance)
+
+    @model_serializer(mode="wrap")
+    def _omit_unset(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        return _without_nulls(
+            handler(self), "claim_id", "latency_ms", "provider", "model"
+        )
+
+
+class UsageFrame(BaseModel):
+    """What one provider call consumed (see :mod:`app.usage`).
+
+    One frame per gate or verify call, sent after the call completes —
+    including calls that failed to produce a verdict, since those were still
+    billed. ``verdict_id`` links a verify call to the verdict it produced.
+    ``cost_usd`` is present only when the provider reported an exact cost;
+    otherwise the client estimates from the token counts. Clients that
+    predate this frame ignore unknown frame types.
+    """
+
+    type: Literal["usage"] = "usage"
+    stage: Literal["gate", "verify"]
+    provider: str
+    model: str
+    input_tokens: int
+    cached_input_tokens: int
+    output_tokens: int
+    web_searches: int
+    cost_usd: float | None = None
+    verdict_id: str | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_unset(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        return _without_nulls(handler(self), "cost_usd", "verdict_id")
 
 
 class ContradictionJudgement(BaseModel):

@@ -6,7 +6,11 @@
  * the welcome tab opens on install, the backend is found once it starts, a
  * wrong key is refused and a good one accepted, the sample check shows a
  * verdict, settings persist to chrome.storage, and the popup reuses the open
- * app tab. Screenshots of every screen are saved for review.
+ * app tab. Then the history: past sessions are imported from the backend,
+ * results are searched, filtered, rated, exported and deleted, a scripted
+ * live session is captured through the real service worker and offscreen
+ * document into IndexedDB, and the Usage screen prices it. Screenshots of
+ * every screen are saved for review.
  *
  * The backend is a small fake built into this script (same routes and
  * response shapes as backend/app/setup.py and friends), so the run needs no
@@ -45,6 +49,15 @@ import {
   startStaticServer,
   unpackedExtensionId,
 } from "./lib/chrome_harness.mjs";
+import {
+  LIVE_CLAIM,
+  LIVE_SESSION_ID,
+  SEARCHABLE_CLAIM,
+  acceptWebSocket,
+  listSessions,
+  liveSessionFrames,
+  seedHistory,
+} from "./lib/fake_backend_history.mjs";
 
 const WORK_DIR = path.join(REPO_ROOT, ".stt-bench");
 const FAKE_BACKEND_PORT = 8731;
@@ -77,8 +90,12 @@ const createFakeBackend = () => {
       openrouter: {gate: "openai/gpt-6-luna", verify: "google/gemini-3.5-flash-lite"},
     },
     requests: [],
+    // What the real backend would hold in fact_checker.db.
+    history: seedHistory(),
+    // Hello frames received on /ws/audio, newest last.
+    hellos: [],
   };
-  const hint = (key) => (key ? `…${key.slice(-4)}` : null);
+  const hint =(key) => (key ? `…${key.slice(-4)}` : null);
   const configured = () => Boolean(state.anthropicKey || state.openrouterKey);
   const stage = (name) => {
     const provider = state[`${name}Provider`];
@@ -131,7 +148,7 @@ const createFakeBackend = () => {
       {
         today: {sessions: 2, claims: 31, verify_calls: 14, est_cost_usd: 0.154, labels: {}},
         totals: {
-          sessions: 48,
+          sessions: state.history.size,
           claims: 902,
           verify_calls: 411,
           est_cost_usd: 4.521,
@@ -139,6 +156,12 @@ const createFakeBackend = () => {
         },
       },
     ],
+    "GET /stats/sessions": (body, url) => {
+      const limit = Number(url.searchParams.get("limit") ?? 50);
+      const offset = Number(url.searchParams.get("offset") ?? 0);
+      return [200, listSessions(state.history).slice(offset, offset + limit)];
+    },
+    "POST /feedback": () => [200, {ok: true}],
     "POST /setup/credentials": (body) => {
       if (!["anthropic", "openrouter"].includes(body.provider)) {
         return [400, {detail: "provider must be one of: anthropic, openrouter, ollama"}];
@@ -197,7 +220,8 @@ const createFakeBackend = () => {
     const chunks = [];
     request.on("data", (chunk) => chunks.push(chunk));
     request.on("end", () => {
-      const route = `${request.method} ${new URL(request.url, "http://x").pathname}`;
+      const url = new URL(request.url, "http://x");
+      const route = `${request.method} ${url.pathname}`;
       const cors = {
         "Access-Control-Allow-Origin": request.headers.origin ?? "*",
         "Access-Control-Allow-Headers": "content-type",
@@ -213,9 +237,40 @@ const createFakeBackend = () => {
         body = {};
       }
       state.requests.push({route, body});
-      const [status, payload] = routes[route]?.(body) ?? [404, {detail: "Not Found"}];
+      const sessionDetail = /^GET \/stats\/sessions\/([^/]+)$/.exec(route);
+      const [status, payload] = sessionDetail
+        ? state.history.has(decodeURIComponent(sessionDetail[1]))
+          ? [200, state.history.get(decodeURIComponent(sessionDetail[1]))]
+          : [404, {detail: "unknown session id"}]
+        : (routes[route]?.(body, url) ?? [404, {detail: "Not Found"}]);
       response.writeHead(status, {...cors, "Content-Type": "application/json"});
       response.end(JSON.stringify(payload));
+    });
+  });
+  // /ws/audio: answer a hello with "ready", play the scripted session, and
+  // close cleanly on "stop" — the frames a real session would produce, with
+  // no speech model behind them.
+  server.on("upgrade", (request, socket) => {
+    if (new URL(request.url, "http://x").pathname !== "/ws/audio") {
+      socket.destroy();
+      return;
+    }
+    acceptWebSocket(request, socket, (text, connection) => {
+      const frame = JSON.parse(text);
+      if (frame.type === "hello") {
+        state.hellos.push(frame);
+        connection.sendJson({
+          type: "ready",
+          server_version: "e2e-fake",
+          model: "distil-small.en",
+          session_id: LIVE_SESSION_ID,
+        });
+        liveSessionFrames().forEach((liveFrame, index) => {
+          setTimeout(() => connection.sendJson(liveFrame), 300 + index * 60);
+        });
+      } else if (frame.type === "stop") {
+        connection.close(1000);
+      }
     });
   });
   return {
@@ -300,6 +355,320 @@ const check = (name, condition, detail = "") => {
   console.log(`${condition ? "  ok  " : "  FAIL"}  ${name}${detail && !condition ? ` — ${detail}` : ""}`);
 };
 
+/** Everything in the history database, read through the extension's own module. */
+const ledgerSnapshot = (app) =>
+  app.eval(`import("../ledger/ledger.mjs").then((ledger) => ledger.loadLedger())`);
+
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** For a failed width check: which elements stick out past the viewport. */
+const WIDE_ELEMENTS = `[...document.querySelectorAll("body *")]
+  .filter((element) => element.getBoundingClientRect().right > window.innerWidth + 1)
+  .slice(0, 6)
+  .map((element) => element.tagName.toLowerCase() + "." + element.className)
+  .join(", ")`;
+
+/** Capture every file the page offers for download, as text. */
+const captureDownloads = (app) =>
+  app.eval(`(() => {
+    window.__downloads = [];
+    const original = URL.createObjectURL.bind(URL);
+    URL.createObjectURL = (blob) => {
+      blob.text().then((text) => window.__downloads.push(text));
+      return original(blob);
+    };
+    return true;
+  })()`);
+
+const lastDownload = async (app) => {
+  await pause(300);
+  return app.eval(`window.__downloads.at(-1) ?? null`);
+};
+
+/**
+ * History and Usage against the fake backend: import the backend's past
+ * sessions, find and judge results, watch a scripted live session arrive,
+ * and read the spend.
+ */
+const historyAndUsageChecks = async ({chrome, page, app, appUrl, fake, screenshot, playerUrl}) => {
+  console.log("\nHistory: import from the backend");
+  await page.send("Page.navigate", {url: `${appUrl}#/history`});
+  await app.waitForText("Nothing here yet");
+  await screenshot(page, "history-empty");
+  await captureDownloads(app);
+  await app.click("Import past results from the backend");
+  await app.waitForText("51 results");
+  let ledger = await ledgerSnapshot(app);
+  check(
+    "imports every session with its claims, results and flat-rate spend",
+    ledger.sessions.length === 5 &&
+      ledger.verdicts.length === 51 &&
+      ledger.claims.length === 56 &&
+      ledger.usage.length === 4,
+    `sessions ${ledger.sessions.length}, verdicts ${ledger.verdicts.length}, claims ${ledger.claims.length}, usage ${ledger.usage.length}`
+  );
+  check(
+    "YouTube sessions keep their channel",
+    ledger.sessions.some((session) => session.platform === "youtube" && session.channel_id === "@newsanalyst")
+  );
+  await screenshot(page, "history-results");
+
+  console.log("\nHistory: results");
+  await app.type(".filter-search", "eiffel");
+  await app.waitForText("1 of 51 results");
+  check("search finds a result by its claim", (await app.text()).includes(SEARCHABLE_CLAIM));
+  await app.click("FALSE");
+  await app.waitForText("330 metres");
+  const detail = await app.text();
+  check(
+    "opening a result shows its explanation, source, model and timing",
+    detail.includes("Source 0") && detail.includes("anthropic · claude-haiku-5-5") && /Took\s+2\.0 s/.test(detail)
+  );
+  await app.click("👎 Wrong");
+  await app.waitForText("It should have been");
+  await app.select(".result-actions select", "TRUE");
+  await pause(300);
+  ledger = await ledgerSnapshot(app);
+  check(
+    "a rating and its correction are stored in the history",
+    ledger.feedback.length === 1 &&
+      ledger.feedback[0].rating === "down" &&
+      ledger.feedback[0].corrected_label === "TRUE",
+    JSON.stringify(ledger.feedback)
+  );
+  const sentFeedback = fake.state.requests.filter((request) => request.route === "POST /feedback").at(-1)?.body;
+  check(
+    "…and sent to the backend with its field names",
+    sentFeedback?.verdict_id === "s-youtube-v0" && sentFeedback?.rating === "down" && sentFeedback?.corrected_label === "TRUE",
+    JSON.stringify(sentFeedback)
+  );
+  await screenshot(page, "history-result-open");
+  await app.click("Clear filters");
+  await app.select('select[aria-label="Site"]', "kick");
+  await app.waitForText("2 of 51 results");
+  await app.click("Misleading");
+  await app.waitForText("1 of 51 results");
+  check("site and verdict filters combine", (await app.text()).includes("Crime doubled in a year."));
+  await app.click("Export CSV");
+  const csv = await lastDownload(app);
+  check(
+    "Export CSV hands over exactly the filtered results",
+    typeof csv === "string" &&
+      csv.trimEnd().split("\r\n").length === 2 &&
+      csv.includes("checked_at,platform,channel") &&
+      csv.includes("Crime doubled in a year."),
+    String(csv).slice(0, 200)
+  );
+  await app.click("Clear filters");
+  await app.select('select[aria-label="Your rating"]', "down");
+  await app.waitForText("1 of 51 results");
+  check("results can be filtered by your own rating", (await app.text()).includes(SEARCHABLE_CLAIM));
+  await app.click("Clear filters");
+
+  console.log("\nHistory: channels and sessions");
+  await app.click("Channels");
+  await app.waitForText("Adjudicated");
+  const channelRows = await app.eval(
+    `[...document.querySelectorAll("#panel-channels tbody tr")].map((row) => row.innerText.replace(/\\s+/g, " "))`
+  );
+  const twitchRow = channelRows.find((row) => row.startsWith("DebateStreamer Twitch")) ?? "";
+  const kickRow = channelRows.find((row) => row.startsWith("DebateStreamer Kick")) ?? "";
+  check("one row per channel per site", channelRows.length === 4, channelRows.join(" | "));
+  check(
+    "a channel with 40 adjudicated checks shows its shares",
+    twitchRow.includes(" 1 session 45 40 60% 25% 15% 11% "),
+    twitchRow
+  );
+  check(
+    "a channel with too few shows no percentages",
+    kickRow.includes(" 1 session 2 2 — — — 0% "),
+    kickRow
+  );
+  check("the same name on another site is a separate channel", Boolean(twitchRow) && Boolean(kickRow));
+  await screenshot(page, "history-channels");
+  await app.eval(
+    `[...document.querySelectorAll("#panel-channels tbody tr")].find((row) => row.innerText.includes("Kick")).querySelector("button").click()`
+  );
+  await app.waitForText("2 of 51 results");
+  check("a channel's Results button opens its results", true);
+  await app.click("Sessions");
+  await app.waitForText("Claims heard");
+  check(
+    "sessions list each stretch of watching",
+    (await app.eval(`document.querySelectorAll("#panel-sessions tbody tr").length`)) === 5
+  );
+  await screenshot(page, "history-sessions");
+  await page.send("Emulation.setDeviceMetricsOverride", {width: 420, height: 800, deviceScaleFactor: 1, mobile: false});
+  await pause(200);
+  check(
+    "wide tables scroll inside their own box at a narrow width",
+    await app.eval(`document.documentElement.scrollWidth <= window.innerWidth`),
+    await app.eval(WIDE_ELEMENTS)
+  );
+
+  console.log("\nLive session (scripted over the real capture path)");
+  await page.send("Emulation.setDeviceMetricsOverride", {width: 1280, height: 900, deviceScaleFactor: 1, mobile: false});
+  await app.click("Results");
+  await app.click("Clear filters");
+  await chrome.openPage(playerUrl);
+  await app.eval(`(async () => {
+    const [tab] = await chrome.tabs.query({url: ${JSON.stringify(new URL(playerUrl).origin + "/*")}});
+    await chrome.runtime.sendMessage({target: "background", type: "CAPTURE_START", payload: {tabId: tab.id}});
+  })()`);
+  await app.waitForText(LIVE_CLAIM);
+  check("a result appears in History as it happens, without reloading", true);
+  check("the extension asks the backend for per-claim frames", fake.state.hellos.at(-1)?.send_claims === true);
+  await pause(1200);
+  ledger = await ledgerSnapshot(app);
+  const live = ledger.sessions.find((session) => session.backend_session_id === LIVE_SESSION_ID);
+  const liveUsage = ledger.usage.filter((row) => row.session_id === live?.id);
+  const liveClaims = ledger.claims.filter((claim) => claim.session_id === live?.id);
+  check("the session is recorded under the backend's session id", Boolean(live) && live.ended_at === null);
+  check(
+    "both claims are recorded, the checked one once with its final outcome",
+    liveClaims.length === 2 && liveClaims.find((claim) => claim.id === "live-c1")?.outcome === "verified",
+    JSON.stringify(liveClaims.map((claim) => [claim.id, claim.outcome]))
+  );
+  const estimated = liveUsage.find((row) => row.verdict_id === "live-v1");
+  check(
+    "an Anthropic call is priced from its tokens and search",
+    estimated?.cost_source === "estimate" && Math.abs(estimated.cost_usd - 0.0109) < 1e-9,
+    JSON.stringify(estimated)
+  );
+  check(
+    "an OpenRouter cost is kept exactly; an unpriced call is left unpriced",
+    liveUsage.some((row) => row.cost_source === "provider" && row.cost_usd === 0.0078) &&
+      liveUsage.some((row) => row.cost_source === "unknown" && row.cost_usd === null),
+    JSON.stringify(liveUsage.map((row) => [row.model, row.cost_source, row.cost_usd]))
+  );
+  await app.eval(`chrome.runtime.sendMessage({target: "background", type: "CAPTURE_STOP", payload: {}})`);
+  let ended = null;
+  for (let attempt = 0; attempt < 40 && !ended; attempt += 1) {
+    await pause(200);
+    ended = (await ledgerSnapshot(app)).sessions.find((session) => session.id === live?.id)?.ended_at;
+  }
+  check("stopping capture closes the session", Boolean(ended));
+  // Opening the player put the app tab in the background, where Chrome
+  // throttles timers and withholds focus events. Bring it back, as a person
+  // returning to the tab would.
+  await page.send("Page.bringToFront");
+
+  console.log("\nUsage");
+  await page.send("Page.navigate", {url: `${appUrl}#/usage`});
+  await app.waitForText("Spend per day");
+  const week = await app.text();
+  check("totals the week across imported and live sessions", week.includes("52") && week.includes("fact-checks"));
+  check("marks estimated spend with ≈", /≈ \$\d/.test(week));
+  check("says when a call could not be priced", week.includes("1 call had no cost reported"));
+  check("says when part of the period is the backend's flat-rate estimate", week.includes("imported from the backend"));
+  check(
+    "draws a bar for each day with spend",
+    (await app.eval(`document.querySelectorAll(".chart-bar").length`)) >= 3
+  );
+  await app.eval(`document.querySelector('.chart-hit[tabindex="0"]').focus()`);
+  await pause(150);
+  check(
+    "a day's figures show on keyboard focus",
+    /\$\d/.test((await app.eval(`document.querySelector(".chart-tooltip")?.innerText ?? ""`)))
+  );
+  check("breaks spend down by model, step, site and channel", ["By model", "By step", "By site", "By channel"].every((title) => week.includes(title)));
+  await screenshot(page, "usage-week");
+  await app.click("Today");
+  await app.waitForText("≈ $0.019");
+  check("today's spend is the live session's four calls", (await app.text()).includes("4 provider calls"));
+  await screenshot(page, "usage-today");
+
+  await page.send("Page.navigate", {url: `${appUrl}#/home`});
+  await app.waitForText("Latest results");
+  const homeAfter = await app.text();
+  check("Home shows the latest result and today's spend from the history", homeAfter.includes(LIVE_CLAIM) && homeAfter.includes("≈ $0.019"));
+  await screenshot(page, "home-with-history");
+
+  console.log("\nHistory: deleting");
+  await page.send("Page.navigate", {url: `${appUrl}#/history`});
+  await app.waitForText("52 results");
+  await app.type(".filter-search", "forty percent");
+  await app.waitForText("1 of 52 results");
+  await app.click("FALSE");
+  await app.click("Delete");
+  check("deleting asks first", (await app.text()).includes("Delete this result?"));
+  await app.click("Delete this result?");
+  await app.waitForText("0 of 51 results");
+  ledger = await ledgerSnapshot(app);
+  check(
+    "a deleted result is gone, and what it cost stays in the usage totals",
+    !ledger.verdicts.some((verdict) => verdict.id === "live-v1") &&
+      ledger.usage.some((row) => row.verdict_id === "live-v1")
+  );
+  await app.click("Clear filters");
+  await app.click("Sessions");
+  await app.waitForText("Claims heard");
+  await app.eval(
+    `[...document.querySelectorAll("#panel-sessions tbody tr")].find((row) => row.innerText.includes("Late show")).querySelector(".row-actions button:last-child").click()`
+  );
+  await pause(150);
+  await app.click("Delete it?");
+  await pause(500);
+  ledger = await ledgerSnapshot(app);
+  check(
+    "deleting a session removes its results, claims and usage",
+    !ledger.sessions.some((session) => session.id === "s-kick") &&
+      !ledger.verdicts.some((verdict) => verdict.session_id === "s-kick") &&
+      !ledger.claims.some((claim) => claim.session_id === "s-kick") &&
+      !ledger.usage.some((row) => row.session_id === "s-kick")
+  );
+};
+
+/** Settings → Your data: retention, re-import, export, delete everything. */
+const dataSettingsChecks = async ({app, page, screenshot}) => {
+  console.log("\nSettings: your data");
+  await captureDownloads(app);
+  const stored = () => app.eval(`chrome.storage.sync.get("settings").then((s) => s.settings)`);
+  await app.select("#history-retention", "365");
+  await pause(250);
+  check("the retention choice is saved", (await stored()).historyRetentionDays === 365);
+  check(
+    "a daily sweep is scheduled to apply it",
+    (await app.eval(`chrome.alarms.get("ledger-retention").then((alarm) => alarm?.periodInMinutes ?? null)`)) === 1440
+  );
+  const removed = await app.eval(
+    `import("../ledger/ledger.mjs").then((ledger) => ledger.deleteOlderThan(new Date(Date.now() - 365 * 86400000).toISOString()))`
+  );
+  let ledger = await ledgerSnapshot(app);
+  check(
+    "the sweep removes sessions older than that, with their results",
+    removed === 1 && !ledger.sessions.some((session) => session.id === "s-old") && !ledger.verdicts.some((verdict) => verdict.session_id === "s-old"),
+    `removed ${removed}`
+  );
+  await app.click("Import past results from the backend");
+  await app.waitForText("Imported 2 sessions with 3 results.");
+  check("importing again adds only what is missing", (await app.text()).includes("3 already here"));
+  await app.click("Import past results from the backend");
+  await app.waitForText("Nothing new to import.");
+  check("…and a third time adds nothing", true);
+  await screenshot(page, "settings-data");
+  await app.click("Export everything");
+  const exported = JSON.parse((await lastDownload(app)) ?? "{}");
+  ledger = await ledgerSnapshot(app);
+  check(
+    "Export everything is one JSON document of the whole history",
+    exported.format === "live-stream-fact-checker-export" &&
+      exported.sessions?.length === ledger.sessions.length &&
+      exported.verdicts?.length === ledger.verdicts.length &&
+      exported.usage?.length === ledger.usage.length &&
+      exported.feedback?.length === 1
+  );
+  await app.click("Delete all history");
+  await app.click("Delete all history for good?");
+  await app.waitForText("Your history has been deleted.");
+  ledger = await ledgerSnapshot(app);
+  check(
+    "Delete all history empties every store",
+    Object.values(ledger).every((rows) => rows.length === 0),
+    JSON.stringify(Object.fromEntries(Object.entries(ledger).map(([name, rows]) => [name, rows.length])))
+  );
+};
+
 const main = async () => {
   const options = parseCli(process.argv.slice(2), CLI_SPEC);
   const usingFake = !options.realBackend;
@@ -331,7 +700,8 @@ const main = async () => {
       ...options.chromeFlags,
     ],
   });
-  const staticServer = usingFake ? null : await startStaticServer({isolated: false, port: 8765});
+  // Serves the silent "player" page that capture is started on.
+  const staticServer = await startStaticServer({isolated: false, port: 8765});
   const consoleProblems = [];
   let shotIndex = 0;
   const screenshot = async (page, name) => {
@@ -438,10 +808,23 @@ const main = async () => {
 
       console.log("\nHome");
       const home = await app.text();
-      check("shows today's numbers from the backend", home.includes("14") && home.includes("fact-checks"));
       check("shows the connected provider and model", home.includes("Anthropic (claude-haiku-5-5)"));
       check("sidebar reports ready", home.includes("Ready to check"));
+      check(
+        "with an empty history, offers to import what the backend holds",
+        home.includes("Bring your past results across") && home.includes("5 earlier sessions")
+      );
       await screenshot(page, "home");
+
+      await historyAndUsageChecks({
+        chrome,
+        page,
+        app,
+        appUrl,
+        fake,
+        screenshot,
+        playerUrl: `${staticServer.origin}/fixture/player.html?delay=100000`,
+      });
     } else {
       await page.send("Page.navigate", {url: `${appUrl}#/home`});
       await app.waitForText("Local backend");
@@ -508,6 +891,10 @@ const main = async () => {
     await app.type("#backend-url", backendUrl);
     await app.blur("#backend-url");
 
+    if (usingFake) {
+      await dataSettingsChecks({app, page, screenshot});
+    }
+
     console.log("\nEntry points");
     const popup = await chrome.openPage(`chrome-extension://${extensionId}/popup/popup.html`);
     const popupActions = pageActions(popup);
@@ -554,6 +941,22 @@ const main = async () => {
         state = await session();
       }
       check("Stop ends the session cleanly", state?.status === "idle" && !state?.lastError, JSON.stringify(state));
+
+      // The real backend names its session in the ready frame; the service
+      // worker must have recorded it, and closed it on Stop.
+      const recorded = await ledgerSnapshot(app);
+      const [liveSession] = recorded.sessions;
+      check(
+        "the session was recorded in the history under the backend's session id",
+        recorded.sessions.length === 1 && /^[0-9a-f]{32}$/.test(liveSession?.backend_session_id ?? ""),
+        JSON.stringify(recorded.sessions)
+      );
+      check("…and closed when capture stopped", Boolean(liveSession?.ended_at), JSON.stringify(liveSession));
+      await page.send("Page.navigate", {url: `${appUrl}#/history`});
+      await app.waitForText("Sessions");
+      await screenshot(page, "history-real-backend");
+      await page.send("Page.navigate", {url: appUrl});
+      await app.waitForText("All time");
     }
 
     await page.send("Emulation.setDeviceMetricsOverride", {width: 420, height: 800, deviceScaleFactor: 1, mobile: false});

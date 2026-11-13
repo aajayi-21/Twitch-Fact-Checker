@@ -58,6 +58,9 @@ export const DEFAULT_SETTINGS = Object.freeze({
   // Opt-in video-frame capture for on-screen claims (privacy-sensitive:
   // OFF by default; applies on the next capture start).
   captureVideo: false,
+  // How long history is kept on this device, in days; 0 keeps it until the
+  // viewer deletes it. Applied by a daily sweep in the service worker.
+  historyRetentionDays: 0,
   topics: Object.freeze({
     politics: true,
     health: true,

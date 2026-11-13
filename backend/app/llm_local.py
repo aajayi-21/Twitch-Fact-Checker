@@ -32,6 +32,7 @@ from app.claim_gate import (
 )
 from app.models import ContradictionJudgement, GateClaim
 from app.prompts import build_contradiction_prompt, build_gate_prompt
+from app.usage import chat_completion_usage, report_response_usage
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +148,9 @@ class LocalClaimGate(ClaimGate):
             temperature=0.0,
             max_tokens=LOCAL_GATE_MAX_TOKENS,
             response_format=response_format,  # type: ignore[arg-type]
+        )
+        report_response_usage(
+            chat_completion_usage(response, "gate", "ollama", self._model)
         )
         if not response.choices:
             raise GateError(f"{what} response contained no choices")

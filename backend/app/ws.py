@@ -186,7 +186,9 @@ async def audio_ws(websocket: WebSocket) -> None:
     try:
         await websocket.send_json(
             ReadyFrame(
-                server_version=SERVER_VERSION, model=settings.stt_model_name
+                server_version=SERVER_VERSION,
+                model=settings.stt_model_name,
+                session_id=pipeline.session_id,
             ).model_dump()
         )
         await pipeline.run()

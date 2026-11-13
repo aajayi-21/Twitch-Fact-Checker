@@ -306,6 +306,33 @@ Notes worth knowing:
   next major from arriving silently; `install_stt_gpu.sh` reads them from
   pyproject and prints the versions it installed.
 
+## History & usage (in the extension)
+
+The extension keeps its own record of what it checked, in the browser's IndexedDB —
+nothing leaves the device. Toolbar icon → **Open dashboard**:
+
+- **History** — every result across Twitch, YouTube, Kick and Rumble, filterable by
+  site, channel, verdict, topic, date and your own rating, with full-text search; a
+  per-channel table (shares appear from 30 adjudicated checks, as on the backend
+  dashboard); a session list; export to CSV or JSON; delete a result, a session, a
+  channel or everything.
+- **Usage** — checks, hours listened and spend per period, by model, step, site and
+  channel. OpenRouter costs are exact; Anthropic costs are estimated from token counts
+  and marked "≈" (`extension/ledger/pricing.mjs`).
+- **Settings → Your data** — how long history is kept, import, export, delete.
+
+Results from before this existed are still in `backend/fact_checker.db`; **Import past
+results from the backend** copies them across and can be repeated safely.
+
+The backend feeds this over the same WebSocket with three optional additions that older
+extensions ignore: `session_id` on the `ready` frame, a `usage` frame per provider call,
+and — when the hello sends `send_claims: true` — a `claim` frame per claim outcome.
+
+```bash
+node --test "extension/tests/*.test.mjs"   # unit tests (no dependencies)
+node scripts/run_app_e2e.mjs               # the app in a real Chrome, against a fake backend
+```
+
 ## Analytics & dashboard
 
 Every session records its funnel to `backend/fact_checker.db`: which claims were

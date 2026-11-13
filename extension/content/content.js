@@ -31,6 +31,9 @@
  *  - re-attach across SPA navigations (debounced MutationObserver) and
  *    resync session state on URL changes;
  *  - CONTENT_READY handshake with the service worker on mount;
+ *  - tell the service worker which stream and channel the page shows
+ *    (PAGE_IDENTITY, and GET_PAGE_IDENTITY on request) so the viewer's
+ *    history is attributed correctly — see content/page_identity.js;
  *  - handle OVERLAY_EVENT (verbatim backend frames: verdict / status /
  *    error / transcript / ready) and SESSION_STATE;
  *  - own the in-memory session verdict history (cleared on page reload —
@@ -242,6 +245,8 @@
     history: [],
     running: false,
     lastUrl: location.href,
+    // What was last reported as PAGE_IDENTITY (address | owner link | title).
+    lastIdentitySignature: null,
     remountScheduled: false,
     // Claims dropped by the server-side topic filter, surfaced only as an
     // aggregate history-panel footer (never per-skip toasts). Page-lifetime,
@@ -479,6 +484,9 @@
     state.overlay.setConnectionState(state.running);
     // A (re)started session knows nothing about this tab's ads — tell it.
     reportAdState({force: true});
+    // ...nor, for certain, what the tab is showing (the channel link may
+    // not have rendered yet when capture started).
+    reportPageIdentity({force: true});
   };
 
   /**
@@ -500,6 +508,34 @@
       // Expected right after an extension reload; non-fatal.
       console.debug("[fact-checker] CONTENT_READY handshake failed:", error);
     }
+  };
+
+  /**
+   * Tell the service worker what this page is showing — its address, title
+   * and the channel link under the player — whenever that changes during a
+   * running session. The viewer's history uses it to attribute what follows
+   * to the right channel (YouTube and Rumble URLs name a video, not a
+   * channel, and the owner link renders late and changes on SPA navigation).
+   */
+  const reportPageIdentity = ({force = false} = {}) => {
+    if (!state.running) {
+      return;
+    }
+    const owner = self.readStreamOwner();
+    const signature = `${location.href}|${owner.ownerHref ?? ""}|${document.title}`;
+    if (!force && signature === state.lastIdentitySignature) {
+      return;
+    }
+    state.lastIdentitySignature = signature;
+    chrome.runtime
+      .sendMessage({
+        target: "background",
+        type: "PAGE_IDENTITY",
+        payload: {url: location.href, title: document.title, ...owner},
+      })
+      .catch((error) => {
+        console.debug("[fact-checker] PAGE_IDENTITY send failed:", error);
+      });
   };
 
   const recordVerdict = (verdictFrame) => {
@@ -607,8 +643,14 @@
   };
 
   const listenForMessages = () => {
-    chrome.runtime.onMessage.addListener((message) => {
+    chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (!message || typeof message.type !== "string") {
+        return false;
+      }
+      if (message.type === "GET_PAGE_IDENTITY") {
+        // Answered synchronously, so the channel stays open without
+        // returning true.
+        sendResponse(self.readStreamOwner());
         return false;
       }
       if (message.type === "OVERLAY_EVENT") {
@@ -666,6 +708,7 @@
     });
     setInterval(() => {
       syncPlaybackState();
+      reportPageIdentity();
       if (location.href === state.lastUrl) {
         return;
       }

@@ -46,11 +46,14 @@ async def stats_channels(request: Request) -> list[dict[str, Any]]:
 
 @router.get("/stats/sessions")
 async def stats_sessions(
-    request: Request, limit: int = Query(default=50, ge=1, le=500)
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
 ) -> list[dict[str, Any]]:
-    """Most recent sessions, newest first."""
+    """Sessions newest first. ``offset`` lets a client page through all of
+    them (the extension's history import does)."""
     db: Database = request.app.state.db
-    return await db.fetch_sessions(limit)
+    return await db.fetch_sessions(limit, offset)
 
 
 @router.get("/stats/sessions/{session_id}")

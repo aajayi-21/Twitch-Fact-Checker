@@ -1012,6 +1012,518 @@ input.input-number {
   color: var(--text-dim);
 }
 
+/* ------------------------------------------------------- history & usage */
+
+.page-wide {
+  max-width: 1180px;
+}
+
+.button-danger {
+  border-color: var(--red);
+  background: rgba(255, 107, 107, 0.14);
+  color: var(--red);
+}
+
+input[type="search"],
+input[type="date"] {
+  width: 100%;
+  min-height: 36px;
+  padding: 7px 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-small);
+  background: var(--field);
+  color: var(--text);
+  font: 13.5px var(--font);
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: -1px;
+  padding: 9px 14px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--text-dim);
+  font: 600 14px var(--font);
+  cursor: pointer;
+}
+
+.tab:hover {
+  color: var(--text);
+}
+
+.tab[aria-selected="true"] {
+  border-bottom-color: var(--accent);
+  color: var(--text);
+}
+
+.tab-count {
+  padding: 0 7px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-dim);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.filters {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.filter-row > select {
+  width: auto;
+  flex: 1 1 150px;
+  max-width: 240px;
+}
+
+.inline-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.inline-field select,
+.inline-field input {
+  width: auto;
+}
+
+.inline-field input.input-number {
+  width: 88px;
+}
+
+.label-toggle,
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+  padding: 3px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: none;
+  color: var(--text-dim);
+  font: 600 12.5px var(--font);
+  cursor: pointer;
+}
+
+/* The colour marks which verdict the toggle is for; the text stays in ink. */
+.label-toggle::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--label-color);
+}
+
+.label-toggle[aria-pressed="true"] {
+  border-color: var(--label-color);
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--text);
+}
+
+.filter-chip {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.result-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.result-bar-actions,
+.result-actions-end {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.result-list,
+.latest-list,
+.source-list,
+.meter-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.result-list {
+  gap: 8px;
+}
+
+.result {
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--label-color);
+  border-radius: var(--radius-small);
+  background: var(--card);
+}
+
+.result-summary {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: baseline;
+  gap: 4px 12px;
+  width: 100%;
+  padding: 12px 14px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.result-summary:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.result-claim,
+.latest-claim {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.result-meta {
+  grid-column: 2;
+  color: var(--text-dim);
+  font-size: 12.5px;
+}
+
+.result-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 4px 14px 14px;
+}
+
+.result-explanation {
+  max-width: 80ch;
+}
+
+.source-list {
+  gap: 4px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.result-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.result-actions-end {
+  margin-left: auto;
+}
+
+.rating {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.rating-button {
+  min-height: 32px;
+  padding: 4px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-small);
+  background: none;
+  color: var(--text-dim);
+  font: 600 13px var(--font);
+  cursor: pointer;
+}
+
+.rating-button[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.latest-list {
+  gap: 10px;
+}
+
+.latest {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: baseline;
+  gap: 2px 12px;
+}
+
+.empty {
+  padding: 28px 16px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-small);
+  color: var(--text-dim);
+  text-align: center;
+}
+
+.import-history {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* Tables scroll sideways inside their own box, never the page. */
+.table-scroll {
+  /* Positioned, so the visually-hidden header label (absolutely positioned)
+     is clipped with the table instead of widening the page. */
+  position: relative;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.data-table th,
+.data-table td {
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.data-table tbody tr:last-child > * {
+  border-bottom: 0;
+}
+
+.data-table thead th {
+  background: var(--surface);
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.data-table tbody th {
+  max-width: 280px;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+}
+
+.data-table .numeric {
+  text-align: right;
+}
+
+.cell-sub {
+  display: block;
+  overflow: hidden;
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+}
+
+.sort-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.sort-button:hover,
+th[aria-sort] .sort-button {
+  color: var(--text);
+}
+
+.sort-arrow {
+  width: 10px;
+  font-size: 9px;
+}
+
+.row-actions {
+  text-align: right;
+}
+
+.row-actions .button {
+  min-height: 28px;
+  padding: 2px 10px;
+  font-size: 12.5px;
+}
+
+.table-note {
+  max-width: 80ch;
+  color: var(--text-dim);
+  font-size: 12.5px;
+}
+
+/* Daily-spend chart: one series, one hue; grid and axis stay recessive. */
+.chart {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+}
+
+.chart-plot {
+  position: relative;
+}
+
+.chart-plot svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.chart-grid {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.chart-axis {
+  fill: var(--text-faint);
+  font: 11px var(--font);
+}
+
+.chart-value {
+  fill: var(--text);
+  font: 600 11.5px var(--font);
+}
+
+.chart-bar {
+  fill: var(--accent);
+}
+
+.chart-bar[data-active="true"] {
+  fill: var(--accent-hover);
+}
+
+.chart-hit {
+  fill: transparent;
+  outline: none;
+}
+
+.chart-hit:focus-visible {
+  stroke: var(--link);
+  stroke-width: 1.5;
+}
+
+.chart-tooltip {
+  position: absolute;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 6px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-small);
+  background: var(--surface);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+  font-size: 12px;
+  white-space: nowrap;
+  pointer-events: none;
+  transform: translate(-50%, calc(-100% - 8px));
+}
+
+.chart-tooltip strong {
+  font-size: 14px;
+}
+
+.chart-tooltip span {
+  color: var(--text-dim);
+}
+
+.chart-table summary {
+  color: var(--text-dim);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.chart-table[open] summary {
+  margin-bottom: 8px;
+}
+
+/* Ranked bars: name, bar on a shared baseline, figure. */
+.meter-list {
+  gap: 12px;
+}
+
+.meter {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  align-items: baseline;
+  gap: 4px 12px;
+}
+
+.meter-name {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.meter-figure {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.meter-track {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.meter-fill {
+  display: block;
+  min-width: 2px;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent);
+}
+
+.meter-sub {
+  grid-column: 1 / -1;
+  grid-row: 3;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
 /* ---------------------------------------------------------- small screens */
 
 @media (max-width: 760px) {

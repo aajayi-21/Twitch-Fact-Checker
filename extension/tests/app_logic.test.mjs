@@ -10,7 +10,7 @@
 import assert from "node:assert/strict";
 import {readFile, readdir} from "node:fs/promises";
 import path from "node:path";
-import {describe, it} from "node:test";
+import {describe, it, test} from "node:test";
 import {fileURLToPath} from "node:url";
 
 import {
@@ -19,6 +19,18 @@ import {
   createBackendApi,
   readErrorDetail,
 } from "../app/lib/backend_api.mjs";
+import {
+  formatCost,
+  formatDateTime,
+  formatDuration,
+  formatHours,
+  formatPercent,
+  formatTokens,
+  formatUsd,
+  labelName,
+  platformLabel,
+  plural,
+} from "../app/lib/format.mjs";
 import {ROUTES, landingRoute, parseRoute} from "../app/lib/routes.mjs";
 import {
   clampDurationSeconds,
@@ -403,4 +415,63 @@ describe("packaging rules", () => {
     assert.deepEqual(manifest.options_ui, {page: "app/app.html", open_in_tab: true});
     assert.match(manifest.content_security_policy.extension_pages, /script-src 'self' 'wasm-unsafe-eval'/);
   });
+});
+
+/* ------------------------------------------------------------------ */
+/* Wording of numbers and times (app/lib/format.mjs)                    */
+/* ------------------------------------------------------------------ */
+
+test("formatUsd sizes the precision to the amount", () => {
+  assert.equal(formatUsd(0), "$0.00");
+  assert.equal(formatUsd(0.000116), "$0.0001");
+  assert.equal(formatUsd(0.0078), "$0.0078");
+  assert.equal(formatUsd(0.0188), "$0.019");
+  assert.equal(formatUsd(0.569), "$0.569");
+  assert.equal(formatUsd(4.5), "$4.50");
+  assert.equal(formatUsd(null), "—");
+  assert.equal(formatUsd(Number.NaN), "—");
+});
+
+test("formatCost marks estimates and never shows an unpriced total as free", () => {
+  assert.equal(formatCost({usd: 0.0188, estimated: true, unpricedCalls: 0}), "≈ $0.019");
+  assert.equal(formatCost({usd: 0.0078, estimated: false, unpricedCalls: 0}), "$0.0078");
+  assert.equal(formatCost({usd: 0, estimated: false, unpricedCalls: 3}), "not priced");
+  assert.equal(formatCost({usd: 0, estimated: false, unpricedCalls: 0}), "$0.00");
+  assert.equal(formatCost(null), "—");
+});
+
+test("formatDuration and formatHours", () => {
+  assert.equal(formatDuration(7500), "2 h 5 min");
+  assert.equal(formatDuration(840), "14 min");
+  assert.equal(formatDuration(20), "under a minute");
+  assert.equal(formatDuration(0), "—");
+  assert.equal(formatDuration(undefined), "—");
+  assert.equal(formatHours(13500), "3.8");
+});
+
+test("formatPercent, formatTokens, plural, names", () => {
+  assert.equal(formatPercent(59.6), "60%");
+  assert.equal(formatPercent(null), "—");
+  assert.equal(formatTokens(950), "950");
+  assert.equal(formatTokens(13_847), "13.8K");
+  assert.equal(formatTokens(3_100_000), "3.1M");
+  assert.equal(plural(1, "check"), "1 check");
+  assert.equal(plural(0, "check"), "0 checks");
+  assert.equal(plural(2, "web search", "web searches"), "2 web searches");
+  assert.equal(platformLabel("youtube"), "YouTube");
+  assert.equal(platformLabel(null), "Unknown site");
+  assert.equal(labelName("MISLEADING"), "Misleading");
+});
+
+test("formatDateTime shows the year only when it is not this one", () => {
+  const now = new Date(2026, 10, 12);
+  assert.ok(!formatDateTime("2026-11-07T21:02:00Z", now).includes("2026"));
+  assert.ok(formatDateTime("2025-11-07T21:02:00Z", now).includes("2025"));
+  assert.equal(formatDateTime("not a date", now), "—");
+  assert.equal(formatDateTime(null, now), "—");
+});
+
+test("the history and usage screens are routes", () => {
+  assert.equal(parseRoute("#/history"), ROUTES.HISTORY);
+  assert.equal(parseRoute("#/usage"), ROUTES.USAGE);
 });
