@@ -23,7 +23,10 @@ import {
   stageRequestFromForm,
   withStageProvider,
 } from "../lib/setup_model.mjs";
+import {ENGINE_MODE, useEngine} from "../lib/engine_actions.mjs";
+import {EngineCard} from "./engine_card.mjs";
 import {KeyForm} from "./key_form.mjs";
+import {BrowserProvidersView} from "./providers_browser.mjs";
 
 const GATE_PROVIDERS = Object.freeze(["anthropic", "openrouter", "ollama"]);
 // Local verification has no web search, so every verdict would be UNVERIFIED.
@@ -229,7 +232,18 @@ const StageRouting = ({setup}) => {
   `;
 };
 
+/**
+ * The AI provider screen for whichever engine is chosen: keys kept in this
+ * browser (providers_browser.mjs), or keys held by the local backend (below).
+ */
 export const ProvidersView = () => {
+  const engine = useEngine();
+  return engine.state.mode === ENGINE_MODE.BROWSER
+    ? html`<${BrowserProvidersView} />`
+    : html`<${BackendProvidersView} />`;
+};
+
+const BackendProvidersView = () => {
   const {backendState, setup} = useAppState();
   if (backendState !== "up" || !setup) {
     return html`
@@ -243,6 +257,7 @@ export const ProvidersView = () => {
             : html`Keys are stored by the local backend, which is not running. Start it with${" "}
                 <code>./backend/run.sh</code> and this page will update.`}
         <//>
+        <${EngineCard} />
       </div>
     `;
   }
@@ -260,8 +275,11 @@ export const ProvidersView = () => {
           (provider) => html`<${ProviderCard} key=${provider.id} provider=${provider} setup=${setup} />`
         )}
       </div>
-      <p class="muted">OpenAI and Gemini keys will be supported by the built-in engine.</p>
+      <p class="muted">
+        OpenAI and Gemini keys work with the built-in engine — choose “This browser” below.
+      </p>
       <${StageRouting} setup=${setup} />
+      <${EngineCard} />
     </div>
   `;
 };

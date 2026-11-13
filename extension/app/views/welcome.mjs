@@ -1,12 +1,15 @@
 /**
- * First-run welcome flow: what the app does and touches, getting the local
- * backend running, adding an API key, and a real test check.
+ * First-run welcome flow: what the app does and touches, where it should
+ * run, and then the setup that choice needs — ending in a real test check.
+ *
+ *   This browser:   API key → speech model → try it
+ *   Local backend:  start the backend → API key → try it
  *
  * Each step can be revisited; nothing is captured or sent until the person
  * has read the first step and agreed.
  */
 
-import {Button, Card, ExternalLink, Notice, StatusPill} from "../components.mjs";
+import {Button, Card, ExternalLink, Notice, Segmented, StatusPill} from "../components.mjs";
 import {
   BACKEND_ERROR,
   completeOnboarding,
@@ -15,12 +18,28 @@ import {
   runTestCheck,
   useAppState,
 } from "../lib/app_store.mjs";
+import {HAS_OFFSCREEN_CAPTURE} from "../../shared/capabilities.js";
+import {
+  ENGINE_MODE,
+  connectProvider,
+  runBrowserTestCheck,
+  setEngineMode,
+  useEngine,
+} from "../lib/engine_actions.mjs";
+import {BROWSER_PROVIDERS, describeProviderError} from "../lib/engine_model.mjs";
 import {html, useEffect, useState} from "../lib/html.mjs";
 import {ROUTES} from "../lib/routes.mjs";
 import {KEY_PROVIDERS, describeConnection, describeStages} from "../lib/setup_model.mjs";
+import {useSpeech} from "../lib/speech_actions.mjs";
+import {ENGINE_OPTIONS} from "./engine_card.mjs";
 import {KeyForm} from "./key_form.mjs";
+import {browserKeyHelp} from "./providers_browser.mjs";
+import {SpeechCard} from "./speech_card.mjs";
 
-const STEPS = Object.freeze(["How it works", "Local backend", "API key", "Try it"]);
+const STEPS_BY_MODE = Object.freeze({
+  [ENGINE_MODE.BROWSER]: ["How it works", "Where it runs", "API key", "Speech", "Try it"],
+  [ENGINE_MODE.COMPANION]: ["How it works", "Where it runs", "Local backend", "API key", "Try it"],
+});
 
 const SAMPLE_CLAIM = "The Eiffel Tower is 450 meters tall.";
 
@@ -36,8 +55,8 @@ const HowItWorksStep = ({onNext, alreadyAgreed}) => html`
         press Stop or close the tab.
       </li>
       <li>
-        <strong>Audio stays on this computer.</strong> It goes to the backend program you run
-        locally, which turns it into text.
+        <strong>Audio stays on this computer.</strong> It is turned into text here — inside the
+        browser, or by the backend program if you choose to run one.
       </li>
       <li>
         <strong>Claims go to the AI provider whose key you add.</strong> Only the sentence being
@@ -45,8 +64,8 @@ const HowItWorksStep = ({onNext, alreadyAgreed}) => html`
         provider directly for what you use.
       </li>
       <li>
-        <strong>Your history stays local</strong>, in a database file next to the backend. Nothing
-        is sent to us; there is no account and no analytics.
+        <strong>Your history stays local</strong>, in this browser. Nothing is sent to us; there
+        is no account and no analytics.
       </li>
       <li>
         <strong>Verdicts are written by AI and can be wrong.</strong> Every one links its sources
@@ -60,6 +79,139 @@ const HowItWorksStep = ({onNext, alreadyAgreed}) => html`
     </div>
   <//>
 `;
+
+/** Choose the engine. New installs are steered to the one with no install. */
+const EngineStep = ({onNext, onBack}) => {
+  const engine = useEngine();
+  const {onboarding} = useAppState();
+  const [mode, setMode] = useState(() =>
+    // Someone revisiting the guide keeps what they chose; a first run starts
+    // on the browser engine where the browser can run it.
+    onboarding.completedAt || !HAS_OFFSCREEN_CAPTURE ? engine.state.mode : ENGINE_MODE.BROWSER
+  );
+  const [saving, setSaving] = useState(false);
+  const proceed = async () => {
+    setSaving(true);
+    try {
+      await setEngineMode(mode);
+      onNext();
+    } finally {
+      setSaving(false);
+    }
+  };
+  return html`
+    <${Card} title="Where should it run?">
+      <p class="lede">
+        The checker can run entirely inside this browser, or use a program on your computer.
+        You can change this later under AI provider.
+      </p>
+      ${HAS_OFFSCREEN_CAPTURE
+        ? html`<${Segmented}
+            name="welcome-engine"
+            label="Where it runs"
+            options=${ENGINE_OPTIONS}
+            value=${mode}
+            onChange=${setMode}
+          />`
+        : html`<${Notice} tone="info">
+            This browser can only use the local backend; running inside the browser needs Chrome
+            or Edge.
+          <//>`}
+      <div class="form-actions">
+        <${Button} variant="primary" onClick=${proceed} busy=${saving}>Continue<//>
+        <${Button} variant="ghost" onClick=${onBack} disabled=${saving}>Back<//>
+      </div>
+    <//>
+  `;
+};
+
+/** Browser engine: one key, checked with the provider and kept in this browser. */
+const BrowserProviderStep = ({onNext, onBack}) => {
+  const engine = useEngine();
+  const [providerId, setProviderId] = useState(BROWSER_PROVIDERS[0].id);
+  const [replacing, setReplacing] = useState(false);
+  const provider = BROWSER_PROVIDERS.find((candidate) => candidate.id === providerId);
+  const showForm = !engine.plan.ready || replacing;
+
+  return html`
+    <${Card} title="Add an API key">
+      <p class="lede">
+        The fact-checker needs an AI provider to find claims and check them against the web. You
+        pay the provider directly; a typical check costs about a cent.
+      </p>
+      ${engine.plan.ready && !replacing
+        ? html`
+            <${Notice} tone="success">Already connected: ${engine.plan.summary}.<//>
+            <div class="form-actions">
+              <${Button} variant="primary" onClick=${onNext}>Continue<//>
+              <${Button} onClick=${() => setReplacing(true)}>Add another key<//>
+              <${Button} variant="ghost" onClick=${onBack}>Back<//>
+            </div>
+          `
+        : null}
+      ${showForm
+        ? html`
+            <div class="choice-grid" role="radiogroup" aria-label="AI provider">
+              ${BROWSER_PROVIDERS.map(
+                (candidate) => html`
+                  <label class="choice" key=${candidate.id}>
+                    <input
+                      type="radio"
+                      name="welcome-provider"
+                      value=${candidate.id}
+                      checked=${candidate.id === providerId}
+                      onChange=${() => setProviderId(candidate.id)}
+                    />
+                    <span class="choice-body">
+                      <span class="choice-title">${candidate.label}</span>
+                      <span class="choice-text">${candidate.blurb}</span>
+                      <span class="choice-meta">
+                        ${engine.hints[candidate.id]
+                          ? `Key ending ${engine.hints[candidate.id]}`
+                          : candidate.verifiedLive
+                            ? "No key added"
+                            : "Not yet tested live"}
+                      </span>
+                    </span>
+                  </label>
+                `
+              )}
+            </div>
+            <${KeyForm}
+              key=${provider.id}
+              provider=${provider}
+              save=${connectProvider}
+              describeError=${describeProviderError}
+              help=${browserKeyHelp(provider)}
+              onSaved=${() => {
+                setReplacing(false);
+                onNext();
+              }}
+              onCancel=${replacing ? () => setReplacing(false) : onBack}
+            />
+          `
+        : null}
+    <//>
+  `;
+};
+
+/** Browser engine: download a speech model and prove it works here. */
+const SpeechStep = ({onNext, onBack}) => {
+  const speech = useSpeech();
+  const ready = Boolean(speech.plan?.ready);
+  return html`
+    <${SpeechCard} />
+    <div class="form-actions">
+      <${Button} variant="primary" onClick=${onNext} disabled=${!ready || speech.progress !== null}>
+        Continue
+      <//>
+      <${Button} variant="ghost" onClick=${onBack} disabled=${speech.progress !== null}>Back<//>
+      ${ready
+        ? null
+        : html`<span class="muted">Download and test a model to continue.</span>`}
+    </div>
+  `;
+};
 
 const BackendStep = ({onNext, onBack}) => {
   const {backendState, health, settings} = useAppState();
@@ -154,7 +306,10 @@ const ProviderStep = ({onNext, onBack}) => {
               }}
               onCancel=${replacing ? () => setReplacing(false) : onBack}
             />
-            <p class="field-help">OpenAI and Gemini keys will be supported by the built-in engine.</p>
+            <p class="field-help">
+              OpenAI and Gemini keys work with the built-in engine: go back two steps and choose
+              “This browser”.
+            </p>
           `
         : null}
     <//>
@@ -182,6 +337,9 @@ const VerdictPreview = ({verdict}) => html`
 `;
 
 const describeTestError = (error) => {
+  if (error?.name === "ProviderError") {
+    return describeProviderError(error, "Your AI provider");
+  }
   switch (error?.kind) {
     case BACKEND_ERROR.UNREACHABLE:
       return "The local backend stopped responding. Start it again and retry.";
@@ -196,7 +354,7 @@ const describeTestError = (error) => {
   }
 };
 
-const TryItStep = ({onFinish, onBack}) => {
+const TryItStep = ({onFinish, onBack, browserEngine}) => {
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
@@ -206,7 +364,7 @@ const TryItStep = ({onFinish, onBack}) => {
     setError(null);
     setResult(null);
     try {
-      setResult(await runTestCheck(SAMPLE_CLAIM));
+      setResult(await (browserEngine ? runBrowserTestCheck : runTestCheck)(SAMPLE_CLAIM));
     } catch (testError) {
       setError(describeTestError(testError));
     } finally {
@@ -246,7 +404,10 @@ const TryItStep = ({onFinish, onBack}) => {
 
 export const WelcomeView = ({navigate}) => {
   const {onboarding} = useAppState();
+  const engine = useEngine();
   const [step, setStep] = useState(0);
+  const browserEngine = engine.state.mode === ENGINE_MODE.BROWSER;
+  const steps = STEPS_BY_MODE[engine.state.mode];
 
   useEffect(() => {
     document.querySelector(".wizard-step-heading")?.focus();
@@ -256,6 +417,8 @@ export const WelcomeView = ({navigate}) => {
     await completeOnboarding();
     navigate(ROUTES.HOME);
   };
+  const next = () => setStep(step + 1);
+  const back = () => setStep(step - 1);
 
   const body = [
     html`<${HowItWorksStep}
@@ -264,12 +427,20 @@ export const WelcomeView = ({navigate}) => {
         if (!onboarding.consentAt) {
           await recordConsent();
         }
-        setStep(1);
+        next();
       }}
     />`,
-    html`<${BackendStep} onNext=${() => setStep(2)} onBack=${() => setStep(0)} />`,
-    html`<${ProviderStep} onNext=${() => setStep(3)} onBack=${() => setStep(1)} />`,
-    html`<${TryItStep} onFinish=${finish} onBack=${() => setStep(2)} />`,
+    html`<${EngineStep} onNext=${next} onBack=${back} />`,
+    ...(browserEngine
+      ? [
+          html`<${BrowserProviderStep} onNext=${next} onBack=${back} />`,
+          html`<${SpeechStep} onNext=${next} onBack=${back} />`,
+        ]
+      : [
+          html`<${BackendStep} onNext=${next} onBack=${back} />`,
+          html`<${ProviderStep} onNext=${next} onBack=${back} />`,
+        ]),
+    html`<${TryItStep} onFinish=${finish} onBack=${back} browserEngine=${browserEngine} />`,
   ][step];
 
   return html`
@@ -278,11 +449,11 @@ export const WelcomeView = ({navigate}) => {
         <img src="../icons/icon48.png" width="40" height="40" alt="" />
         <div>
           <h1 class="page-title">Welcome to Live Stream Fact-Checker</h1>
-          <p class="page-subtitle">Four short steps and you are ready to watch.</p>
+          <p class="page-subtitle">Five short steps and you are ready to watch.</p>
         </div>
       </header>
       <ol class="wizard-steps" aria-label="Setup progress">
-        ${STEPS.map(
+        ${steps.map(
           (name, index) => html`
             <li
               key=${name}
@@ -297,7 +468,7 @@ export const WelcomeView = ({navigate}) => {
         )}
       </ol>
       <h2 class="wizard-step-heading visually-hidden" tabindex="-1">
-        Step ${step + 1} of ${STEPS.length}: ${STEPS[step]}
+        Step ${step + 1} of ${steps.length}: ${steps[step]}
       </h2>
       ${body}
     </div>

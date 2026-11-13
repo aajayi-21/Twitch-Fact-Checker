@@ -97,6 +97,9 @@ export const ERR = Object.freeze({
   // In-browser speech stopped working mid-session with nothing to fall
   // back to.
   ERR_SPEECH_FAILED: "ERR_SPEECH_FAILED",
+  // The provider key a running browser-engine session was using has been
+  // removed in the app, which ends the session at once.
+  ERR_KEY_REMOVED: "ERR_KEY_REMOVED",
 });
 
 /**

@@ -244,7 +244,9 @@ export const buildUsageRecord = (frame, session, nowIso) => {
     stage: frame.stage,
     provider: frame.provider,
     model: text(frame.model),
-    calls: 1,
+    // One frame can cover several provider calls (a verify that needed a
+    // second, repairing call).
+    calls: count(frame.calls) || 1,
     ...tokens,
     audio_seconds: 0,
     cost_usd: priced.costUsd,

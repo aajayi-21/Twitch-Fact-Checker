@@ -504,6 +504,39 @@ export const dailySpend = (usage, {days, now = new Date()}) => {
   return [...buckets.values()];
 };
 
+/**
+ * Where the viewer stands against the spending limits right now: provider
+ * fact-check calls made today and dollars spent this calendar month, both in
+ * the viewer's own time zone.
+ *
+ * @param {object[]} usage - rows covering at least this month so far
+ * @param {Date} [now]
+ * @returns {{checksToday: number, spendThisMonthUsd: number}}
+ */
+export const currentSpend = (usage, now = new Date()) => {
+  const dayStart = startOfLocalDay(now);
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+  let checksToday = 0;
+  let spendThisMonthUsd = 0;
+  for (const row of usage) {
+    const ms = timeMs(row.ts);
+    if (ms === null || ms < monthStart) {
+      continue;
+    }
+    if (typeof row.cost_usd === "number" && Number.isFinite(row.cost_usd)) {
+      spendThisMonthUsd += row.cost_usd;
+    }
+    if (ms >= dayStart && row.stage === "verify") {
+      checksToday += row.calls ?? 1;
+    }
+  }
+  return {checksToday, spendThisMonthUsd};
+};
+
+/** @param {Date} [now] @returns {string} ISO time of the first moment of this month */
+export const monthStartIso = (now = new Date()) =>
+  new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+
 /* ------------------------------------------------------------------ */
 /* Filter options                                                       */
 /* ------------------------------------------------------------------ */

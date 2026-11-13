@@ -17,6 +17,7 @@ import {SPEECH_ENGINE, describeSpeechState} from "../../engine/stt/speech_setup.
 import {LABELS} from "../../ledger/records.mjs";
 import {Button, Card, LabelChip, Notice, StatusPill} from "../components.mjs";
 import {refreshBackend, useAppState} from "../lib/app_store.mjs";
+import {ENGINE_MODE, useEngine} from "../lib/engine_actions.mjs";
 import {formatCost, formatDateTime, labelName, platformLabel, plural} from "../lib/format.mjs";
 import {html, useMemo} from "../lib/html.mjs";
 import {useLedger} from "../lib/ledger_store.mjs";
@@ -98,12 +99,26 @@ export const HomeView = ({navigate}) => {
   const {backendState, backendMessage, health, setup, summary, settings} = useAppState();
   const ledger = useLedger();
   const browserSpeech = useSpeech();
+  const engine = useEngine();
+  // With the browser engine the backend plays no part: its state is neither
+  // shown nor waited for.
+  const browserEngine = engine.state.mode === ENGINE_MODE.BROWSER;
   const up = backendState === "up";
-  const configured = Boolean(setup?.configured);
-  // Speech is the backend's job unless the viewer moved it into the browser.
-  const speech =
-    browserSpeech.loaded && browserSpeech.state.settings.engine === SPEECH_ENGINE.BROWSER
-      ? describeSpeechState(browserSpeech.state, browserSpeech.plan)
+  const configured = browserEngine ? engine.plan.ready : Boolean(setup?.configured);
+  // Speech is the backend's job unless it runs in the browser — by choice,
+  // or because the browser engine has no backend to hand audio to.
+  const speechInBrowser =
+    browserEngine || browserSpeech.state.settings.engine === SPEECH_ENGINE.BROWSER;
+  const speech = !browserSpeech.loaded
+    ? null
+    : speechInBrowser
+      ? describeSpeechState(
+          {
+            ...browserSpeech.state,
+            settings: {...browserSpeech.state.settings, engine: SPEECH_ENGINE.BROWSER},
+          },
+          browserSpeech.plan
+        )
       : describeSpeech(health);
 
   const today = useMemo(() => {
@@ -129,7 +144,7 @@ export const HomeView = ({navigate}) => {
         <p class="page-subtitle">Open a stream, click the toolbar icon, and press Start.</p>
       </header>
 
-      ${up
+      ${up || browserEngine
         ? null
         : html`<${Notice} tone=${backendState === "checking" ? "info" : "warn"}>
             ${backendState === "checking"
@@ -140,7 +155,7 @@ export const HomeView = ({navigate}) => {
                     Check again
                   </button>`}
           <//>`}
-      ${up && !configured
+      ${(up || browserEngine) && engine.loaded && !configured
         ? html`<${Notice} tone="warn">
             No AI provider is connected yet, so nothing can be checked.${" "}
             <button type="button" class="link-button" onClick=${() => navigate(ROUTES.PROVIDERS)}>
@@ -151,16 +166,24 @@ export const HomeView = ({navigate}) => {
 
       <div class="card-grid">
         <${Card}
-          title="Local backend"
-          aside=${html`<${StatusPill} state=${up ? "ok" : backendState === "checking" ? "busy" : "bad"}>
-            ${up ? "Running" : backendState === "checking" ? "Checking…" : "Not running"}
-          <//>`}
+          title=${browserEngine ? "Engine" : "Local backend"}
+          aside=${browserEngine
+            ? html`<${StatusPill} state="ok">This browser<//>`
+            : html`<${StatusPill} state=${up ? "ok" : backendState === "checking" ? "busy" : "bad"}>
+                ${up ? "Running" : backendState === "checking" ? "Checking…" : "Not running"}
+              <//>`}
         >
-          <p class="card-line">${up ? settings?.backendUrl : "Speech recognition and checking run here."}</p>
+          <p class="card-line">
+            ${browserEngine
+              ? "Speech recognition and checking run inside this extension. Nothing else to start."
+              : up
+                ? settings?.backendUrl
+                : "Speech recognition and checking run here."}
+          </p>
           ${speech
             ? html`<p class="card-line">
                 <${StatusPill} state=${speech.state}>${speech.text}<//>
-                ${speech.state === "warn" && browserSpeech.state.settings.engine === SPEECH_ENGINE.BROWSER
+                ${speech.state === "warn" && speechInBrowser
                   ? html`${" "}<button
                         type="button"
                         class="link-button"
@@ -174,11 +197,14 @@ export const HomeView = ({navigate}) => {
         <//>
         <${Card}
           title="AI provider"
-          aside=${html`<${StatusPill} state=${configured ? "ok" : up ? "warn" : "idle"}>
-            ${configured ? "Connected" : up ? "Not connected" : "Unknown"}
+          aside=${html`<${StatusPill} state=${configured ? "ok" : up || browserEngine ? "warn" : "idle"}>
+            ${configured ? "Connected" : up || browserEngine ? "Not connected" : "Unknown"}
           <//>`}
         >
-          <p class="card-line">${describeStages(setup) ?? "Add an API key to start checking claims."}</p>
+          <p class="card-line">
+            ${(browserEngine ? engine.plan.summary : describeStages(setup)) ??
+            "Add an API key to start checking claims."}
+          </p>
           <div class="form-actions">
             <${Button} onClick=${() => navigate(ROUTES.PROVIDERS)}>
               ${configured ? "Manage" : "Add a key"}

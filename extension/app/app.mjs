@@ -8,9 +8,10 @@
  */
 
 import {StatusPill} from "./components.mjs";
-import {initApp, useAppState} from "./lib/app_store.mjs";
+import {initApp, refreshBackend, useAppState} from "./lib/app_store.mjs";
+import {ENGINE_MODE, initEngine, useEngine} from "./lib/engine_actions.mjs";
 import {initLedger} from "./lib/ledger_store.mjs";
-import {initSpeech} from "./lib/speech_actions.mjs";
+import {initSpeech, useSpeech} from "./lib/speech_actions.mjs";
 import {html, render, useEffect, useState} from "./lib/html.mjs";
 import {ROUTES, landingRoute, parseRoute} from "./lib/routes.mjs";
 import {HistoryView} from "./views/history.mjs";
@@ -54,9 +55,31 @@ const useRoute = () => {
   return route;
 };
 
-const Sidebar = ({route}) => {
+/** The sidebar's one-line "can I press Start?" answer, for either engine. */
+const useReadiness = () => {
   const {backendState, setup} = useAppState();
-  const up = backendState === "up";
+  const engine = useEngine();
+  const speech = useSpeech();
+  if (engine.state.mode === ENGINE_MODE.BROWSER) {
+    if (!engine.plan.ready) {
+      return {state: "warn", text: "Needs an API key"};
+    }
+    return speech.plan?.ready
+      ? {state: "ok", text: "Ready to check"}
+      : {state: "warn", text: "Needs speech setup"};
+  }
+  if (backendState === "up") {
+    return setup?.configured
+      ? {state: "ok", text: "Ready to check"}
+      : {state: "warn", text: "Needs an API key"};
+  }
+  return backendState === "checking"
+    ? {state: "busy", text: "Checking backend…"}
+    : {state: "bad", text: "Backend not running"};
+};
+
+const Sidebar = ({route}) => {
+  const readiness = useReadiness();
   return html`
     <aside class="sidebar">
       <a class="brand" href=${`#${ROUTES.HOME}`}>
@@ -78,15 +101,7 @@ const Sidebar = ({route}) => {
         )}
       </nav>
       <div class="sidebar-footer">
-        <${StatusPill} state=${up ? (setup?.configured ? "ok" : "warn") : backendState === "checking" ? "busy" : "bad"}>
-          ${up
-            ? setup?.configured
-              ? "Ready to check"
-              : "Needs an API key"
-            : backendState === "checking"
-              ? "Checking backend…"
-              : "Backend not running"}
-        <//>
+        <${StatusPill} state=${readiness.state}>${readiness.text}<//>
         <a class="sidebar-link" href=${`#${ROUTES.WELCOME}`}>Setup guide</a>
         <span class="version">Version ${chrome.runtime.getManifest().version}</span>
       </div>
@@ -96,18 +111,26 @@ const Sidebar = ({route}) => {
 
 const App = () => {
   const {ready, onboarding, setup, backendState} = useAppState();
+  const engine = useEngine();
   const route = useRoute();
 
   // A visit with no (valid) route is sent to welcome or home — but only once
   // the backend has answered or been found absent, so an existing user is
   // not flashed the welcome flow while the first status request is in flight.
-  const canDecide = ready && backendState !== "checking";
+  const canDecide = ready && engine.loaded && backendState !== "checking";
+  // Switching engine starts or stops looking for the backend.
+  useEffect(() => {
+    if (ready) {
+      refreshBackend().catch(() => {});
+    }
+  }, [engine.state.mode]);
   useEffect(() => {
     if (route === null && canDecide) {
       navigate(
         landingRoute({
           onboardingCompleted: Boolean(onboarding.completedAt),
-          providerConfigured: Boolean(setup?.configured),
+          // Either engine having a provider means this is not a first run.
+          providerConfigured: Boolean(setup?.configured) || engine.plan.ready,
         })
       );
     }
@@ -145,10 +168,16 @@ const App = () => {
 const root = document.getElementById("app");
 root.textContent = "";
 render(html`<${App} />`, root);
-initApp().catch((error) => {
-  console.error("[fact-checker] app failed to start:", error);
-  root.textContent = "The app could not start. Reload this tab, or reload the extension.";
-});
+// The engine choice first: it decides whether the app looks for a backend.
+initEngine()
+  .catch((error) => {
+    console.error("[fact-checker] engine settings failed to load:", error);
+  })
+  .then(() => initApp())
+  .catch((error) => {
+    console.error("[fact-checker] app failed to start:", error);
+    root.textContent = "The app could not start. Reload this tab, or reload the extension.";
+  });
 // The history loads on its own: a problem reading it is shown on the History
 // and Usage screens and must not stop the rest of the app from starting.
 initLedger().catch((error) => {

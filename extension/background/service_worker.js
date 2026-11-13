@@ -28,6 +28,10 @@
  *  - opening the app tab on install, and for content scripts (OPEN_OPTIONS),
  *  - routing the captured tab's ad-break reports (AD_STATE) to the session
  *    owner, which drops audio while an ad plays (shared/ad_pause.js),
+ *  - choosing the engine: with "This browser" chosen for checking, the
+ *    start settings carry the provider keys and spending limits and the
+ *    offscreen document runs the whole pipeline with no backend
+ *    (engine/engine_setup.mjs); removing a key in use ends the session,
  *  - choosing where speech is transcribed: when the viewer picked "This
  *    browser", the start settings carry the tested model configuration
  *    (engine/stt/speech_setup.mjs) and the offscreen document sends text
@@ -38,6 +42,17 @@
  *  - closing the offscreen document on CAPTURE_ENDED.
  */
 
+import {
+  ENGINE_MODE,
+  KEYS_STORAGE_KEY,
+  normalizeKeys,
+  planBrowserEngine,
+} from "../engine/engine_setup.mjs";
+import {
+  loadEngineState,
+  loadProviderKeys,
+  protectStorage,
+} from "../engine/engine_store.mjs";
 import {
   SPEECH_ENGINE,
   beginGpuAttempt,
@@ -52,6 +67,7 @@ import {
   updateSpeechState,
 } from "../engine/stt/speech_store.mjs";
 import * as ledger from "../ledger/ledger.mjs";
+import {currentSpend, monthStartIso} from "../ledger/queries.mjs";
 import {createSessionRecorder} from "../ledger/session_recorder.mjs";
 import {identityFromPage} from "../ledger/stream_identity.mjs";
 import {APP_ROUTE, openAppTab} from "../shared/app_tab.js";
@@ -70,6 +86,9 @@ const chrome = globalThis.browser ?? globalThis.chrome;
 const OFFSCREEN_DOCUMENT_PATH = "offscreen/offscreen.html";
 const CAPTURED_TAB_KEY = "capturedTabId";
 const CAPTURE_SESSION_KEY = "captureSession";
+// The provider ids a running browser-engine session is using, so removing
+// one of their keys can end it.
+const SESSION_PROVIDERS_KEY = "sessionProviders";
 const LEDGER_RECORDER_KEY = "ledgerRecorder";
 const RETENTION_ALARM = "ledger-retention";
 // How long capture start waits for the page to say who owns the stream.
@@ -302,15 +321,55 @@ const handleCaptureStart = async (tabId) => {
   const settings = await loadSettings();
   // Identity is best-effort: a tabs.get failure must not abort the start.
   const tab = await chrome.tabs.get(tabId).catch(() => null);
-  // Where speech is transcribed. Only Chrome can do it in the browser (it
-  // needs the offscreen document); Firefox always uses the backend.
+  // Which engine checks claims. The browser engine is Chrome-only (it needs
+  // the offscreen document); Firefox always uses the backend.
+  let browserEngine = null;
+  if (HAS_OFFSCREEN_CAPTURE) {
+    const engineState = await loadEngineState();
+    if (engineState.mode === ENGINE_MODE.BROWSER) {
+      const plan = planBrowserEngine(engineState, await loadProviderKeys());
+      if (!plan.ready) {
+        console.error(`[fact-checker] browser engine not ready: ${plan.reason}`);
+        await writeCaptureSession({
+          status: "error",
+          tabId: null,
+          wsState: "closed",
+          lastError: ERR.ERR_NOT_CONFIGURED,
+        });
+        return;
+      }
+      // Where the viewer stands against the spending limits. A history that
+      // cannot be read must not stop the session; it starts from zero.
+      const spent = await ledger
+        .loadUsageSince(monthStartIso())
+        .then((usage) => currentSpend(usage))
+        .catch((error) => {
+          console.warn("[fact-checker] could not read this month's usage:", error);
+          return {checksToday: 0, spendThisMonthUsd: 0};
+        });
+      browserEngine = {
+        gate: plan.gate,
+        verify: plan.verify,
+        budgets: engineState.budgets,
+        spent,
+      };
+    }
+  }
+  await chrome.storage.session.set({
+    [SESSION_PROVIDERS_KEY]: browserEngine
+      ? [browserEngine.gate.providerId, browserEngine.verify.providerId]
+      : [],
+  });
+
+  // Where speech is transcribed. With the browser engine there is no backend
+  // to send audio to, so speech is in the browser whatever the setting says.
   let speechConfig = null;
   if (HAS_OFFSCREEN_CAPTURE) {
     const {state: speechState, tripped} = await loadGuardedSpeechState();
     if (tripped) {
       console.warn("[fact-checker] GPU speech blocked after an unfinished attempt");
     }
-    if (speechState.settings.engine === SPEECH_ENGINE.BROWSER) {
+    if (speechState.settings.engine === SPEECH_ENGINE.BROWSER || browserEngine) {
       const plan = planBrowserSpeech(speechState, {
         browserMajor: browserMajorVersion(),
         runtimeVersion: (await loadRuntimeVersion()) ?? "missing",
@@ -335,6 +394,9 @@ const handleCaptureStart = async (tabId) => {
   const offscreenSettings = {
     // Non-null: transcribe in the offscreen document and send text.
     speech: speechConfig,
+    // Non-null: check claims in the offscreen document, with no backend.
+    engine: browserEngine,
+    appVersion: chrome.runtime.getManifest().version,
     backendUrl: settings.backendUrl,
     sensitivity: settings.sensitivity,
     topics: getEnabledTopicSlugs(settings.topics),
@@ -492,6 +554,10 @@ const handleSubmitFeedback = async (payload) => {
       note: payload.note ?? null,
     })
   );
+  // Only the companion backend keeps its own copy of ratings.
+  if ((await loadEngineState()).mode === ENGINE_MODE.BROWSER) {
+    return;
+  }
   const settings = await loadSettings();
   const origin = deriveBackendHttpOrigin(settings.backendUrl);
   if (!origin) {
@@ -789,7 +855,38 @@ const relaySettingsChange = async (changes) => {
   }
 };
 
+/**
+ * A provider key was removed in the app. If a running session is using that
+ * provider, end it now: "remove key" has to be an off-switch that works.
+ */
+const stopSessionIfKeyRemoved = async (change) => {
+  const before = normalizeKeys(change.oldValue);
+  const after = normalizeKeys(change.newValue);
+  const removed = Object.keys(before).filter((providerId) => !after[providerId]);
+  if (removed.length === 0 || (await getCapturedTabId()) === null) {
+    return;
+  }
+  const stored = await chrome.storage.session.get(SESSION_PROVIDERS_KEY);
+  const inUse = stored[SESSION_PROVIDERS_KEY] ?? [];
+  if (!removed.some((providerId) => inUse.includes(providerId))) {
+    return;
+  }
+  console.info("[fact-checker] a provider key in use was removed; stopping the session");
+  // The offscreen document records the reason when it writes the final state.
+  await handleCaptureStop("key_removed");
+};
+
+// Content scripts run inside web pages: keep them out of storage.local,
+// where the provider keys are.
+protectStorage();
+
 chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName === "local" && changes[KEYS_STORAGE_KEY]) {
+    stopSessionIfKeyRemoved(changes[KEYS_STORAGE_KEY]).catch((error) => {
+      console.error("[fact-checker] stopping after key removal failed:", error);
+    });
+    return;
+  }
   if (areaName !== "sync" || !changes.settings) {
     return;
   }

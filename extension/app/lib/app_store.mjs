@@ -13,6 +13,7 @@
 
 import {deriveBackendHttpOrigin, loadSettings, saveSettings} from "../../shared/settings.js";
 import {BACKEND_ERROR, BackendError, createBackendApi} from "./backend_api.mjs";
+import {ENGINE_MODE, getEngineView} from "./engine_actions.mjs";
 import {useEffect, useState} from "./html.mjs";
 
 // Promise-safe API namespace (see shared/capabilities.js § namespace idiom).
@@ -104,6 +105,13 @@ const schedulePoll = () => {
  * state, shown on screen, not an error.
  */
 export const refreshBackend = async () => {
+  // With the browser engine there is no backend to look for: do not knock on
+  // a port nothing listens on every few seconds.
+  if (getEngineView().state.mode === ENGINE_MODE.BROWSER) {
+    clearTimeout(pollTimer);
+    setState({backendState: "down", backendMessage: null, health: null});
+    return;
+  }
   try {
     const health = await api.health();
     // Status and totals are secondary: a hiccup there must not flip the

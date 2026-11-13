@@ -67,13 +67,13 @@ export const createSessionRecorder = ({
 
   const nowIso = () => isoSeconds(now());
 
-  const openSession = async (state, backendSessionId) => {
+  const openSession = async (state, backendSessionId, engine = state.session?.engine) => {
     const session = buildSessionRecord({
       id: newId(),
       backendSessionId,
       identity: state.identity,
       startedAt: nowIso(),
-      engine: ENGINE.COMPANION,
+      engine: engine ?? state.engine ?? ENGINE.COMPANION,
     });
     await ledger.putSession(session);
     state.session = session;
@@ -134,7 +134,7 @@ export const createSessionRecorder = ({
     // channel, on the same engine connection.
     const backendSessionId = session.backend_session_id;
     await closeSession(state);
-    await openSession(state, backendSessionId);
+    await openSession(state, backendSessionId, session.engine);
   };
 
   const recordFrame = async (state, event) => {
@@ -193,9 +193,13 @@ export const createSessionRecorder = ({
         const state = await stateFor(tabId);
         if (event.type === "ready") {
           await closeSession(state);
+          // The in-extension engine says so in its ready frame; the backend
+          // (which predates the field) says nothing.
+          state.engine = event.engine === ENGINE.BROWSER ? ENGINE.BROWSER : ENGINE.COMPANION;
           await openSession(
             state,
-            typeof event.session_id === "string" ? event.session_id : null
+            typeof event.session_id === "string" ? event.session_id : null,
+            state.engine
           );
         } else {
           await recordFrame(state, event);

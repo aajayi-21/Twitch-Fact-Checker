@@ -18,6 +18,7 @@ import {
 import {FAIL_REASON, SKIP_REASON} from "../../engine/stt/stt_plan.mjs";
 import {Button, Card, ConfirmButton, Notice, Segmented, SettingRow} from "../components.mjs";
 import {useAppState} from "../lib/app_store.mjs";
+import {ENGINE_MODE, useEngine} from "../lib/engine_actions.mjs";
 import {html} from "../lib/html.mjs";
 import {
   deleteSpeechModels,
@@ -153,9 +154,12 @@ const TestResult = ({result, model}) => {
 export const SpeechCard = () => {
   const speech = useSpeech();
   const health = useAppState((app) => app.health);
+  // With the browser engine there is no backend to transcribe, so speech
+  // runs here whatever this card's own switch says, and the switch is hidden.
+  const browserEngine = useEngine().state.mode === ENGINE_MODE.BROWSER;
   const {state, plan, progress} = speech;
   const {settings} = state;
-  const inBrowser = settings.engine === SPEECH_ENGINE.BROWSER;
+  const inBrowser = browserEngine || settings.engine === SPEECH_ENGINE.BROWSER;
   const model = getSttModel(settings.modelId);
   const result = state.results[model.id] ?? null;
   const testing = progress !== null;
@@ -164,19 +168,24 @@ export const SpeechCard = () => {
 
   return html`
     <${Card} title="Speech recognition">
-      <${SettingRow}
-        label="Where speech is turned into text"
-        help="Either way the audio stays on this computer. Applies the next time you press Start."
-        stacked
-      >
-        <${Segmented}
-          name="speech-engine"
-          label="Speech engine"
-          options=${ENGINE_OPTIONS}
-          value=${settings.engine}
-          onChange=${(engine) => updateSpeechSettings({engine})}
-        />
-      <//>
+      ${browserEngine
+        ? html`<p class="setting-help">
+            Speech is turned into text inside this browser, by a model that runs on this
+            computer. No audio leaves it.
+          </p>`
+        : html`<${SettingRow}
+            label="Where speech is turned into text"
+            help="Either way the audio stays on this computer. Applies the next time you press Start."
+            stacked
+          >
+            <${Segmented}
+              name="speech-engine"
+              label="Speech engine"
+              options=${ENGINE_OPTIONS}
+              value=${settings.engine}
+              onChange=${(engine) => updateSpeechSettings({engine})}
+            />
+          <//>`}
 
       ${!inBrowser && health?.accepts_audio === false
         ? html`<${Notice} tone="warn">
@@ -193,7 +202,7 @@ export const SpeechCard = () => {
                   run <code>python scripts/vendor_stt_runtime.py</code>, then reload the extension.
                 <//>`
               : null}
-            ${health && health.accepts_transcripts !== true
+            ${!browserEngine && health && health.accepts_transcripts !== true
               ? html`<${Notice} tone="warn">
                   The running backend is too old to accept text from the browser. Update and restart
                   it before using this.

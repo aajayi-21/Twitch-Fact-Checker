@@ -35,6 +35,7 @@ import {
   topicsMasterState,
 } from "../lib/settings_rules.mjs";
 import {HAS_OFFSCREEN_CAPTURE} from "../../shared/capabilities.js";
+import {EngineCard} from "./engine_card.mjs";
 import {ImportHistory} from "./import_history.mjs";
 import {SpeechCard} from "./speech_card.mjs";
 
@@ -173,6 +174,8 @@ export const SettingsView = () => {
         </p>
       </header>
       ${saveError ? html`<${Notice} tone="error">${saveError}<//>` : null}
+
+      <${EngineCard} />
 
       <${Card} title="What gets checked">
         <${SettingRow}

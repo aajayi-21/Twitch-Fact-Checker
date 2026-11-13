@@ -867,7 +867,7 @@ What was built differs from §5–§7 in these ways:
 | Claims recorded from existing frames | An opt-in `claim` frame (`ClientHello.send_claims`) | The wire only ever announced claims that were being checked; the history needs the ones that were heard and dropped too |
 | One ledger session per backend session | One ledger session per continuous stretch of **one channel**, carrying `backend_session_id` | A tab that moves to another channel mid-capture must not credit its watch time and spend to the first one. Import skips by `backend_session_id` |
 | `shared/pricing.json` | `ledger/pricing.mjs`, Anthropic models only | No build step to bundle JSON; OpenRouter reports exact cost, Ollama is free, and OpenAI/Gemini prices wait for their live runs (S2) |
-| Budgets on the usage screen | Not built | They need a guard in the pipeline; belongs with the browser engine in Phase 4 |
+| Budgets on the usage screen | Not built in this phase; **done in Phase 4**, on the AI provider screen | They need a guard in the pipeline, which arrived with the browser engine |
 | Verdict detail: source tiers, transcript context, re-check | Explanation, sources, model, latency, rating with correction, copy, delete | Tiers and transcript context are not on the wire; re-check needs the Phase 4 pipeline |
 
 Still open from this phase:
@@ -911,17 +911,58 @@ Not built in this phase, and where each belongs:
 | Item | Status |
 |---|---|
 | Neural voice-activity detection | **Open.** Segmentation is still energy-based, so music and crowd noise reach the model. The backend drops an utterance repeated verbatim, which catches the commonest hallucination, not all of them |
-| Speech step in the welcome wizard | Deferred to Phase 4, when the browser engine becomes the default path |
+| Speech step in the welcome wizard | **Done in Phase 4**, on the browser-engine path |
 | Stepping down a tier when the queue grows | Open. Today the oldest waiting audio is dropped and counted |
 | Model files from a URL we control, with a pinned SHA-256 | Partly: downloads are pinned to a Hugging Face commit, which is immutable; self-hosting belongs with the store work (Phase 6) |
 | Hosted speech fallback | Phase 5, unchanged |
 | GPUs other than Intel Arc | Still untested; the ladder and self-test are what protect them |
 
-**Phase 4 — in-extension pipeline and four providers (3–4 weeks, gated on S2).** Prompt
-export, JavaScript gate and verify, the four provider modules, budgets, demo mode.
+**Phase 4 ◐ — the browser engine (built 2026-11-13; two of four providers proven).**
+With "This browser" chosen, the extension needs nothing else: it transcribes, finds
+claims and checks them with the viewer's own API key, and there is no backend process.
+
+- **Pipeline** (`extension/engine/pipeline/`): `browser_pipeline.mjs` is the JavaScript
+  counterpart of the middle of `pipeline.py` — batching with a context tail, sensitivity
+  and topic filters, duplicate suppression, a bounded verify queue that drops the oldest
+  claim, a verify rate limit, one retry on a timeout, a cooldown after a rate-limit or
+  billing error — and it emits the backend's own frames, so the overlay, History and
+  Usage are unchanged. Duplicate detection re-implements rapidfuzz's `token_set_ratio`
+  and is held to the Python values by golden cases.
+- **Keys** (`engine/engine_setup.mjs`, `engine_store.mjs`): `chrome.storage.local` only,
+  content scripts locked out of it, last-four hints in the UI, each key checked live
+  before it is stored, and removing a key ends a session that is using it.
+- **Spending limits**: fact-checks per day and dollars per month, on by default (150 and
+  $10), a notice at 80 %, and a stop that covers claim detection too.
+- **App**: the welcome flow asks where to run and then takes the matching path (key →
+  speech model → sample check); the AI provider screen, Home, the sidebar and the popup
+  follow the engine. The sample check is the "demo mode": one real gate and verify call.
+- **Default OpenRouter model** for this engine is `google/gemini-3.5-flash-lite`; the
+  backend's own default is still the withdrawn Mercury model and was not touched.
+
 *Done means:* a clean Chrome profile with no backend running goes from install to a real
-verdict on a live stream, with each of the four keys. Optional afterwards: `llm_openai.py`
-and a restored `llm_gemini.py` so the companion offers the same four.
+verdict on a live stream, with each of the four keys.
+
+| Provider | `scripts/run_browser_engine_e2e.mjs` — clean profile, no backend |
+|---|---|
+| Anthropic (Claude Haiku 5.5) | **Passed.** All four checkable claims in the recorded stream found and judged correctly (2 TRUE, 2 FALSE), nothing checked that should not be; $0.045 for the session |
+| OpenRouter (Gemini 3.5 Flash-Lite) | **Passed** twice: 3 of 4 claims, then 4 of 4, all judged correctly; $0.027–0.044 |
+| OpenAI | **Not run** — no key. Offered in the app with a "not yet tested live" note |
+| Gemini | **Not run** — no key. Same note; it is the one provider that asks for a site permission |
+
+So the finish line is half crossed. "A live stream" here is a tab playing 43 seconds of
+recorded speech, captured through the real `tabCapture` path — not yet a real stream on
+Twitch or YouTube.
+
+Not built, or different from §3 and §9:
+
+| Item | Status |
+|---|---|
+| OpenAI and Gemini list prices | Not in `ledger/pricing.mjs`: their calls show as "not priced" and do not count toward the monthly limit (the daily limit still applies). Add with their first live runs |
+| `probeGrounding` as a separate step, `listModels` for a model picker | Not built. The welcome flow's sample check does the grounded test; models are typed, with the default as placeholder |
+| OpenRouter model capability check | Still open (S2 §4.1): a withdrawn or incapable model surfaces as the provider's own error |
+| Source tiers in the browser engine | Not ported (§9.1 planned an export of `source_quality.py`) |
+| `llm_openai.py`, restored `llm_gemini.py` for the companion | Not started (marked optional) |
+| Hosted speech | Phase 5 |
 
 **Phase 5 — hosted speech fallback (about a week).** OpenAI and Gemini transcription for
 machines that fail the benchmark.
