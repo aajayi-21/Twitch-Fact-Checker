@@ -38,7 +38,9 @@ export const formatUsd = (usd) => {
 };
 
 /**
- * A cost total, with "≈" whenever any part of it is an estimate.
+ * A cost total, with "≈" whenever any part of it is an estimate, and
+ * "+ unpriced" when some calls in it could not be priced (so the figure is
+ * a floor, not the whole amount).
  *
  * @param {{usd: number, estimated: boolean, unpricedCalls: number}|null|undefined} cost
  * @returns {string}
@@ -50,7 +52,8 @@ export const formatCost = (cost) => {
   if (cost.usd === 0 && cost.unpricedCalls > 0) {
     return "not priced";
   }
-  return `${cost.estimated ? "≈ " : ""}${formatUsd(cost.usd)}`;
+  const total = `${cost.estimated ? "≈ " : ""}${formatUsd(cost.usd)}`;
+  return cost.unpricedCalls > 0 ? `${total} + unpriced` : total;
 };
 
 /**

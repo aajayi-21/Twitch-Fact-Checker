@@ -310,6 +310,16 @@ Keys are checked with the provider before they are stored, kept in this browser 
 (`chrome.storage.local`, out of reach of web pages), and shown afterwards only by their
 last four characters. **AI provider** also holds the spending limits — on by default at
 150 fact-checks a day and $10 a month — and the switch back to the local backend.
+Changing a limit applies to a running session at once, and the counts start again at
+local midnight and on the first of the month. Calls that were billed but whose answer
+could not be used (a refusal, a cut-off answer) still count. The monthly limit can only
+count what the app can price (OpenRouter's reported costs, Anthropic's list prices);
+the AI provider screen and Home say when a chosen model falls outside it.
+
+A session ends by itself, with the provider's reason on the stream, in the popup and on
+Home, when nothing more can succeed: the key is refused, the account has no credit, or
+the model does not exist. If claim detection fails three times in a row the stream and
+the popup say so, rather than looking like a quiet stream.
 
 What the backend still does that this engine does not: the Jev pre-screen,
 contradiction alerts, on-screen (vision) claims, and Ollama.

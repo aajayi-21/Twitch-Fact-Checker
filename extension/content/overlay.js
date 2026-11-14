@@ -76,6 +76,19 @@ class FactCheckOverlay {
     "bottom-left",
     "bottom-right",
   ]);
+  // Codes whose message is written for the viewer (the reason and what to
+  // do), so it is shown as sent rather than replaced by fixed copy.
+  static MESSAGE_FIRST_CODES = new Set([
+    "quota_cooldown",
+    "key_refused",
+    "no_credit",
+    "model_unavailable",
+    "gate_failing",
+    "budget_warning",
+    "budget_reached",
+    "budget_resumed",
+    "budget_unpriced",
+  ]);
   static NOTICE_COPY = Object.freeze({
     quota_cooldown: "Fact-checks paused: API quota is cooling down",
     rate_limited: "Fact-checks throttled: rate limit reached",
@@ -440,7 +453,11 @@ class FactCheckOverlay {
     if (!this.#refs) {
       return;
     }
-    const friendlyCopy = FactCheckOverlay.NOTICE_COPY[errorFrame.code];
+    const messageFirst =
+      FactCheckOverlay.MESSAGE_FIRST_CODES.has(errorFrame.code) && Boolean(errorFrame.message);
+    const friendlyCopy = messageFirst
+      ? errorFrame.message
+      : FactCheckOverlay.NOTICE_COPY[errorFrame.code];
     const fallbackCopy =
       errorFrame.message || errorFrame.code || "backend error";
     const fatal = Boolean(errorFrame.fatal);

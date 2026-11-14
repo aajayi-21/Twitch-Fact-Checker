@@ -27,7 +27,15 @@ import {
 } from "../generated/prompts.mjs";
 import {buildAttachedResultsVerifySystem, buildGatePrompt} from "../pipeline/prompt_builders.mjs";
 import {finalizeVerdict, normalizeGateClaims, selectSources} from "../pipeline/verdict_rules.mjs";
-import {ERROR_KIND, ProviderError, addUsage, emptyUsage, parseModelJson, requestJson} from "./common.mjs";
+import {
+  ERROR_KIND,
+  ProviderError,
+  addUsage,
+  emptyUsage,
+  parseModelJson,
+  readBilled,
+  requestJson,
+} from "./common.mjs";
 
 const API_ORIGIN = "https://openrouter.ai";
 const APP_TITLE = "Doxa";
@@ -45,6 +53,16 @@ const DEFAULT_MODEL = "deepseek/deepseek-v4.1-flash-1017";
 export const defaultModels = Object.freeze({gate: DEFAULT_MODEL, verify: DEFAULT_MODEL});
 
 const headers = (apiKey) => ({Authorization: `Bearer ${apiKey}`, "X-Title": APP_TITLE});
+
+/**
+ * An unknown model is a 400 ("… is not a valid model ID"); a model no
+ * upstream can serve with the parameters sent (strict JSON above all) is
+ * "No endpoints found …". Neither will fix itself.
+ */
+const classifyError = (status, message) =>
+  /not a valid model|no endpoints found|model .*(does not exist|not found)/i.test(message)
+    ? ERROR_KIND.MODEL_UNAVAILABLE
+    : null;
 
 const strictFormat = (name, schema) => ({
   type: "json_schema",
@@ -96,6 +114,7 @@ const createCompletion = (apiKey, body, options) =>
     // Only route to an upstream that honours every parameter sent — above
     // all the strict response format.
     body: {provider: {require_parameters: true}, usage: {include: true}, ...body},
+    classifyError,
     signal: options.signal,
     fetchImpl: options.fetchImpl,
   });
@@ -138,10 +157,11 @@ export const runGate = async ({apiKey, context, transcript, model = defaultModel
     },
     options
   );
-  return {
+  const usage = addUsage(emptyUsage(), readUsage(completion, 0));
+  return readBilled(usage, () => ({
     claims: normalizeGateClaims(parseModelJson(readMessage(completion).content)),
-    usage: addUsage(emptyUsage(), readUsage(completion, 0)),
-  };
+    usage,
+  }));
 };
 
 /**
@@ -174,16 +194,19 @@ export const runVerify = async ({apiKey, claim, model = defaultModels.verify, ..
     },
     options
   );
-  const message = readMessage(completion);
-  const cited = (message.annotations ?? [])
-    .filter((annotation) => annotation.type === "url_citation" && annotation.url_citation?.url)
-    .map((annotation) => ({
-      url: annotation.url_citation.url,
-      title: annotation.url_citation.title ?? null,
-    }));
-  return {
-    verdict: finalizeVerdict(parseModelJson(message.content), selectSources({cited})),
-    usage: addUsage(emptyUsage(), readUsage(completion, 1)),
-    mode: "single",
-  };
+  const usage = addUsage(emptyUsage(), readUsage(completion, 1));
+  return readBilled(usage, () => {
+    const message = readMessage(completion);
+    const cited = (message.annotations ?? [])
+      .filter((annotation) => annotation.type === "url_citation" && annotation.url_citation?.url)
+      .map((annotation) => ({
+        url: annotation.url_citation.url,
+        title: annotation.url_citation.title ?? null,
+      }));
+    return {
+      verdict: finalizeVerdict(parseModelJson(message.content), selectSources({cited})),
+      usage,
+      mode: "single",
+    };
+  });
 };

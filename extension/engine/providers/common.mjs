@@ -14,7 +14,8 @@ export const ERROR_KIND = Object.freeze({
   AUTH: "auth", // key missing, wrong, revoked, or not allowed to do this
   BILLING: "billing", // no credit / billing not enabled — fix on the provider's site
   RATE_LIMIT: "rate_limit", // slow down; retryAfterS may say for how long
-  BAD_REQUEST: "bad_request", // the request was rejected: unknown model, unsupported option
+  BAD_REQUEST: "bad_request", // the request was rejected: an unsupported option
+  MODEL_UNAVAILABLE: "model_unavailable", // the model does not exist, or cannot do what is asked
   SERVER: "server", // the provider failed; safe to retry later
   NETWORK: "network", // could not reach the provider at all
   TIMEOUT: "timeout",
@@ -36,8 +37,57 @@ export class ProviderError extends Error {
     this.kind = kind;
     this.status = status;
     this.retryAfterS = retryAfterS;
+    /**
+     * What the calls made before this failure cost, when any answered: a
+     * refusal or a cut-off answer is billed like any other. Set by
+     * attachUsage; null when nothing billable happened.
+     * @type {Usage|null}
+     */
+    this.usage = null;
   }
 }
+
+/**
+ * Record on `error` the usage of calls that were answered (and so billed)
+ * before it was thrown, adding to any usage it already carries. An error
+ * that is not a ProviderError is wrapped as INVALID_OUTPUT, since it means
+ * the answer could not be read; a cancellation passes through untouched.
+ *
+ * @param {unknown} error
+ * @param {Usage} usage - accumulated so far
+ * @returns {unknown} the error to throw
+ */
+export const attachUsage = (error, usage) => {
+  if (error?.name === "AbortError" || error?.name === "TimeoutError") {
+    return error;
+  }
+  const providerError =
+    error instanceof ProviderError
+      ? error
+      : new ProviderError(ERROR_KIND.INVALID_OUTPUT, String(error?.message ?? error));
+  if (usage && usage.calls > 0) {
+    providerError.usage = providerError.usage ? addUsage(usage, providerError.usage) : {...usage};
+  }
+  return providerError;
+};
+
+/**
+ * Run `read` (the part of a provider call after the answer arrived) and, if
+ * it throws, attach `usage` to the error: the answer was billed even though
+ * it could not be used.
+ *
+ * @template T
+ * @param {Usage} usage
+ * @param {() => T} read
+ * @returns {T}
+ */
+export const readBilled = (usage, read) => {
+  try {
+    return read();
+  } catch (error) {
+    throw attachUsage(error, usage);
+  }
+};
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 
@@ -104,6 +154,10 @@ export const kindForStatus = (status) => {
   }
   if (status === 408) {
     return ERROR_KIND.TIMEOUT;
+  }
+  // Every provider call goes to a fixed endpoint; a 404 means the model.
+  if (status === 404) {
+    return ERROR_KIND.MODEL_UNAVAILABLE;
   }
   return status >= 500 ? ERROR_KIND.SERVER : ERROR_KIND.BAD_REQUEST;
 };

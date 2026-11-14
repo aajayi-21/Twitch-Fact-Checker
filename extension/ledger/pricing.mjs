@@ -51,6 +51,22 @@ const PRICE_TABLE = Object.freeze({
 /** Providers that run on the viewer's machine and cost nothing per call. */
 const FREE_PROVIDERS = new Set(["ollama"]);
 
+/** Providers that report each call's exact cost with the response. */
+const COST_REPORTING_PROVIDERS = new Set(["openrouter"]);
+
+/**
+ * Whether calls to this model can be priced, and so count toward the
+ * monthly spending limit.
+ *
+ * @param {string} provider
+ * @param {string} model
+ * @returns {boolean}
+ */
+export const canPrice = (provider, model) =>
+  COST_REPORTING_PROVIDERS.has(provider) ||
+  FREE_PROVIDERS.has(provider) ||
+  findPrice(provider, model) !== null;
+
 /**
  * @param {string} provider
  * @param {string} model

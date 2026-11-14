@@ -21,6 +21,7 @@ import {
   addUsage,
   emptyUsage,
   parseModelJson,
+  readBilled,
   requestJson,
 } from "./common.mjs";
 
@@ -38,11 +39,19 @@ export const defaultModels = Object.freeze({gate: "gpt-6-luna", verify: "gpt-6-l
 
 const headers = (apiKey) => ({Authorization: `Bearer ${apiKey}`});
 
-/** A key with no credit answers 429 `insufficient_quota`, which is not a rate limit. */
-const classifyError = (status, message, body) =>
-  body?.error?.code === "insufficient_quota" || /exceeded your current quota/i.test(message)
-    ? ERROR_KIND.BILLING
-    : null;
+/**
+ * A key with no credit answers 429 `insufficient_quota`, which is not a rate
+ * limit; an unknown model can arrive as a 400 that says so.
+ */
+const classifyError = (status, message, body) => {
+  if (body?.error?.code === "insufficient_quota" || /exceeded your current quota/i.test(message)) {
+    return ERROR_KIND.BILLING;
+  }
+  if (body?.error?.code === "model_not_found" || /model .*does not exist/i.test(message)) {
+    return ERROR_KIND.MODEL_UNAVAILABLE;
+  }
+  return null;
+};
 
 const jsonFormat = (name, schema) => ({format: {type: "json_schema", name, strict: true, schema}});
 
@@ -160,10 +169,11 @@ export const runGate = async ({apiKey, context, transcript, model = defaultModel
     },
     options
   );
-  return {
+  const usage = addUsage(emptyUsage(), readUsage(response));
+  return readBilled(usage, () => ({
     claims: normalizeGateClaims(parseModelJson(readOutputText(response))),
-    usage: addUsage(emptyUsage(), readUsage(response)),
-  };
+    usage,
+  }));
 };
 
 /**
@@ -195,11 +205,10 @@ export const runVerify = async ({apiKey, claim, model = defaultModels.verify, ..
     },
     options
   );
-  const payload = parseModelJson(readOutputText(response));
-  const sources = selectSources({...collectSources(response), picked: payload.source_urls ?? []});
-  return {
-    verdict: finalizeVerdict(payload, sources),
-    usage: addUsage(emptyUsage(), readUsage(response)),
-    mode: "single",
-  };
+  const usage = addUsage(emptyUsage(), readUsage(response));
+  return readBilled(usage, () => {
+    const payload = parseModelJson(readOutputText(response));
+    const sources = selectSources({...collectSources(response), picked: payload.source_urls ?? []});
+    return {verdict: finalizeVerdict(payload, sources), usage, mode: "single"};
+  });
 };

@@ -28,6 +28,9 @@ export const MSG = Object.freeze({
   // Ad break started/ended on the captured tab ({active}); the offscreen
   // document drops audio while it lasts (see shared/ad_pause.js).
   OFFSCREEN_AD_STATE: "OFFSCREEN_AD_STATE",
+  // The viewer changed a spending limit ({budgets}); a running browser-engine
+  // session applies it at once.
+  OFFSCREEN_BUDGETS: "OFFSCREEN_BUDGETS",
   // offscreen -> service worker
   BACKEND_EVENT: "BACKEND_EVENT",
   // In-browser speech crash guard ({phase: "begin"|"end", variantId}): sent
@@ -88,6 +91,24 @@ export const ERR = Object.freeze({
   // The provider key a running browser-engine session was using has been
   // removed in the app, which ends the session at once.
   ERR_KEY_REMOVED: "ERR_KEY_REMOVED",
+  // A browser-engine session ended because no further call could succeed.
+  // The provider's own reason travels in session.errorDetail.
+  ERR_KEY_REFUSED: "ERR_KEY_REFUSED",
+  ERR_NO_CREDIT: "ERR_NO_CREDIT",
+  ERR_MODEL_UNAVAILABLE: "ERR_MODEL_UNAVAILABLE",
+  // The spending so far could not be read, so the limits could not be
+  // applied and the session did not start.
+  ERR_SPEND_UNKNOWN: "ERR_SPEND_UNKNOWN",
+});
+
+/**
+ * The browser engine's fatal error frames (engine/pipeline/browser_pipeline.mjs)
+ * and the session error each one ends the session with.
+ */
+export const ENGINE_FATAL_ERRORS = Object.freeze({
+  key_refused: ERR.ERR_KEY_REFUSED,
+  no_credit: ERR.ERR_NO_CREDIT,
+  model_unavailable: ERR.ERR_MODEL_UNAVAILABLE,
 });
 
 /**

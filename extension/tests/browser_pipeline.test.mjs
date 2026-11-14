@@ -202,10 +202,10 @@ const verdictFor = (label = "FALSE") => ({
  * `gateScript` / `verifyScript` are lists of results (or errors to throw),
  * one per call.
  */
-const makePipeline = ({gateScript = [], verifyScript = [], ...overrides} = {}) => {
+const makePipeline = ({gateScript = [], verifyScript = [], startMs = 1_000_000, ...overrides} = {}) => {
   const frames = [];
   const calls = {gate: [], verify: []};
-  let nowMs = 1_000_000;
+  let nowMs = startMs;
   let nextId = 0;
   const play = (script, record) => async (request) => {
     record.push(request);
@@ -230,6 +230,9 @@ const makePipeline = ({gateScript = [], verifyScript = [], ...overrides} = {}) =
     emit: (frame) => frames.push(frame),
     budgets: {dailyChecks: 150, monthlyUsd: 10},
     spent: {checksToday: 0, spendThisMonthUsd: 0},
+    // Priced by default (as Anthropic and OpenRouter are), so the notice
+    // for an unpriced model appears only in the tests about it.
+    priceUsage: () => 0,
     now: () => nowMs,
     sleep: async (ms) => {
       nowMs += ms;
@@ -535,20 +538,107 @@ test("pipeline: a rate limit pauses checking for as long as the provider says", 
   assert.equal(harness.of("verdict").length, 1);
 });
 
-test("pipeline: a refused key or empty balance stops calls and says what to fix", async () => {
-  for (const [kind, expected] of [
-    [ERROR_KIND.AUTH, /Anthropic refused the API key: invalid x-api-key/],
-    [ERROR_KIND.BILLING, /Anthropic reports no credit or billing/],
-  ]) {
-    const harness = makePipeline({
-      gateScript: [new ProviderError(kind, "invalid x-api-key")],
-    });
+test("pipeline: a refused key, no credit or a missing model ends the session with the reason", async () => {
+  const cases = [
+    [ERROR_KIND.AUTH, "key_refused", /^Anthropic refused the API key: invalid x-api-key\. Check or replace it under AI provider\.$/],
+    [ERROR_KIND.BILLING, "no_credit", /^Anthropic reports no credit or billing: invalid x-api-key\. Add credit on Anthropic's site/],
+    [ERROR_KIND.MODEL_UNAVAILABLE, "model_unavailable", /^Anthropic cannot run the model "gate-model": invalid x-api-key\. Choose another model/],
+  ];
+  for (const [kind, code, message] of cases) {
+    const harness = makePipeline({gateScript: [new ProviderError(kind, "invalid x-api-key")]});
     await hear(harness);
-    assert.match(harness.of("error")[0].message, expected);
+    const [error] = harness.of("error");
+    assert.equal(error.code, code);
+    assert.equal(error.fatal, true);
+    assert.match(error.message, message);
+    assert.equal(harness.pipeline.disposed, true, "nothing more is attempted");
     harness.advance(13_000);
     await hear(harness, "more talking that would otherwise go to the gate right now");
-    assert.equal(harness.calls.gate.length, 1, "no second attempt while blocked");
+    assert.equal(harness.calls.gate.length, 1);
   }
+});
+
+test("pipeline: the same stop happens when verification is the stage that fails", async () => {
+  const harness = makePipeline({
+    gateScript: [{claims: [EIFFEL], usage: USAGE}],
+    verifyScript: [new ProviderError(ERROR_KIND.BILLING, "insufficient credits")],
+  });
+  await hear(harness);
+  const fatal = harness.of("error").find((frame) => frame.fatal);
+  assert.equal(fatal.code, "no_credit");
+  assert.match(fatal.message, /^OpenRouter reports no credit or billing: insufficient credits/);
+  assert.equal(harness.pipeline.disposed, true);
+});
+
+test("pipeline: repeated claim-detection failures are reported once, and cleared by a success", async () => {
+  const fail = () => new ProviderError(ERROR_KIND.SERVER, "upstream error");
+  const harness = makePipeline({
+    gateScript: [fail(), fail(), fail(), fail(), {claims: [], usage: USAGE}, fail(), fail(), fail()],
+  });
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    for (let pass = 0; pass < 8; pass += 1) {
+      await hear(harness);
+      harness.advance(13_000);
+    }
+  } finally {
+    console.warn = warn;
+  }
+  const notices = harness.frames.filter(
+    (frame) => frame.code === "gate_failing" || frame.stage === "gate_recovered"
+  );
+  assert.deepEqual(
+    notices.map((frame) => frame.code ?? frame.stage),
+    ["gate_failing", "gate_recovered", "gate_failing"],
+    "announced at the third failure, cleared by the success, announced again"
+  );
+  assert.match(notices[0].message, /Claim detection is failing, so nothing is being checked: upstream error/);
+  assert.equal(notices[0].fatal, false);
+});
+
+test("pipeline: a call that was billed but could not be used is still counted", async () => {
+  const billed = (kind, message, usage) => Object.assign(new ProviderError(kind, message), {usage});
+  const harness = makePipeline({
+    budgets: {dailyChecks: 0, monthlyUsd: 1},
+    priceUsage: (frame) => (frame.stage === "verify" ? 0.5 : 0.25),
+    gateScript: [
+      billed(ERROR_KIND.INVALID_OUTPUT, "cut off", USAGE),
+      {claims: [EIFFEL], usage: USAGE},
+    ],
+    verifyScript: [billed(ERROR_KIND.REFUSED, "declined", {...USAGE, webSearches: 2})],
+  });
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    await hear(harness);
+  } finally {
+    console.warn = warn;
+  }
+  const [failedGate] = harness.of("usage");
+  assert.equal(failedGate.stage, "gate");
+  assert.equal(failedGate.outcome, "failed");
+  harness.advance(13_000);
+  await hear(harness);
+  const failedVerify = harness.of("usage").find((frame) => frame.stage === "verify");
+  assert.equal(failedVerify.outcome, "failed");
+  assert.equal(failedVerify.web_searches, 2);
+  assert.equal("verdict_id" in failedVerify, false);
+  // 0.25 (failed gate) + 0.25 (gate) + 0.5 (failed verify) reaches the $1
+  // limit, which is said as soon as the failed call is recorded.
+  assert.deepEqual(
+    harness.of("error").map((frame) => frame.code),
+    ["budget_reached", "llm_failure"]
+  );
+});
+
+test("pipeline: a verify that failed without an answer adds no usage", async () => {
+  const harness = makePipeline({
+    gateScript: [{claims: [EIFFEL], usage: USAGE}],
+    verifyScript: [new ProviderError(ERROR_KIND.SERVER, "500")],
+  });
+  await hear(harness);
+  assert.deepEqual(harness.of("usage").map((frame) => frame.stage), ["gate"]);
 });
 
 test("pipeline: a failed gate pass loses one batch, quietly", async () => {
@@ -613,6 +703,105 @@ test("pipeline: the monthly limit counts what each call cost", async () => {
   harness.advance(13_000);
   await hear(harness, "brazil has won the world cup five times in total you know");
   assert.equal(harness.calls.gate.length, 1);
+});
+
+/** Local time, so the tests mean the same in every time zone. */
+const localMs = (year, month, day, hour, minute) =>
+  new Date(year, month - 1, day, hour, minute).getTime();
+
+test("pipeline: the daily count starts again at local midnight, mid-session", async () => {
+  const harness = makePipeline({
+    startMs: localMs(2026, 11, 13, 23, 50),
+    budgets: {dailyChecks: 2, monthlyUsd: 0},
+    spent: {checksToday: 2, spendThisMonthUsd: 0},
+    gateScript: [{claims: [EIFFEL], usage: USAGE}],
+    verifyScript: [verdictFor()],
+  });
+  await hear(harness);
+  assert.equal(harness.calls.gate.length, 0, "today's limit is already used up");
+  assert.equal(harness.of("error")[0].code, "budget_reached");
+
+  harness.advance(15 * 60_000); // 00:05 the next day
+  await hear(harness);
+  assert.equal(harness.calls.gate.length, 1);
+  assert.equal(harness.of("verdict").length, 1);
+  assert.deepEqual(harness.of("error").map((frame) => frame.code), [
+    "budget_reached",
+    "budget_resumed",
+  ]);
+});
+
+test("pipeline: the monthly spend starts again on the first of the month", async () => {
+  const harness = makePipeline({
+    startMs: localMs(2026, 11, 30, 23, 58),
+    budgets: {dailyChecks: 0, monthlyUsd: 5},
+    spent: {checksToday: 0, spendThisMonthUsd: 5.2},
+    gateScript: [{claims: [EIFFEL], usage: USAGE}],
+    verifyScript: [verdictFor()],
+  });
+  await hear(harness);
+  assert.equal(harness.calls.gate.length, 0);
+  harness.advance(5 * 60_000); // 1 December, 00:03
+  await hear(harness);
+  assert.equal(harness.of("verdict").length, 1);
+  assert.ok(harness.of("error").some((frame) => frame.code === "budget_resumed"));
+});
+
+test("pipeline: a limit raised mid-session lets checking resume at once", async () => {
+  const harness = makePipeline({
+    budgets: {dailyChecks: 3, monthlyUsd: 0},
+    spent: {checksToday: 3, spendThisMonthUsd: 0},
+    gateScript: [{claims: [EIFFEL], usage: USAGE}],
+    verifyScript: [verdictFor()],
+  });
+  await hear(harness);
+  assert.equal(harness.calls.gate.length, 0);
+  harness.pipeline.setBudgets({dailyChecks: 50, monthlyUsd: 0});
+  assert.equal(harness.of("error").at(-1).code, "budget_resumed");
+  harness.advance(13_000);
+  await hear(harness);
+  assert.equal(harness.of("verdict").length, 1);
+});
+
+test("pipeline: a limit lowered mid-session applies at once", async () => {
+  const harness = makePipeline({
+    budgets: {dailyChecks: 100, monthlyUsd: 0},
+    spent: {checksToday: 10, spendThisMonthUsd: 0},
+    gateScript: [{claims: [EIFFEL], usage: USAGE}],
+  });
+  harness.pipeline.setBudgets({dailyChecks: 10, monthlyUsd: 0});
+  assert.equal(harness.of("error").at(-1).code, "budget_reached");
+  await hear(harness);
+  assert.equal(harness.calls.gate.length, 0);
+});
+
+test("pipeline: a model the monthly limit cannot price is pointed out once", async () => {
+  const harness = makePipeline({
+    budgets: {dailyChecks: 100, monthlyUsd: 10},
+    priceUsage: () => null,
+    gateScript: [{claims: [EIFFEL], usage: USAGE}, {claims: [], usage: USAGE}],
+    verifyScript: [verdictFor()],
+  });
+  await hear(harness);
+  harness.advance(13_000);
+  await hear(harness);
+  const notices = harness.of("error").filter((frame) => frame.code === "budget_unpriced");
+  assert.deepEqual(
+    notices.map((frame) => frame.message),
+    [
+      "The monthly spending limit cannot count gate-model: its price is unknown. The daily fact-check limit still applies.",
+      "The monthly spending limit cannot count verify-model: its price is unknown. The daily fact-check limit still applies.",
+    ],
+    "once per model, however many calls"
+  );
+
+  const noLimit = makePipeline({
+    budgets: {dailyChecks: 100, monthlyUsd: 0},
+    priceUsage: () => null,
+    gateScript: [{claims: [], usage: USAGE}],
+  });
+  await hear(noLimit);
+  assert.equal(noLimit.of("error").length, 0, "nothing to say without a monthly limit");
 });
 
 test("pipeline: stop looks at the last words and finishes the checks in hand", async () => {

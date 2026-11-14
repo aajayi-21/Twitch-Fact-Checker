@@ -45,7 +45,7 @@ Fixes with one obvious answer were not asked about and are planned directly.
 |---|---|---|---|
 | 0 | DeepSeek default model ✅ | hours | — |
 | 1 | Local backend security ✅ | 1–2 days | — |
-| 2 | Spending and error reporting (extension) | 2–3 days | — |
+| 2 | Spending and error reporting (extension) ✅ | 2–3 days | — |
 | 3 | Lifecycle and small fixes (extension) | 1–2 days | — |
 | 4 | Streamer bot safety fix | half a day | — |
 | 5 | Provider live runs: DeepSeek, OpenAI, Gemini | 1 day | 0, 2; **your OpenAI and Gemini keys** |
@@ -182,7 +182,39 @@ end a session, and cannot change a key; the extension and the ingest CLI still w
 
 ---
 
-## 5. Phase 2 — Spending and error reporting (extension)
+## 5. Phase 2 — Spending and error reporting (extension) ✅
+
+**Built 2026-11-13** on branch `feat/spending-errors`. Differences from the plan below:
+
+- **A missing model is a third fatal stop.** Providers now report a 404 (and
+  OpenRouter's "not a valid model" / "No endpoints found", OpenAI's `model_not_found`)
+  as `MODEL_UNAVAILABLE`, which ends the session with `model_unavailable`. The plan's
+  "Model … isn't available at OpenRouter" wording became "<provider> cannot run the
+  model "<id>": <reason>. Choose another model under AI provider."
+- **How the reason travels.** The pipeline emits the fatal frame and disposes itself;
+  the offscreen document ends the session with `ERR_KEY_REFUSED`, `ERR_NO_CREDIT` or
+  `ERR_MODEL_UNAVAILABLE` and the sentence in `session.errorDetail`. The overlay shows
+  it, the popup shows it in place of its stock copy, and Home shows "The last session
+  stopped: …" with a link to AI provider (the app now reads the session record).
+- **Warnings while running.** "Claim detection is failing" and "limit reached" go into
+  `session.warning`, which the popup shows during a session; `gate_recovered` and
+  `budget_resumed` clear it.
+- **The overlay shows messages written for viewers as sent** (`quota_cooldown`, the
+  budget notices, the fatal stops). Before, `quota_cooldown` always read "API quota is
+  cooling down", which also hid the backend's own reasons.
+- **Billed failures.** `attachUsage` / `readBilled` in `providers/common.mjs` put the
+  usage of every answered call on the error, through Anthropic's paused turns and
+  Gemini's fallback chain; usage rows carry `outcome: "failed"`.
+- **Resumed checking is announced** (`budget_resumed`) after a new day or month or a
+  raised limit.
+- **Unpriced models** are named once per session over the stream, appended to the
+  monthly-limit notices, and shown on the spending-limits card and Home. Totals with
+  unpriced calls read "≈ $0.42 + unpriced".
+
+Verified: 356 extension tests (19 new); `run_browser_engine_e2e.mjs --bad-key` (new,
+free): a deliberately invalid key stored directly, a session on the recorded stream,
+Anthropic's real refusal ends it with the reason, nothing billed, Home and the popup
+say why (11/11); the app e2e and the store package's no-key demo.
 
 ### 2.1 A refused key or no credit stops the session (blocker)
 

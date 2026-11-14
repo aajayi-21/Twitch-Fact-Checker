@@ -46,7 +46,7 @@ import {SPEECH_STATUS, SessionSpeech} from "../engine/stt/session_speech.mjs";
 import {GPU_LOCK_NAME} from "../engine/stt/speech_store.mjs";
 import {priceCall} from "../ledger/pricing.mjs";
 import {AdPauseGate, buildBoundarySilenceFrames} from "../shared/ad_pause.js";
-import {ERR, MSG, TARGET, makeMsg} from "../shared/messages.js";
+import {ENGINE_FATAL_ERRORS, ERR, MSG, TARGET, makeMsg} from "../shared/messages.js";
 import {AudioCapture} from "./audio_capture.js";
 import {BackendSocket} from "./ws_client.js";
 
@@ -75,6 +75,10 @@ let session = {
   wsState: "closed",
   reconnectAttempt: 0,
   lastError: null,
+  errorDetail: null,
+  // A problem that has not stopped the session (claim detection failing, a
+  // spending limit reached), for the popup.
+  warning: null,
   adPaused: false,
   speech: null,
 };
@@ -157,18 +161,29 @@ const teardown = async () => {
   }
 };
 
-/** Session-fatal path: tear down, record the error, tell the service worker. */
-const endSessionWithError = async (lastError, reason) => {
+/**
+ * Session-fatal path: tear down, record the error, tell the service worker.
+ *
+ * @param {string} lastError - ERR.* (or "backend:<code>")
+ * @param {string} reason - for CAPTURE_ENDED
+ * @param {string|null} [detail] - a sentence for the viewer (session.errorDetail)
+ */
+const endSessionWithError = async (lastError, reason, detail = null) => {
   await teardown();
   adPause.resume();
-  await writeSession({
+  const patch = {
     status: "error",
     wsState: "closed",
     reconnectAttempt: 0,
     lastError,
+    warning: null,
     adPaused: false,
     speech: null,
-  });
+  };
+  if (detail !== null) {
+    patch.errorDetail = detail;
+  }
+  await writeSession(patch);
   await sendCaptureEnded(reason);
 };
 
@@ -410,6 +425,39 @@ const handleServerFrame = (frame) => {
 };
 
 /**
+ * What a browser-engine frame means for the session, beyond being shown: a
+ * fatal error ends it with the provider's reason; a warning (claim detection
+ * failing, a limit reached) is kept for the popup until it clears.
+ */
+const handleEngineFrame = (frame) => {
+  if (frame.type === "error" && frame.fatal === true) {
+    console.error(`[fact-checker] browser engine stopped (${frame.code}): ${frame.message}`);
+    endSessionWithError(
+      ENGINE_FATAL_ERRORS[frame.code] ?? `engine:${frame.code}`,
+      frame.code,
+      frame.message ?? null
+    ).catch((error) => {
+      console.error("[fact-checker] engine-stop handling failed:", error);
+    });
+    return;
+  }
+  let warning;
+  if (frame.type === "error" && (frame.code === "gate_failing" || frame.code === "budget_reached")) {
+    warning = frame.message;
+  } else if (
+    (frame.type === "status" && frame.stage === "gate_recovered") ||
+    (frame.type === "error" && frame.code === "budget_resumed")
+  ) {
+    warning = null;
+  } else {
+    return;
+  }
+  writeSession({warning}).catch((error) => {
+    console.error("[fact-checker] warning persistence failed:", error);
+  });
+};
+
+/**
  * Run the whole session in this document: speech here, claims checked by
  * the viewer's provider. `engine` comes from the service worker, which read
  * the keys from storage (this document cannot).
@@ -423,7 +471,10 @@ const startBrowserEngine = (engine) => {
   pipeline = new BrowserPipeline({
     gate: stage(engine.gate),
     verify: stage(engine.verify),
-    emit: forwardBackendEvent,
+    emit: (frame) => {
+      forwardBackendEvent(frame);
+      handleEngineFrame(frame);
+    },
     sensitivity: sessionSettings.sensitivity,
     enabledTopics: Array.isArray(sessionSettings.topics) ? sessionSettings.topics : null,
     budgets: engine.budgets,
@@ -496,6 +547,7 @@ const handleStart = async ({streamId, tabId, settings}) => {
     reconnectAttempt: 0,
     lastError: null,
     errorDetail: null,
+    warning: null,
     adPaused: false,
     speech: null,
   });
@@ -718,6 +770,12 @@ chrome.runtime.onMessage.addListener((message) => {
       break;
     case MSG.OFFSCREEN_AD_STATE:
       handleAdState(message.payload ?? {});
+      break;
+    case MSG.OFFSCREEN_BUDGETS:
+      // Only the browser engine has limits to apply; a backend session ignores this.
+      if (pipeline && message.payload?.budgets) {
+        pipeline.setBudgets(message.payload.budgets);
+      }
       break;
     default:
       break;

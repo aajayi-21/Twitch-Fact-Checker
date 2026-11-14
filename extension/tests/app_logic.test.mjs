@@ -437,6 +437,7 @@ test("formatCost marks estimates and never shows an unpriced total as free", () 
   assert.equal(formatCost({usd: 0.0188, estimated: true, unpricedCalls: 0}), "≈ $0.019");
   assert.equal(formatCost({usd: 0.0078, estimated: false, unpricedCalls: 0}), "$0.0078");
   assert.equal(formatCost({usd: 0, estimated: false, unpricedCalls: 3}), "not priced");
+  assert.equal(formatCost({usd: 0.0188, estimated: true, unpricedCalls: 2}), "≈ $0.019 + unpriced");
   assert.equal(formatCost({usd: 0, estimated: false, unpricedCalls: 0}), "$0.00");
   assert.equal(formatCost(null), "—");
 });

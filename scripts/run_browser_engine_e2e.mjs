@@ -35,9 +35,16 @@
  * is walked the way a store reviewer would walk it — skip the key, set up
  * speech, play the recorded example — and the run costs nothing.
  *
+ * With --bad-key (also free) a deliberately invalid key is stored directly
+ * (the app's key form would refuse it) and a session is run on the recorded
+ * stream: the provider refuses the first call, and the session must end with
+ * the provider's reason on Home and in the popup. --provider picks whose
+ * refusal (default anthropic).
+ *
  * Options:
  *   --provider ID        anthropic | openrouter | openai | gemini
  *   --demo               no key: check the recorded example instead (free)
+ *   --bad-key            a refused key ends a live session with the reason (free)
  *   --extension DIR      the extension to load (default: extension/; use
  *                        dist/chrome to test the store package)
  *   --headed             show the browser window
@@ -77,7 +84,7 @@ const CLI_SPEC = {
     "--timeout-s": "timeoutS",
     "--chrome": "chrome",
   },
-  flags: {"--headed": ["headed", true], "--demo": ["demo", true]},
+  flags: {"--headed": ["headed", true], "--demo": ["demo", true], "--bad-key": ["badKey", true]},
   defaults: {
     provider: null,
     extension: EXTENSION_DIR,
@@ -189,12 +196,20 @@ const main = async () => {
   const sourceDir = path.resolve(options.extension);
   if (options.demo) {
     options.provider = "demo";
-  } else if (!KEY_VARIABLES[options.provider]) {
+  } else if (options.badKey) {
+    options.provider ??= "anthropic";
+  }
+  if (!options.demo && !KEY_VARIABLES[options.provider]) {
     throw new Error(`--provider must be one of: ${Object.keys(KEY_VARIABLES).join(", ")} (or use --demo)`);
   }
   // In demo mode there is no key; a value that can never appear keeps the
-  // "the key leaked" checks meaningful without special cases.
-  const apiKey = options.demo ? "no-key-in-demo-mode-\u0000" : await readKey(options.provider);
+  // "the key leaked" checks meaningful without special cases. With --bad-key
+  // the key is a made-up one, which must not appear on screen either.
+  const apiKey = options.demo
+    ? "no-key-in-demo-mode-\u0000"
+    : options.badKey
+      ? "sk-deliberately-invalid-key-for-the-e2e-0000"
+      : await readKey(options.provider);
   if (!apiKey) {
     throw new Error(`no ${KEY_VARIABLES[options.provider]} in .env.spike — add one to run this provider`);
   }
@@ -326,6 +341,64 @@ const main = async () => {
 
     if (options.demo) {
       await demoChecks({click, waitForText, text, run, stored, page, screenshot, ledger});
+      return summarize();
+    }
+    if (options.badKey) {
+      console.log(`\nA refused key (${options.provider}) during a live session`);
+      await click("Skip this for now");
+      await waitForText("Speech recognition");
+      await click("Download and test");
+      await waitForText("Works on this device", 900_000);
+      await click("Continue");
+      await waitForText("See it work");
+      await click("Skip");
+      await waitForText("Latest results");
+      // Stored directly: the key form checks a key live and would refuse it.
+      await run(
+        `chrome.storage.local.set({providerKeys: {${JSON.stringify(options.provider)}: ${JSON.stringify(apiKey)}}}).then(() => true)`
+      );
+      const player = await chrome.openPage(`${staticServer.origin}/fixture/player.html?delay=100000`);
+      await player.send("Page.bringToFront");
+      await pause(300);
+      playerTabId = await run(
+        `chrome.tabs.query({active: true, lastFocusedWindow: true}).then(([tab]) => tab?.id ?? null)`
+      );
+      await page.send("Page.bringToFront");
+      await startCapture();
+      let session = await waitForSession(
+        (current) => current.status === "error" || (current.status === "capturing" && current.speech?.status === "ready"),
+        120_000
+      );
+      check("the session starts with the stored key", session?.status === "capturing", JSON.stringify(session));
+      await player.send("Runtime.evaluate", {
+        expression: 'document.getElementById("player").play()',
+        userGesture: true,
+        awaitPromise: true,
+      });
+      session = await waitForSession((current) => current.status === "error" || current.status === "idle", 120_000);
+      const label = {anthropic: "Anthropic", openrouter: "OpenRouter", openai: "OpenAI", gemini: "Gemini"}[options.provider];
+      check("the provider's refusal ends the session", session?.lastError === "ERR_KEY_REFUSED", JSON.stringify(session));
+      check(
+        "…with the provider's reason and what to do",
+        new RegExp(`^${label} refused the API key: .+ Check or replace it under AI provider\\.$`).test(session?.errorDetail ?? ""),
+        session?.errorDetail
+      );
+      check("…and the key does not appear in it", !String(session?.errorDetail).includes(apiKey));
+      const history = await ledger();
+      check(
+        "nothing was billed: no verdicts and no usage in the history",
+        history.verdicts.length === 0 && history.usage.length === 0,
+        JSON.stringify({verdicts: history.verdicts.length, usage: history.usage})
+      );
+      await page.send("Page.navigate", {url: `${appUrl}#/home`});
+      const home = await waitForText("The last session stopped");
+      check("Home says why the last session stopped", home.includes(`${label} refused the API key`));
+      await screenshot(page, "bad-key-home");
+      const popup = await chrome.openPage(`chrome-extension://${extensionId}/popup/popup.html`);
+      await pause(800);
+      const popupText = assertNoKey("the popup", await popup.evaluate("document.body.innerText"));
+      check("the popup says why too", popupText.includes(`${label} refused the API key`), popupText.slice(0, 300));
+      await popup.send("Page.close").catch(() => {});
       return summarize();
     }
 

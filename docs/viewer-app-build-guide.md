@@ -962,9 +962,9 @@ Not built, or different from §3 and §9:
 
 | Item | Status |
 |---|---|
-| OpenAI and Gemini list prices | Not in `ledger/pricing.mjs`: their calls show as "not priced" and do not count toward the monthly limit (the daily limit still applies). Add with their first live runs |
+| OpenAI and Gemini list prices | Not in `ledger/pricing.mjs`: their calls show as "not priced" and do not count toward the monthly limit (the daily limit still applies). Add with their first live runs. *Since 2026-11-13 the AI provider screen, Home and the stream say so ([release plan](release-build-plan.md) §5)* |
 | `probeGrounding` as a separate step, `listModels` for a model picker | Not built. The welcome flow's sample check does the grounded test; models are typed, with the default as placeholder |
-| OpenRouter model capability check | Still open (S2 §4.1): a withdrawn or incapable model surfaces as the provider's own error |
+| OpenRouter model capability check | Still open (S2 §4.1). *Since 2026-11-13 a withdrawn or incapable model ends the session with "cannot run the model …" instead of failing silently ([release plan](release-build-plan.md) §5); the check at save time is Phase 5* |
 | Source tiers in the browser engine | Not ported (§9.1 planned an export of `source_quality.py`) |
 | `llm_openai.py`, restored `llm_gemini.py` for the companion | Not started (marked optional) |
 | Hosted speech | Phase 5 |

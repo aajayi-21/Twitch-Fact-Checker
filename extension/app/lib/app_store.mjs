@@ -33,6 +33,9 @@ const POLL_UP_MS = 15_000;
  * @property {object|null} health - /healthz body
  * @property {object|null} setup - /setup/status body
  * @property {object|null} summary - /stats/summary body
+ * @property {object|null} captureSession - the capture session record the
+ *   popup shows (chrome.storage.session), so screens can say why the last
+ *   session stopped
  */
 
 /** @type {AppState} */
@@ -45,7 +48,11 @@ let state = {
   health: null,
   setup: null,
   summary: null,
+  captureSession: null,
 };
+
+// Written by the service worker; see background/service_worker.js.
+const CAPTURE_SESSION_KEY = "captureSession";
 
 const listeners = new Set();
 
@@ -133,20 +140,25 @@ export const refreshBackend = async () => {
 
 /** Load everything once and keep it fresh. Call once at startup. */
 export const initApp = async () => {
-  const [settings, stored] = await Promise.all([
+  const [settings, stored, sessionStored] = await Promise.all([
     loadSettings(),
     chrome.storage.local.get(ONBOARDING_KEY),
+    chrome.storage.session.get(CAPTURE_SESSION_KEY),
   ]);
   setState({
     ready: true,
     settings,
     onboarding: {consentAt: null, completedAt: null, ...(stored[ONBOARDING_KEY] ?? {})},
+    captureSession: sessionStored[CAPTURE_SESSION_KEY] ?? null,
   });
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area === "sync" && changes.settings) {
       // Another surface (or another device) changed the settings.
       loadSettings().then((latest) => setState({settings: latest}));
+    }
+    if (area === "session" && changes[CAPTURE_SESSION_KEY]) {
+      setState({captureSession: changes[CAPTURE_SESSION_KEY].newValue ?? null});
     }
   });
   document.addEventListener("visibilitychange", () => {

@@ -36,7 +36,9 @@
 
 import {
   ENGINE_MODE,
+  ENGINE_STORAGE_KEY,
   KEYS_STORAGE_KEY,
+  normalizeEngineState,
   normalizeKeys,
   planBrowserEngine,
 } from "../engine/engine_setup.mjs";
@@ -300,6 +302,8 @@ const handleCaptureStart = async (tabId) => {
     wsState: "connecting",
     reconnectAttempt: 0,
     lastError: null,
+    errorDetail: null,
+    warning: null,
     adPaused: false,
   });
   const settings = await loadSettings();
@@ -321,15 +325,22 @@ const handleCaptureStart = async (tabId) => {
       });
       return;
     }
-    // Where the viewer stands against the spending limits. A history that
-    // cannot be read must not stop the session; it starts from zero.
-    const spent = await ledger
-      .loadUsageSince(monthStartIso())
-      .then((usage) => currentSpend(usage))
-      .catch((error) => {
-        console.warn("[fact-checker] could not read this month's usage:", error);
-        return {checksToday: 0, spendThisMonthUsd: 0};
+    // Where the viewer stands against the spending limits. Without it the
+    // limits cannot be applied, so the session does not start: assuming
+    // nothing has been spent could run straight past them.
+    let spent;
+    try {
+      spent = currentSpend(await ledger.loadUsageSince(monthStartIso()));
+    } catch (error) {
+      console.error("[fact-checker] could not read this month's usage:", error);
+      await writeCaptureSession({
+        status: "error",
+        tabId: null,
+        wsState: "closed",
+        lastError: ERR.ERR_SPEND_UNKNOWN,
       });
+      return;
+    }
     browserEngine = {
       gate: plan.gate,
       verify: plan.verify,
@@ -784,11 +795,42 @@ const stopSessionIfKeyRemoved = async (change) => {
   await handleCaptureStop("key_removed");
 };
 
+/**
+ * A spending limit changed in the app. A running browser-engine session
+ * applies it at once (offscreen documents cannot watch storage), so a higher
+ * limit lets a paused session carry on and a lower one takes effect now.
+ */
+const relayBudgetChange = async (change) => {
+  const before = normalizeEngineState(change.oldValue).budgets;
+  const after = normalizeEngineState(change.newValue).budgets;
+  if (JSON.stringify(before) === JSON.stringify(after)) {
+    return;
+  }
+  const stored = await chrome.storage.session.get(SESSION_PROVIDERS_KEY);
+  const browserEngineRunning = (stored[SESSION_PROVIDERS_KEY] ?? []).length > 0;
+  if (!browserEngineRunning || !(await chrome.offscreen.hasDocument())) {
+    return;
+  }
+  try {
+    await chrome.runtime.sendMessage(
+      makeMsg(TARGET.OFFSCREEN, MSG.OFFSCREEN_BUDGETS, {budgets: after})
+    );
+  } catch (error) {
+    // The document can close between hasDocument() and delivery.
+    console.debug("[fact-checker] OFFSCREEN_BUDGETS not delivered:", error);
+  }
+};
+
 // Content scripts run inside web pages: keep them out of storage.local,
 // where the provider keys are.
 protectStorage();
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName === "local" && changes[ENGINE_STORAGE_KEY]) {
+    relayBudgetChange(changes[ENGINE_STORAGE_KEY]).catch((error) => {
+      console.error("[fact-checker] spending-limit relay failed:", error);
+    });
+  }
   if (areaName === "local" && changes[KEYS_STORAGE_KEY]) {
     stopSessionIfKeyRemoved(changes[KEYS_STORAGE_KEY]).catch((error) => {
       console.error("[fact-checker] stopping after key removal failed:", error);
