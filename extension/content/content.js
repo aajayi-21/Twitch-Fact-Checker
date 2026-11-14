@@ -170,6 +170,9 @@
       },
     },
     "kick.com": {
+      // #video-player is the <video> element itself (it used to be a
+      // wrapper div); findMountTarget mounts on its parent, the player box
+      // that also holds Kick's controls.
       playerSelectors: [
         "#video-player",
         "#injected-channel-player",
@@ -274,6 +277,33 @@
     }
   };
 
+  // Replaced elements never render their children: a shadow host appended
+  // inside one is in the DOM but gets no box at all, so the overlay silently
+  // never shows. Platforms move ids between wrappers and media elements
+  // without notice (Kick's #video-player is now the <video> itself).
+  const CHILDLESS_ELEMENT_TAGS = new Set([
+    "VIDEO",
+    "AUDIO",
+    "CANVAS",
+    "IFRAME",
+    "IMG",
+    "EMBED",
+    "OBJECT",
+  ]);
+
+  /**
+   * The element the overlay can live in for a selector match: the match
+   * itself, or — when it is a media/replaced element — its parent, the
+   * player box wrapping it.
+   *
+   * @param {Element} element
+   * @returns {Element|null}
+   */
+  const toMountContainer = (element) =>
+    CHILDLESS_ELEMENT_TAGS.has(element.tagName)
+      ? element.parentElement
+      : element;
+
   /**
    * @returns {Element|null} the mount target, or null when the adapter's
    *   structural guard says the page has no plausible player at all (Kick:
@@ -282,13 +312,14 @@
   const findMountTarget = () => {
     for (const selector of adapter.playerSelectors) {
       const candidate = document.querySelector(selector);
-      if (candidate) {
-        return candidate;
+      const container = candidate && toMountContainer(candidate);
+      if (container) {
+        return container;
       }
     }
     const fallback = adapter.findFallbackTarget?.() ?? null;
     if (fallback) {
-      return fallback;
+      return toMountContainer(fallback) ?? document.body;
     }
     if (adapter.allowsBodyFallback && !adapter.allowsBodyFallback()) {
       return null;
