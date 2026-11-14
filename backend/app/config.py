@@ -26,14 +26,18 @@ SENSITIVITY_THRESHOLDS: dict[str, float] = {"low": 0.75, "medium": 0.55, "high":
 
 _DEFAULT_ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 
-# OpenRouter is the primary provider; these are the shipped model slugs.
-# inception/mercury-2.5-preview: cheap ($0.04/M input) and fast enough for the
-# ~300 gate calls an hour, lists temperature + structured_outputs + reasoning
-# on its endpoint (so strict JSON mode works first time), and produced zero
-# fallback verdicts in production. Override per stage in .env or the options
-# page; slugs are validated against the live catalogue on Apply.
-DEFAULT_OPENROUTER_GATE_MODEL = "inception/mercury-2.5-preview"
-DEFAULT_OPENROUTER_VERIFY_MODEL = "inception/mercury-2.5-preview"
+# OpenRouter model slugs shipped as defaults for both stages.
+# deepseek/deepseek-v4.1-flash-1017 (released 2026-10-17): the newest DeepSeek,
+# $0.038/M input and $0.50/M output at list price, and 43 of its 49 endpoints
+# list temperature + structured_outputs + reasoning (checked 2026-11-13), so
+# strict JSON routes first time under require_parameters. Its family is the
+# one the gate's reasoning-off setting was measured on (see
+# openrouter_gate_reasoning_effort). It replaces inception/mercury-2.5-preview,
+# which OpenRouter withdrew (404). A dated snapshot can be withdrawn too:
+# override per stage in .env or the app; slugs are validated against the live
+# catalogue on Apply.
+DEFAULT_OPENROUTER_GATE_MODEL = "deepseek/deepseek-v4.1-flash-1017"
+DEFAULT_OPENROUTER_VERIFY_MODEL = "deepseek/deepseek-v4.1-flash-1017"
 
 # Anthropic (direct Messages API) is the default provider. Claude Haiku 5.5:
 # fast, $0.10/$0.50 per million tokens, strict JSON output, and Anthropic's
@@ -260,7 +264,7 @@ class Settings(BaseSettings):
     #   exa    (default) — OpenRouter's Exa search, works for EVERY model and
     #          returns uniform url_citation annotations; $0.007/request.
     #   native — the model provider's own search (OpenAI/Google/...); higher
-    #          per-call price, fails on models without one (e.g. mercury).
+    #          per-call price, fails on models without one.
     #   auto   — native when the model has it, Exa otherwise.
     openrouter_web_engine: Literal["exa", "native", "auto"] = "exa"
     # Reasoning-effort cap for the VERIFY call (bounds latency on

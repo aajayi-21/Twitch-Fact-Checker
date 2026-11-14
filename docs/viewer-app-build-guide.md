@@ -225,7 +225,8 @@ the API has moved since — treat them as notes, not code to restore.
   families work through it, at about $0.0075 per fact-check.
 - **The backend's default model there is gone.** `inception/mercury-2.5-preview` was
   withdrawn from OpenRouter; the backend and the extension both need a new default
-  (candidates and timings are in the S2 results).
+  (candidates and timings are in the S2 results). *Resolved 2026-11-13: both now default
+  to `deepseek/deepseek-v4.1-flash-1017` ([release plan](release-build-plan.md)).*
 
 ### 3.6 Credential storage rules
 
@@ -938,6 +939,8 @@ claims and checks them with the viewer's own API key, and there is no backend pr
   follow the engine. The sample check is the "demo mode": one real gate and verify call.
 - **Default OpenRouter model** for this engine is `google/gemini-3.5-flash-lite`; the
   backend's own default is still the withdrawn Mercury model and was not touched.
+  *Since 2026-11-13 both default to `deepseek/deepseek-v4.1-flash-1017`; its e2e run is
+  pending ([release plan](release-build-plan.md), Phase 5).*
 
 *Done means:* a clean Chrome profile with no backend running goes from install to a real
 verdict on a live stream, with each of the four keys.

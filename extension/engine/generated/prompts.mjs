@@ -175,8 +175,8 @@ export const WEAK_EVIDENCE_NOTE = "Retrieved sources did not directly address th
 export const BACKEND_DEFAULTS = Object.freeze({
   "anthropic_model": "claude-haiku-5-5",
   "anthropic_web_max_uses": 2,
-  "openrouter_gate_model": "inception/mercury-2.5-preview",
-  "openrouter_verify_model": "inception/mercury-2.5-preview",
+  "openrouter_gate_model": "deepseek/deepseek-v4.1-flash-1017",
+  "openrouter_verify_model": "deepseek/deepseek-v4.1-flash-1017",
   "openrouter_web_max_results": 5,
   "openrouter_web_engine": "exa"
 });

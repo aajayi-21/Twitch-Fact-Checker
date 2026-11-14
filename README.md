@@ -570,10 +570,11 @@ Messages API (`backend/app/llm_anthropic.py`):
   $0.75–1.50 per hour.
 
 **Alternative provider: OpenRouter.** With `LLM_PROVIDER=openrouter`, both stages
-default to `inception/mercury-2.5-preview`: cheap ($0.04/M input tokens) and fast
-enough for the ~300 gate calls an hour, its endpoint publishes `temperature`,
-`structured_outputs` and `reasoning` support (so strict JSON works on the first
-call), and it produced zero fallback verdicts in production. Change models via
+default to `deepseek/deepseek-v4.1-flash-1017`, the newest DeepSeek: cheap ($0.038/M
+input, $0.50/M output at list price), and nearly all of its endpoints publish
+`temperature`, `structured_outputs` and `reasoning` support, so strict JSON works on
+the first call. The gate runs it with reasoning off. It replaces
+`inception/mercury-2.5-preview`, which OpenRouter withdrew. Change models via
 `OPENROUTER_GATE_MODEL` / `OPENROUTER_VERIFY_MODEL` in `.env` or the app (AI provider → Advanced).
 
 **Optional Jev pre-screen (`JEV_MODE=off|shadow|screen`).** [Jev](https://openrouter.ai/blog/insights/what-is-jev/)
@@ -681,8 +682,8 @@ gate pass times out.
 
 - Web search is billed to your credit balance — $0.007 per fact-check on Exa — **even
   on `:free` models**. A $0-credit account gets 402 errors on verification, so hold a
-  small credit balance. With the mercury default, tokens add roughly $0.03 per
-  streaming hour on top.
+  small credit balance. With the DeepSeek default, tokens add roughly $0.05–0.10 per
+  streaming hour on top (estimated from list prices, not yet measured).
 - Free-variant rate limits: **20 requests/min**, and **50 requests/day** with under $10
   in lifetime credit purchases vs **1,000/day** once you have bought $10+. The gate
   alone makes ~5 calls/min while a stream runs, so a `:free` gate model dies within

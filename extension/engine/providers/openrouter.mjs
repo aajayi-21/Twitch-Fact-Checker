@@ -36,12 +36,12 @@ export const id = "openrouter";
 export const label = "OpenRouter";
 export const keyUrl = "https://openrouter.ai/keys";
 export const hostPermission = `${API_ORIGIN}/*`;
-// Not the backend's default: that model (inception/mercury-2.5-preview) has
-// been withdrawn from OpenRouter and returns 404. Of the three families
-// measured live (docs/spike-results/provider-calls.md) this was the fastest
-// at both stages and got every test claim right; the per-check cost is the
-// search fee either way. Viewers can change it under AI provider.
-const DEFAULT_MODEL = "google/gemini-3.5-flash-lite";
+// The same default as the backend (DEFAULT_OPENROUTER_*_MODEL in
+// backend/app/config.py): the newest DeepSeek, with strict JSON on nearly all
+// of its endpoints. It replaced google/gemini-3.5-flash-lite, which passed the
+// browser-engine e2e twice; this model's own e2e run is still to do
+// (docs/release-build-plan.md, Phase 5). Viewers can change it under AI provider.
+const DEFAULT_MODEL = "deepseek/deepseek-v4.1-flash-1017";
 export const defaultModels = Object.freeze({gate: DEFAULT_MODEL, verify: DEFAULT_MODEL});
 
 const headers = (apiKey) => ({Authorization: `Bearer ${apiKey}`, "X-Title": APP_TITLE});
