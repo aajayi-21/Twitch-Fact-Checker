@@ -41,7 +41,7 @@ export const EngineCard = () => {
     }
   };
   return html`
-    <${Card} title="Where it runs">
+    <${Card} title="Where it runs" id="section-engine">
       <p class="setting-help">
         Either way the audio stays on this computer, and the text of what is said goes to your
         AI provider to be checked. Each has its own API keys. Applies the next time you press

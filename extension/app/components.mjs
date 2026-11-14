@@ -21,14 +21,65 @@ export const Button = ({variant = "secondary", busy = false, disabled = false, c
   </button>
 `;
 
-/** @param {{state: "ok"|"warn"|"bad"|"idle"|"busy", children: any}} props */
-export const StatusPill = ({state, children}) => html`
-  <span class="pill" data-state=${state}><span class="pill-dot" aria-hidden="true"></span>${children}</span>
+/**
+ * A coloured dot and a word. `flat` drops the chip around it, for a status
+ * that sits in a row of facts.
+ *
+ * @param {{state: "ok"|"warn"|"bad"|"idle"|"busy", flat?: boolean, children: any}} props
+ */
+export const StatusPill = ({state, flat = false, children}) => html`
+  <span class=${`pill${flat ? " pill-flat" : ""}`} data-state=${state}
+    ><span class="pill-dot" aria-hidden="true"></span>${children}</span
+  >
 `;
 
-/** @param {{title?: string, aside?: any, children: any, tone?: string}} props */
-export const Card = ({title, aside, tone, children}) => html`
-  <section class="card" data-tone=${tone}>
+/**
+ * The mark: a D built from transcript lines, with the one flagged claim in
+ * the accent colour. Decorative wherever the wordmark or a label sits by it.
+ *
+ * @param {{size?: number}} props - height in CSS pixels
+ */
+export const BrandMark = ({size = 29}) => html`
+  <svg
+    viewBox="34 26 62 76"
+    width=${Math.round((size * 62) / 76)}
+    height=${size}
+    aria-hidden="true"
+    focusable="false"
+  >
+    <g class="logo-ink" stroke-width="9">
+      <path d="M40.5 34.5H70.4" />
+      <path d="M40.5 49.25H84.1" />
+      <path d="M40.5 64H87.5" />
+      <path class="logo-accent" d="M40.5 78.75H84.1" />
+      <path d="M40.5 93.5H70.4" />
+    </g>
+  </svg>
+`;
+
+/**
+ * The wordmark "doxa", drawn rather than typeset: three round bowls and an
+ * x whose rising stroke overshoots like a check mark, in the accent colour.
+ *
+ * @param {{size?: number}} props - height in CSS pixels
+ */
+export const BrandWordmark = ({size = 24}) => html`
+  <svg viewBox="0 13 229 80" width=${Math.round((size * 229) / 80)} height=${size} role="img" aria-label="Doxa">
+    <g class="logo-ink" stroke-width="9">
+      <circle cx="30" cy="64" r="20" />
+      <path d="M50 22V84" />
+      <circle cx="89" cy="64" r="20" />
+      <path d="M126 44L162 84" />
+      <path class="logo-accent" d="M126 84L175 30" />
+      <circle cx="199" cy="64" r="20" />
+      <path d="M219 44V84" />
+    </g>
+  </svg>
+`;
+
+/** @param {{title?: string, aside?: any, children: any, tone?: string, id?: string}} props */
+export const Card = ({title, aside, tone, id, children}) => html`
+  <section class="card" data-tone=${tone} id=${id}>
     ${title || aside
       ? html`<header class="card-header">
           ${title ? html`<h2 class="card-title">${title}</h2>` : null}
@@ -53,9 +104,10 @@ export const Notice = ({tone, children}) => html`
  * @param {{value: string, label: string, hint?: string}[]} props.options
  * @param {string} props.value
  * @param {(value: string) => void} props.onChange
+ * @param {boolean} [props.compact] - a short row of plain options, no hints
  */
-export const Segmented = ({name, label, options, value, onChange}) => html`
-  <div class="segmented" role="radiogroup" aria-label=${label}>
+export const Segmented = ({name, label, options, value, onChange, compact = false}) => html`
+  <div class=${`segmented${compact ? " segmented-compact" : ""}`} role="radiogroup" aria-label=${label}>
     ${options.map(
       (option) => html`
         <label class="segment" key=${option.value}>

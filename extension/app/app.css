@@ -1,37 +1,44 @@
 /*
- * App stylesheet. Visual language shared with popup/popup.css and the
- * stream overlay: dark surfaces, one purple accent, and the four verdict
- * colours used consistently wherever a label appears.
+ * App stylesheet: neutral graphite surfaces, the four verdict colours used
+ * consistently wherever a label appears, and the brand purple kept as an
+ * accent — the logo, the current tab, a selected control. Buttons and links
+ * stay neutral.
  */
 
 :root {
   color-scheme: dark;
 
-  --bg: #0e0e14;
-  --surface: #171720;
-  --card: #1b1b26;
-  --field: #12121a;
-  --border: rgba(255, 255, 255, 0.09);
-  --border-strong: rgba(255, 255, 255, 0.18);
+  --bg: #0d0d0e;
+  --surface: #131314;
+  --card: #161617;
+  --raised: #1c1c1e;
+  --field: #101011;
+  --hairline: #232325;
+  --border: #262628;
+  --border-strong: #3a3a3d;
 
-  --text: #efeff4;
-  --text-dim: #a9a9bd;
-  --text-faint: #7d7d93;
+  --text: #f0f0f1;
+  --text-dim: #a8a8ad;
+  --text-faint: #86868c;
 
   --accent: #9147ff;
-  --accent-hover: #a36bff;
+  --accent-hover: #a970ff;
   --accent-soft: rgba(145, 71, 255, 0.16);
-  --link: #bda4ff;
+  --link: var(--text);
 
   --green: #34d27b;
   --amber: #f5b547;
   --red: #ff6b6b;
-  --grey: #8b8fa3;
+  --grey: #9a9aa0;
   --blue: #6aa9ff;
+  /* Data marks that carry magnitude, not meaning: chart bars and meters. */
+  --mark: #6a6a70;
+  --mark-strong: #8a8a90;
 
-  --radius: 12px;
-  --radius-small: 8px;
-  --gap: 16px;
+  --radius: 14px;
+  --radius-small: 9px;
+  --gap: 20px;
+  --page-width: 1120px;
   --font: "Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", sans-serif;
   --mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
 }
@@ -78,7 +85,7 @@ a {
 }
 
 a:hover {
-  color: #d3c2ff;
+  color: #fff;
 }
 
 code {
@@ -124,79 +131,116 @@ main:focus {
 /* ---------------------------------------------------------------- layout */
 
 .layout {
-  display: grid;
-  grid-template-columns: 232px minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   min-height: 100vh;
 }
 
-.sidebar {
-  position: sticky;
-  top: 0;
-  height: 100vh;
+/* The bar, the page and the footer share one centred column. */
+.topbar-inner,
+.content,
+.footer-inner {
+  width: 100%;
+  max-width: var(--page-width);
+  margin-inline: auto;
+  padding-inline: 24px;
+}
+
+.topbar {
+  border-bottom: 1px solid var(--hairline);
+}
+
+.topbar-inner {
   display: flex;
-  flex-direction: column;
-  gap: 24px;
-  padding: 24px 16px;
-  background: var(--surface);
-  border-right: 1px solid var(--border);
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 32px;
+  min-height: 64px;
 }
 
 .brand {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 0 8px;
+  gap: 12px;
+  min-height: 44px;
   color: var(--text);
   text-decoration: none;
 }
 
-.brand img {
-  border-radius: 7px;
+.brand svg {
+  display: block;
+  flex: none;
 }
 
-.brand-name {
-  font-weight: 700;
-  font-size: 13.5px;
-  line-height: 1.25;
-  letter-spacing: 0.01em;
+/* The mark and the wordmark are drawn in ink, with one stroke each — the
+   flagged transcript line, the rising arm of the x — in the accent. */
+.logo-ink {
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+}
+
+.logo-accent {
+  stroke: var(--accent);
 }
 
 .nav {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  flex-wrap: wrap;
+  flex-grow: 1;
+  justify-content: center;
+  gap: 4px;
 }
 
 .nav-link {
-  display: block;
-  padding: 9px 12px;
-  border-radius: var(--radius-small);
+  display: flex;
+  align-items: center;
+  height: 64px;
+  padding: 0 14px;
   color: var(--text-dim);
-  font-weight: 600;
+  font-weight: 500;
   text-decoration: none;
 }
 
 .nav-link:hover {
-  background: rgba(255, 255, 255, 0.05);
   color: var(--text);
 }
 
 .nav-link[aria-current="page"] {
-  background: var(--accent-soft);
+  box-shadow: inset 0 -2px 0 var(--accent);
   color: var(--text);
+  font-weight: 600;
 }
 
-.sidebar-footer {
-  margin-top: auto;
+.topbar .pill {
+  padding: 5px 12px 5px 10px;
+  border: 1px solid var(--border);
+  background: none;
+}
+
+.content {
+  flex-grow: 1;
+  padding-block: 40px 32px;
+}
+
+.footer {
+  border-top: 1px solid var(--hairline);
+}
+
+.footer-inner {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 10px;
-  padding: 0 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 4px 24px;
+  padding-block: 8px;
   font-size: 12.5px;
 }
 
-.sidebar-link {
+.footer-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
   color: var(--text-dim);
 }
 
@@ -204,16 +248,11 @@ main:focus {
   color: var(--text-faint);
 }
 
-.content {
-  padding: 40px clamp(20px, 5vw, 56px) 64px;
-}
-
 .page,
 .wizard {
   display: flex;
   flex-direction: column;
   gap: var(--gap);
-  max-width: 780px;
 }
 
 .welcome-main {
@@ -231,10 +270,19 @@ main:focus {
   margin-bottom: 4px;
 }
 
+/* A header with a control on the right: Usage's period. */
+.page-header-split {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
 .page-title {
-  font-size: 24px;
-  font-weight: 700;
-  letter-spacing: -0.01em;
+  font-size: 28px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
   line-height: 1.2;
 }
 
@@ -248,13 +296,67 @@ main:focus {
   font-weight: 600;
 }
 
+/* Main column and a narrower rail beside it; the rail drops below when the
+   window is too narrow for both. */
+.split {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--gap);
+}
+
+.split-main {
+  flex: 999 1 560px;
+  min-width: 0;
+}
+
+.split-side {
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
+.split-main,
+.split-side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+}
+
+/* Settings: a list of the page's sections beside the sections themselves. */
+.section-index {
+  flex: 1 1 180px;
+  display: flex;
+  flex-direction: column;
+}
+
+.section-index-link {
+  min-height: 40px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--radius-small);
+  background: none;
+  color: var(--text-dim);
+  font: 13.5px var(--font);
+  text-align: left;
+  cursor: pointer;
+}
+
+.section-index-link:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text);
+}
+
+.card {
+  scroll-margin-top: 16px;
+}
+
 /* ------------------------------------------------------------------ cards */
 
 .card {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding: 20px;
+  padding: 20px 24px;
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -268,8 +370,17 @@ main:focus {
 }
 
 .card-title {
-  font-size: 15px;
-  font-weight: 700;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+/* A small caps label above a block of figures. */
+.eyebrow {
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .card-line {
@@ -278,7 +389,8 @@ main:focus {
 
 .card-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
+  align-items: start;
   gap: var(--gap);
 }
 
@@ -299,6 +411,12 @@ main:focus {
   font-size: 12.5px;
   font-weight: 600;
   white-space: nowrap;
+}
+
+/* A status with no chip around it: a dot and a word in a row of facts. */
+.pill-flat {
+  padding: 0;
+  background: none;
 }
 
 .pill-dot {
@@ -337,24 +455,23 @@ main:focus {
   padding: 11px 14px;
   border-radius: var(--radius-small);
   border: 1px solid var(--border);
-  border-left-width: 3px;
   background: rgba(255, 255, 255, 0.03);
 }
 
 .notice[data-tone="info"] {
-  border-left-color: var(--blue);
+  border-color: color-mix(in srgb, var(--blue) 45%, transparent);
 }
 
 .notice[data-tone="success"] {
-  border-left-color: var(--green);
+  border-color: color-mix(in srgb, var(--green) 45%, transparent);
 }
 
 .notice[data-tone="warn"] {
-  border-left-color: var(--amber);
+  border-color: color-mix(in srgb, var(--amber) 45%, transparent);
 }
 
 .notice[data-tone="error"] {
-  border-left-color: var(--red);
+  border-color: color-mix(in srgb, var(--red) 45%, transparent);
 }
 
 /* ---------------------------------------------------------------- buttons */
@@ -364,7 +481,7 @@ main:focus {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  min-height: 36px;
+  min-height: 40px;
   padding: 7px 16px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-small);
@@ -379,14 +496,19 @@ main:focus {
 }
 
 .button-primary {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: #fff;
+  border-color: var(--text);
+  background: var(--text);
+  color: var(--bg);
 }
 
 .button-primary:hover:not(:disabled) {
-  border-color: var(--accent-hover);
-  background: var(--accent-hover);
+  border-color: #fff;
+  background: #fff;
+}
+
+.button-primary .spinner {
+  border-color: rgba(13, 13, 14, 0.25);
+  border-top-color: var(--bg);
 }
 
 .button-ghost {
@@ -439,7 +561,7 @@ input[type="password"],
 input[type="number"],
 select {
   width: 100%;
-  min-height: 36px;
+  min-height: 40px;
   padding: 7px 11px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-small);
@@ -462,9 +584,10 @@ input[aria-invalid="true"] {
   border-color: var(--red);
 }
 
+/* Ticked boxes are ink, not purple: the accent is kept for selection. */
 input[type="checkbox"],
 input[type="radio"] {
-  accent-color: var(--accent);
+  accent-color: var(--text);
 }
 
 input.input-number {
@@ -503,6 +626,7 @@ input.input-number {
 .key-reveal {
   flex-shrink: 0;
   min-width: 64px;
+  min-height: 40px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-small);
   background: transparent;
@@ -596,8 +720,70 @@ input.input-number {
 .segment input:checked + .segment-body,
 .choice input:checked + .choice-body,
 .corner input:checked + .corner-body {
-  border-color: var(--accent);
-  background: var(--accent-soft);
+  border-color: #d6d6da;
+  background: var(--raised);
+}
+
+/* The radio itself: a ring that fills with the accent when chosen. */
+.segment-body,
+.choice-body {
+  position: relative;
+  padding-left: 40px;
+}
+
+.segment-body::before,
+.choice-body::before {
+  content: "";
+  position: absolute;
+  top: 12px;
+  left: 13px;
+  width: 16px;
+  height: 16px;
+  border: 1.5px solid var(--text-faint);
+  border-radius: 50%;
+}
+
+.segment input:checked + .segment-body::before,
+.choice input:checked + .choice-body::before {
+  border: 5px solid var(--accent);
+  background: #fff;
+}
+
+/* A short row of plain options, for a choice that needs no explaining. */
+.segmented-compact {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--card);
+}
+
+.segmented-compact .segment-body {
+  justify-content: center;
+  min-height: 36px;
+  padding: 0 16px;
+  border: 0;
+  background: none;
+  color: var(--text-dim);
+}
+
+.segmented-compact .segment-body::before {
+  content: none;
+}
+
+.segmented-compact .segment-label {
+  font-weight: 500;
+}
+
+.segmented-compact .segment input:checked + .segment-body {
+  background: #2c2c2f;
+  color: var(--text);
+}
+
+.segmented-compact .segment input:checked + .segment-body .segment-label {
+  font-weight: 600;
 }
 
 .segment input:focus-visible + .segment-body,
@@ -650,7 +836,7 @@ input.input-number {
   width: 46px;
   height: 28px;
   border-radius: 4px;
-  background: #2a2a3a;
+  background: #2c2c2f;
 }
 
 .corner-preview::after {
@@ -659,7 +845,11 @@ input.input-number {
   width: 14px;
   height: 8px;
   border-radius: 2px;
-  background: var(--accent-hover);
+  background: var(--mark);
+}
+
+.corner input:checked + .corner-body .corner-preview::after {
+  background: var(--accent);
 }
 
 .corner-preview[data-corner="top-left"]::after {
@@ -700,7 +890,7 @@ input.input-number {
   height: 24px;
   padding: 3px;
   border-radius: 999px;
-  background: #3a3a4d;
+  background: var(--border-strong);
   transition: background 120ms ease;
 }
 
@@ -771,77 +961,165 @@ input.input-number {
 
 /* ------------------------------------------------------------ home stats */
 
+/* A row of headline figures divided by hairlines. */
+.stat-card {
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.stat-card-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 24px 0;
+  color: var(--text-faint);
+  font-size: 12.5px;
+}
+
 .stat-row {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px 0;
+  padding: 12px 0 20px;
+}
+
+.stat-card-header + .stat-row {
+  padding-top: 12px;
+}
+
+.stat-card > .stat-row:first-child {
+  padding-top: 20px;
 }
 
 .stat {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  padding: 0 24px;
+}
+
+.stat + .stat {
+  border-left: 1px solid var(--border);
 }
 
 .stat-value {
-  font-size: 26px;
-  font-weight: 700;
+  font-size: 38px;
+  font-weight: 550;
   font-variant-numeric: tabular-nums;
-  line-height: 1.15;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
 }
 
 .stat-label {
   color: var(--text-dim);
+  font-size: 13px;
+}
+
+.stat-note {
+  padding: 12px 24px;
+  border-top: 1px solid var(--hairline);
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+/* Rows of facts: what it is on the left, how it is doing on the right. */
+.fact-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Name and status share the first line; the value gets the full width. */
+.fact-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  align-items: center;
+  gap: 2px 12px;
+  padding: 12px 0;
+  border-top: 1px solid var(--hairline);
+}
+
+.fact-row:last-child {
+  padding-bottom: 0;
+}
+
+.fact-name {
+  color: var(--text-faint);
   font-size: 12.5px;
 }
 
-.label-bars {
+.fact-value {
+  grid-column: 1 / -1;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.fact-row .fact-sub {
+  color: var(--text-dim);
+  font-size: 12.5px;
+  font-weight: 400;
+}
+
+/* All verdicts as one bar split by label, with the counts listed below:
+   the label is always named, so colour never carries it alone. */
+.label-split {
   display: flex;
-  flex-direction: column;
-  gap: 8px;
+  gap: 2px;
+  height: 10px;
 }
 
-.label-bar {
-  display: grid;
-  grid-template-columns: 96px minmax(0, 1fr) 48px;
-  align-items: center;
-  gap: 12px;
-}
-
-.label-bar-track {
-  height: 8px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.07);
-  overflow: hidden;
-}
-
-.label-bar-fill {
-  display: block;
-  height: 100%;
-  border-radius: 999px;
+.label-split-part {
+  min-width: 4px;
+  border-radius: 3px;
   background: var(--label-color);
 }
 
-.label-bar-count {
-  text-align: right;
-  color: var(--text-dim);
+.label-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.label-legend-row {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) max-content 44px;
+  align-items: center;
+  gap: 10px;
   font-variant-numeric: tabular-nums;
+}
+
+.label-legend-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  background: var(--label-color);
+}
+
+.label-legend-share {
+  color: var(--text-faint);
+  text-align: right;
 }
 
 [data-label="TRUE"] {
   --label-color: var(--green);
+  --label-text: #5fe09a;
 }
 
 [data-label="FALSE"] {
   --label-color: var(--red);
+  --label-text: #ff8a8a;
 }
 
 [data-label="MISLEADING"] {
   --label-color: var(--amber);
+  --label-text: #f7c263;
 }
 
 [data-label="UNVERIFIED"] {
   --label-color: var(--grey);
+  --label-text: #b9b9bf;
 }
 
 /* -------------------------------------------------------------- welcome */
@@ -929,8 +1207,8 @@ input.input-number {
 
 .sample {
   padding: 12px 16px;
-  border-left: 3px solid var(--accent);
-  border-radius: 0 var(--radius-small) var(--radius-small) 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
   background: var(--field);
   font-size: 15px;
 }
@@ -941,7 +1219,6 @@ input.input-number {
   gap: 8px;
   padding: 14px 16px;
   border: 1px solid var(--border);
-  border-left: 4px solid var(--label-color);
   border-radius: var(--radius-small);
   background: var(--field);
 }
@@ -953,14 +1230,16 @@ input.input-number {
   gap: 10px;
 }
 
+/* Tinted, not solid: a page of results stays calm, and the word says it. */
 .verdict-label {
-  padding: 2px 9px;
+  justify-self: start;
+  padding: 2px 8px;
   border-radius: 5px;
-  background: var(--label-color);
-  color: #101018;
-  font-size: 12px;
-  font-weight: 800;
-  letter-spacing: 0.04em;
+  background: color-mix(in srgb, var(--label-color) 15%, transparent);
+  color: var(--label-text);
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
 }
 
 .verdict-claim {
@@ -1014,10 +1293,6 @@ input.input-number {
 
 /* ------------------------------------------------------- history & usage */
 
-.page-wide {
-  max-width: 1180px;
-}
-
 .button-danger {
   border-color: var(--red);
   background: rgba(255, 107, 107, 0.14);
@@ -1027,7 +1302,7 @@ input.input-number {
 input[type="search"],
 input[type="date"] {
   width: 100%;
-  min-height: 36px;
+  min-height: 40px;
   padding: 7px 11px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-small);
@@ -1046,6 +1321,7 @@ input[type="date"] {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  min-height: 44px;
   margin-bottom: -1px;
   padding: 9px 14px;
   border: 0;
@@ -1147,8 +1423,8 @@ input[type="date"] {
 }
 
 .filter-chip {
-  border-color: var(--accent);
-  background: var(--accent-soft);
+  border-color: var(--text-dim);
+  background: var(--raised);
   color: var(--text);
 }
 
@@ -1178,24 +1454,36 @@ input[type="date"] {
   list-style: none;
 }
 
+/* One list in one card, rows divided by hairlines. */
 .result-list {
-  gap: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
 }
 
-.result {
-  border: 1px solid var(--border);
-  border-left: 4px solid var(--label-color);
-  border-radius: var(--radius-small);
-  background: var(--card);
+.result + .result {
+  border-top: 1px solid var(--hairline);
+}
+
+.result[data-expanded="true"] {
+  background: #1a1a1c;
+}
+
+.result-chevron {
+  grid-row: 1;
+  grid-column: 3;
+  align-self: center;
+  color: var(--text-faint);
 }
 
 .result-summary {
   display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
+  grid-template-columns: 108px minmax(0, 1fr) 18px;
   align-items: baseline;
-  gap: 4px 12px;
+  gap: 4px 16px;
   width: 100%;
-  padding: 12px 14px;
+  padding: 14px 24px;
   border: 0;
   background: none;
   color: inherit;
@@ -1216,19 +1504,44 @@ input[type="date"] {
 
 .result-meta {
   grid-column: 2;
-  color: var(--text-dim);
+  color: var(--text-faint);
   font-size: 12.5px;
 }
 
+/* Indented to line up under the claim, past the verdict column. */
 .result-detail {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 4px 14px 14px;
+  gap: 16px;
+  padding: 4px 24px 12px 148px;
+}
+
+/* The answer and its sources, with the facts about the check beside them. */
+.result-detail-main {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px 40px;
+}
+
+.result-body {
+  flex: 999 1 380px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.result-detail .facts {
+  flex: 1 1 220px;
+  align-content: start;
+  padding-top: 0;
+  border-top: 0;
 }
 
 .result-explanation {
-  max-width: 80ch;
+  max-width: 62ch;
+  font-size: 15px;
+  line-height: 1.6;
 }
 
 .source-list {
@@ -1256,7 +1569,10 @@ input[type="date"] {
 }
 
 .rating-button {
-  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
   padding: 4px 12px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-small);
@@ -1267,20 +1583,27 @@ input[type="date"] {
 }
 
 .rating-button[aria-pressed="true"] {
-  border-color: var(--accent);
-  background: var(--accent-soft);
+  border-color: var(--text);
+  background: var(--raised);
   color: var(--text);
-}
-
-.latest-list {
-  gap: 10px;
 }
 
 .latest {
   display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
+  grid-template-columns: 108px minmax(0, 1fr);
   align-items: baseline;
-  gap: 2px 12px;
+  gap: 4px 16px;
+  padding: 14px 0;
+  border-top: 1px solid var(--hairline);
+}
+
+.latest:last-child {
+  padding-bottom: 4px;
+}
+
+.latest-claim {
+  font-size: 15px;
+  font-weight: 500;
 }
 
 .empty {
@@ -1425,12 +1748,26 @@ th[aria-sort] .sort-button {
   font: 600 11.5px var(--font);
 }
 
+/* Every day is the same quiet mark; only today takes the accent. */
 .chart-bar {
-  fill: var(--accent);
+  fill: var(--mark);
 }
 
 .chart-bar[data-active="true"] {
+  fill: var(--mark-strong);
+}
+
+.chart-bar[data-today="true"] {
+  fill: var(--accent);
+}
+
+.chart-bar[data-today="true"][data-active="true"] {
   fill: var(--accent-hover);
+}
+
+.chart-axis[data-today="true"] {
+  fill: var(--text);
+  font-weight: 600;
 }
 
 .chart-hit {
@@ -1439,7 +1776,7 @@ th[aria-sort] .sort-button {
 }
 
 .chart-hit:focus-visible {
-  stroke: var(--link);
+  stroke: var(--border-strong);
   stroke-width: 1.5;
 }
 
@@ -1514,7 +1851,7 @@ th[aria-sort] .sort-button {
   min-width: 2px;
   height: 100%;
   border-radius: 3px;
-  background: var(--accent);
+  background: var(--mark-strong);
 }
 
 .meter-sub {
@@ -1522,6 +1859,87 @@ th[aria-sort] .sort-button {
   grid-row: 3;
   color: var(--text-dim);
   font-size: 12px;
+}
+
+/* -------------------------------------------------------------- providers */
+
+/* The providers as rows of one card: what it is, how it stands, what you
+   can do. A row's form or notice opens underneath, full width. */
+.provider-list {
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.provider {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 24px;
+  padding: 18px 24px;
+}
+
+.provider + .provider {
+  border-top: 1px solid var(--hairline);
+}
+
+.provider-head {
+  flex: 999 1 280px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.provider-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Marks the provider that is doing the checking right now. */
+.in-use {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 1px 9px 1px 7px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.in-use::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.provider-status {
+  flex: 1 1 150px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.provider-key {
+  color: var(--text-faint);
+  font-size: 13px;
+}
+
+.provider-actions {
+  flex: 0 1 250px;
+}
+
+.provider-extra {
+  flex: 1 1 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 /* ----------------------------------------------------------------- speech */
@@ -1567,39 +1985,36 @@ th[aria-sort] .sort-button {
 /* ---------------------------------------------------------- small screens */
 
 @media (max-width: 760px) {
-  .layout {
-    grid-template-columns: minmax(0, 1fr);
+  .topbar-inner {
+    column-gap: 16px;
+    padding: 8px 16px 0;
   }
 
-  .sidebar {
-    position: static;
-    height: auto;
-    flex-direction: row;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 12px;
-    padding: 12px 16px;
-    border-right: 0;
-    border-bottom: 1px solid var(--border);
-  }
-
+  /* The sections drop to their own line and scroll sideways if they must. */
   .nav {
-    flex-direction: row;
+    order: 3;
+    flex-basis: 100%;
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    overflow-x: auto;
+    scrollbar-width: none;
   }
 
-  .sidebar-footer {
-    margin: 0 0 0 auto;
-    flex-direction: row;
-    align-items: center;
+  .nav-link {
+    height: 44px;
+    white-space: nowrap;
   }
 
-  .version,
-  .sidebar-link {
-    display: none;
+  .topbar .pill {
+    margin-left: auto;
   }
 
   .content {
-    padding: 24px 16px 48px;
+    padding: 24px 16px 32px;
+  }
+
+  .footer-inner {
+    padding-inline: 16px;
   }
 
   .setting-row {
@@ -1611,9 +2026,22 @@ th[aria-sort] .sort-button {
     min-width: 0;
   }
 
-  .segmented,
+  .segmented:not(.segmented-compact),
   .wizard-steps {
     grid-auto-flow: row;
+  }
+
+  .stat + .stat {
+    border-left: 0;
+  }
+
+  .result-summary {
+    grid-template-columns: max-content minmax(0, 1fr) 18px;
+    padding-inline: 16px;
+  }
+
+  .result-detail {
+    padding: 4px 16px 12px;
   }
 }
 

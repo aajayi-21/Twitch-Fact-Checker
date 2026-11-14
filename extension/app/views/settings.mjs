@@ -61,13 +61,53 @@ const RETENTION_OPTIONS = Object.freeze([
 
 const SAVED_NOTE_MS = 1800;
 
+/**
+ * The page's sections, in order, for the list beside them. The two that
+ * depend on in-browser capture are listed only where their cards exist.
+ */
+const SECTIONS = Object.freeze(
+  [
+    HAS_OFFSCREEN_CAPTURE ? ["section-engine", "Where it runs"] : null,
+    ["section-checked", "What gets checked"],
+    ["section-verdicts", "How verdicts appear"],
+    HAS_OFFSCREEN_CAPTURE ? ["section-speech", "Speech recognition"] : null,
+    ["section-data", "Your data"],
+    ["section-advanced", "Advanced"],
+  ].filter(Boolean)
+);
+
+/**
+ * Scrolls to a section. Buttons rather than #links: the address fragment
+ * is the app's route, so a link to an element id would navigate away.
+ */
+const SectionIndex = () => html`
+  <nav class="section-index" aria-label="On this page">
+    ${SECTIONS.map(
+      ([id, label]) => html`
+        <button
+          key=${id}
+          type="button"
+          class="section-index-link"
+          onClick=${() => {
+            const section = document.getElementById(id);
+            section?.scrollIntoView({block: "start"});
+            section?.querySelector("input, select, button")?.focus({preventScroll: true});
+          }}
+        >
+          ${label}
+        </button>
+      `
+    )}
+  </nav>
+`;
+
 /** History kept on this device: how long, and getting it in and out. */
 const DataCard = ({settings, save}) => {
   const ledger = useLedger();
   const [deleted, setDeleted] = useState(false);
   const empty = ledger.sessions.length === 0 && ledger.verdicts.length === 0;
   return html`
-    <${Card} title="Your data">
+    <${Card} title="Your data" id="section-data">
       <p class="setting-help">
         Your history — sessions, claims, results, ratings and usage — is stored in this browser
         and nowhere else.
@@ -175,9 +215,12 @@ export const SettingsView = () => {
       </header>
       ${saveError ? html`<${Notice} tone="error">${saveError}<//>` : null}
 
+      <div class="split">
+        <${SectionIndex} />
+        <div class="split-main">
       <${EngineCard} />
 
-      <${Card} title="What gets checked">
+      <${Card} title="What gets checked" id="section-checked">
         <${SettingRow}
           stacked
           label="Sensitivity"
@@ -227,7 +270,7 @@ export const SettingsView = () => {
         <//>
       <//>
 
-      <${Card} title="How verdicts appear">
+      <${Card} title="How verdicts appear" id="section-verdicts">
         <${SettingRow} stacked label="Position over the player" help="Applies immediately.">
           <div class="corner-grid" role="radiogroup" aria-label="Verdict position">
             ${POSITIONS.map(
@@ -288,7 +331,7 @@ export const SettingsView = () => {
 
       <${DataCard} settings=${settings} save=${save} />
 
-      <${Card} title="Advanced">
+      <${Card} title="Advanced" id="section-advanced">
         <${SettingRow}
           label="Check on-screen claims (experimental)"
           htmlFor="capture-video"
@@ -333,6 +376,8 @@ export const SettingsView = () => {
             : null}
         <//>
       <//>
+        </div>
+      </div>
     </div>
   `;
 };

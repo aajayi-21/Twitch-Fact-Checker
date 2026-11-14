@@ -424,7 +424,7 @@ const historyAndUsageChecks = async ({chrome, page, app, appUrl, fake, screensho
     "opening a result shows its explanation, source, model and timing",
     detail.includes("Source 0") && detail.includes("anthropic · claude-haiku-5-5") && /Took\s+2\.0 s/.test(detail)
   );
-  await app.click("👎 Wrong");
+  await app.click("Wrong");
   await app.waitForText("It should have been");
   await app.select(".result-actions select", "TRUE");
   await pause(300);
@@ -831,7 +831,7 @@ const main = async () => {
       console.log("\nHome");
       const home = await app.text();
       check("shows the connected provider and model", home.includes("Anthropic (claude-haiku-5-5)"));
-      check("sidebar reports ready", home.includes("Ready to check"));
+      check("the top bar reports ready", home.includes("Ready to check"));
       check(
         "with an empty history, offers to import what the backend holds",
         home.includes("Bring your past results across") && home.includes("5 earlier sessions")

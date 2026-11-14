@@ -125,6 +125,8 @@ const VerdictDetail = ({verdict, feedback}) => {
 
   return html`
     <div class="result-detail" id=${`detail-${verdict.id}`}>
+      <div class="result-detail-main">
+      <div class="result-body">
       <p class="result-explanation">${verdict.explanation || "No explanation was recorded."}</p>
       ${verdict.sources.length > 0
         ? html`<ul class="source-list">
@@ -142,6 +144,7 @@ const VerdictDetail = ({verdict, feedback}) => {
             )}
           </ul>`
         : html`<p class="muted">No sources — which is why a result like this is left Unverified.</p>`}
+      </div>
       <dl class="facts">
         ${verdict.stream_url
           ? html`<dt>Said in</dt>
@@ -169,6 +172,7 @@ const VerdictDetail = ({verdict, feedback}) => {
               <dd>The provider's structured answer failed; this came from its fallback path.</dd>`
           : null}
       </dl>
+      </div>
       <div class="result-actions">
         <span class="rating" role="group" aria-label="Was this result right?">
           <button
@@ -177,7 +181,7 @@ const VerdictDetail = ({verdict, feedback}) => {
             aria-pressed=${rating === "up" ? "true" : "false"}
             onClick=${() => rate("up")}
           >
-            👍 Right
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5 9-10" /></svg>Right
           </button>
           <button
             type="button"
@@ -185,7 +189,7 @@ const VerdictDetail = ({verdict, feedback}) => {
             aria-pressed=${rating === "down" ? "true" : "false"}
             onClick=${() => rate("down", feedback?.corrected_label ?? null)}
           >
-            👎 Wrong
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>Wrong
           </button>
         </span>
         ${rating === "down"
@@ -217,7 +221,7 @@ const VerdictDetail = ({verdict, feedback}) => {
 };
 
 const VerdictRow = ({verdict, feedback, expanded, onToggle}) => html`
-  <li class="result" data-label=${verdict.label}>
+  <li class="result" data-label=${verdict.label} data-expanded=${expanded ? "true" : undefined}>
     <button
       type="button"
       class="result-summary"
@@ -232,8 +236,22 @@ const VerdictRow = ({verdict, feedback, expanded, onToggle}) => html`
           ? `${verdict.channel_name ?? verdict.channel_id} · ${platformLabel(verdict.platform)}`
           : platformLabel(verdict.platform)}
         ${" · "}${formatDateTime(verdict.checked_at)}
-        ${feedback ? (feedback.rating === "up" ? " · 👍" : " · 👎") : ""}
+        ${feedback ? (feedback.rating === "up" ? " · rated right" : " · rated wrong") : ""}
       </span>
+      <svg
+        class="result-chevron"
+        viewBox="0 0 24 24"
+        width="18"
+        height="18"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
+      >
+        <path d=${expanded ? "M6 15l6-6 6 6" : "M6 9l6 6 6-6"} />
+      </svg>
     </button>
     ${expanded ? html`<${VerdictDetail} verdict=${verdict} feedback=${feedback} />` : null}
   </li>
@@ -804,7 +822,7 @@ export const HistoryView = () => {
   const empty = ledger.sessions.length === 0 && ledger.verdicts.length === 0;
 
   return html`
-    <div class="page page-wide">
+    <div class="page">
       <header class="page-header">
         <h1 class="page-title">History</h1>
         <p class="page-subtitle">

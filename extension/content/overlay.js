@@ -1,5 +1,5 @@
 /**
- * FactCheckOverlay — the on-stream UI for the Live Stream Fact-Checker.
+ * FactCheckOverlay — the on-stream UI for Doxa, the live stream fact-checker.
  *
  * CLASSIC (non-module) content script, loaded BEFORE content/content.js via
  * manifest order; it defines the global FactCheckOverlay class that

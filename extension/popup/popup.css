@@ -1,8 +1,13 @@
+/* Shares the app's look (app/app.css): neutral graphite, with the brand
+   purple kept as an accent — the logo and the focus ring. */
 :root {
-  --bg: #0e0e14;
-  --card: #1b1b26;
-  --text: #efeff4;
-  --text-dim: #a3a3b8;
+  color-scheme: dark;
+  --bg: #0d0d0e;
+  --card: #161617;
+  --border: #262628;
+  --border-strong: #3a3a3d;
+  --text: #f0f0f1;
+  --text-dim: #a8a8ad;
   --accent: #9147ff;
   --accent-hover: #a970ff;
   --green: #22c55e;
@@ -41,14 +46,26 @@ body {
 }
 
 .popup-logo {
-  border-radius: 7px;
   flex-shrink: 0;
 }
 
 .popup-title {
-  font-size: 15px;
-  font-weight: 700;
-  letter-spacing: 0.01em;
+  line-height: 0;
+  margin-bottom: 3px;
+}
+
+.popup-title svg {
+  display: block;
+}
+
+.logo-ink {
+  fill: none;
+  stroke: var(--text);
+  stroke-linecap: round;
+}
+
+.logo-accent {
+  stroke: var(--accent);
 }
 
 .backend-line {
@@ -69,7 +86,7 @@ body {
   align-items: center;
   gap: 10px;
   background: var(--card);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border);
   border-radius: 10px;
   padding: 12px 14px;
 }
@@ -122,7 +139,7 @@ body {
   justify-content: space-between;
   gap: 8px;
   background: var(--card);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border);
   border-radius: 10px;
   padding: 8px 14px;
 }
@@ -136,19 +153,20 @@ body {
   appearance: none;
   border: none;
   background: transparent;
-  color: var(--accent-hover);
+  color: var(--text);
   font: inherit;
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
   cursor: pointer;
   padding: 2px 6px;
   border-radius: 6px;
-  transition: background 120ms ease, color 120ms ease;
+  transition: background 120ms ease;
 }
 
 .topics-edit:hover {
-  color: #e5d7ff;
-  background: rgba(145, 71, 255, 0.16);
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .error-line {
@@ -179,8 +197,8 @@ body {
   display: flex;
   flex-direction: column;
   gap: 9px;
-  background: rgba(145, 71, 255, 0.1);
-  border: 1px solid rgba(145, 71, 255, 0.35);
+  background: var(--card);
+  border: 1px solid var(--border-strong);
   border-radius: 10px;
   padding: 12px 14px;
 }
@@ -190,13 +208,14 @@ body {
   font-weight: 600;
 }
 
+/* Primary actions are ink on the dark page, as in the app. */
 .button-settings {
-  background: var(--accent);
-  color: #fff;
+  background: var(--text);
+  color: var(--bg);
 }
 
 .button-settings:hover {
-  background: var(--accent-hover);
+  background: #fff;
 }
 
 .actions {
@@ -226,12 +245,18 @@ body {
 }
 
 .button-start {
-  background: var(--accent);
-  color: #fff;
+  background: var(--text);
+  color: var(--bg);
 }
 
 .button-start:hover:not(:disabled) {
-  background: var(--accent-hover);
+  background: #fff;
+}
+
+.button:focus-visible,
+.topics-edit:focus-visible {
+  outline: 2px solid var(--accent-hover);
+  outline-offset: 2px;
 }
 
 .button-stop {
@@ -248,7 +273,7 @@ body {
 .cost-line {
   margin: 2px 2px 0;
   font-size: 11.5px;
-  color: var(--text-dim, #a3a3b8);
+  color: var(--text-dim);
 }
 
 /* The `hidden` attribute must win over any `display` set on a class —
