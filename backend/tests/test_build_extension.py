@@ -144,10 +144,14 @@ class TestLint:
 
     def test_a_bad_version_and_a_pinned_key_fail(self, tmp_path: Path) -> None:
         root = make_extension(tmp_path)
-        manifest = build.store_manifest({**DEV_MANIFEST, "key": "abc"}, "1.0-beta")
+        manifest = {**build.store_manifest(DEV_MANIFEST, "1.0-beta"), "key": "abc"}
         problems = build.lint_manifest(manifest, build.collect_files(root))
         assert any("version" in problem for problem in problems)
         assert any("'key'" in problem for problem in problems)
+
+    def test_the_development_key_is_left_out_of_the_store_manifest(self) -> None:
+        assert "key" in DEV_MANIFEST  # pins the ID the local backend allows
+        assert "key" not in build.store_manifest(DEV_MANIFEST, "1.0.0")
 
 
 class TestCodeScan:

@@ -29,6 +29,36 @@ def transport_returning(status: int, payload: dict) -> httpx.MockTransport:
     return httpx.MockTransport(lambda request: httpx.Response(status, json=payload))
 
 
+class TestMalformedTwitchAnswers:
+    """A 200 that lacks the field we need is a clear ProviderUnreachable (a
+    502 in the routes), never a bare KeyError (a 500)."""
+
+    async def test_device_start_without_a_user_code(self) -> None:
+        with pytest.raises(ProviderUnreachable, match="user_code"):
+            await start_device_flow(
+                "client", transport=transport_returning(200, {"device_code": "d"})
+            )
+
+    async def test_device_poll_without_an_access_token(self) -> None:
+        with pytest.raises(ProviderUnreachable, match="access_token"):
+            await poll_device_token(
+                "client", "device", transport=transport_returning(200, {})
+            )
+
+    async def test_refresh_without_an_access_token(self) -> None:
+        with pytest.raises(ProviderUnreachable, match="access_token"):
+            await refresh_token(
+                "client", "refresh", transport=transport_returning(200, {"x": 1})
+            )
+
+    async def test_a_body_that_is_not_json(self) -> None:
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(200, text="<html>")
+        )
+        with pytest.raises(ProviderUnreachable, match="without JSON"):
+            await refresh_token("client", "refresh", transport=transport)
+
+
 class TestValidateToken:
     async def test_good_token_returns_identity(self) -> None:
         info = await validate_token(

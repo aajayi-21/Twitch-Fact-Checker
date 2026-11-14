@@ -48,6 +48,28 @@ DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
 REFRESH_MARGIN_S = 15 * 60
 
 
+def _json_with(response: httpx.Response, *fields: str) -> dict:
+    """The JSON body of a 200 from Twitch, checked for ``fields``.
+
+    Raises:
+        ProviderUnreachable: the body is not a JSON object or lacks a field,
+            so a malformed answer surfaces as a clear 502 rather than a bare
+            ``KeyError``.
+    """
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise ProviderUnreachable(
+            f"id.twitch.tv answered {response.status_code} without JSON"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise ProviderUnreachable("id.twitch.tv answered with unexpected JSON")
+    missing = [field for field in fields if not payload.get(field)]
+    if missing:
+        raise ProviderUnreachable(f"id.twitch.tv's answer has no {', '.join(missing)}")
+    return payload
+
+
 @dataclass(frozen=True, slots=True)
 class TwitchTokenInfo:
     login: str
@@ -152,7 +174,7 @@ async def start_device_flow(
             f"device authorization failed ({response.status_code}): "
             f"{response.text[:200]}"
         )
-    payload = response.json()
+    payload = _json_with(response, "device_code", "user_code")
     return DeviceCodeGrant(
         device_code=payload["device_code"],
         user_code=payload["user_code"],
@@ -188,7 +210,7 @@ async def poll_device_token(
         except httpx.HTTPError as exc:
             raise ProviderUnreachable(f"could not reach id.twitch.tv: {exc}") from exc
     if response.status_code == 200:
-        payload = response.json()
+        payload = _json_with(response, "access_token")
         return payload["access_token"], payload.get("refresh_token", "")
     message = ""
     try:
@@ -227,7 +249,7 @@ async def refresh_token(
             f"refresh failed ({response.status_code}) — reconnect Twitch from "
             "the control panel"
         )
-    payload = response.json()
+    payload = _json_with(response, "access_token")
     return payload["access_token"], payload.get("refresh_token", refresh)
 
 

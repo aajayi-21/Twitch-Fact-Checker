@@ -11,6 +11,8 @@ a release needs, checks the result, and zips it.
 
 What changes in the store manifest:
 
+- ``key`` goes. It only pins the development ID (the local backend allows
+  that ID; see backend/app/origins.py), and the store assigns its own;
 - the local backend's addresses move from ``host_permissions`` to
   ``optional_host_permissions`` — the app asks for them when someone chooses
   the backend (extension/app/lib/engine_actions.mjs), so installing asks for
@@ -125,6 +127,7 @@ def store_manifest(dev: dict[str, Any], version: str) -> dict[str, Any]:
     """The store manifest, derived from the development one."""
     manifest = json.loads(json.dumps(dev))
     manifest["version"] = version
+    manifest.pop("key", None)
 
     host_permissions = manifest.pop("host_permissions", [])
     required = [host for host in host_permissions if not _is_local_host(host)]

@@ -44,7 +44,7 @@ Fixes with one obvious answer were not asked about and are planned directly.
 | # | Phase | Size | Depends on |
 |---|---|---|---|
 | 0 | DeepSeek default model ✅ | hours | — |
-| 1 | Local backend security | 1–2 days | — |
+| 1 | Local backend security ✅ | 1–2 days | — |
 | 2 | Spending and error reporting (extension) | 2–3 days | — |
 | 3 | Lifecycle and small fixes (extension) | 1–2 days | — |
 | 4 | Streamer bot safety fix | half a day | — |
@@ -83,7 +83,38 @@ save time makes that a clear message rather than a silent failure.
 
 ---
 
-## 4. Phase 1 — Local backend security
+## 4. Phase 1 — Local backend security ✅
+
+**Built 2026-11-13** on branch `feat/backend-security`. Differences from the plan below:
+
+- **One guard instead of per-route checks.** `backend/app/origins.py` is an ASGI
+  middleware on both servers that checks every HTTP request and WebSocket handshake.
+  Allowed: no `Origin` (non-browser clients), `chrome-extension://<id>` with the ID in
+  `ALLOWED_EXTENSION_IDS`, and the server's own pages (Origin equal to
+  `http://<Host>`, rather than a port list). `null` is allowed only on `/ws/events`,
+  which was confirmed read-only. Refused requests get a 403, refused sockets close 1008.
+  This also covers 1.5's body-less `POST /setup/twitch/device`, so that route keeps its
+  shape.
+- **The development ID is `hbgnggamecjggjhmlnpfkcpocopcbokm`.** Only the public half
+  of its key pair exists; it is in `extension/manifest.json`, and the store build
+  strips it. `scripts/lib/chrome_harness.mjs` derives the ID from the key.
+- **1.4 needed a new endpoint.** The welcome flow's sample check called `/debug/text`,
+  so it moved to an always-on `POST /setup/test-check` (shared code in
+  `app/text_check.py`) that returns the result without pushing verdicts into live
+  sessions. `/debug/text` and `/debug/stt/fail` are off unless `DEBUG_ENDPOINTS=true`;
+  `run.sh` does not turn them on.
+- **Extra fixes found on the way.** The device-poll route also called `validate_token`
+  unguarded (another bare 500). A 200 from Twitch with a missing field is now a 502
+  with the reason, not a `KeyError`.
+- **A refused extension is told why.** The 403 names the extension ID and the setting
+  to add it to; the popup shows "Backend refused this extension" with its own ID, and
+  the app shows the backend's message.
+
+Verified: 1483 backend tests (32 new for the guard, 4 for the sample check, 6 for the
+Twitch errors); 337 extension tests; the app e2e against a real backend (30/30,
+including Start → "capturing" through the offscreen document's WebSocket with the
+fixed ID) and against the fake one (82/82); the store package's no-key demo (13/13);
+and by hand: a website origin gets 403, the dev extension 200, `/debug/text` 404.
 
 ### 1.1 Origin check on `/ws/audio` (blocker)
 

@@ -67,13 +67,23 @@ Chrome (extension)                              Local backend (127.0.0.1:8710)
 │   → Int16 PCM ─────────────────────WebSocket──→ claim gate (LLM, ungrounded)│
 │   ← JSON verdict frames ────────────────────←─ grounded verify (LLM + web  │
 │   │                             │           │     search) → verdict        │
-│ content script (supported sites)│           │  POST /debug/text (test path)│
+│ content script (supported sites)│           │  POST /setup/test-check      │
 │   Shadow-DOM toast + history    │           │  GET  /healthz               │
 └─────────────────────────────────┘           └───────────────────────────────┘
 ```
 
-No build step, no auth — everything runs locally, single user. Analytics live in
+No build step, no login: everything runs locally, single user. Analytics live in
 one SQLite file (`backend/fact_checker.db`; delete it to reset).
+
+**Who may talk to the backend.** It listens only on `127.0.0.1`, and since any page
+in your browser can reach that address, it refuses requests and WebSocket handshakes
+from every origin except Doxa's extension and its own pages (the dashboard, the
+streamer console and overlay). Requests with no `Origin` (curl, the ingest CLI,
+scripts) are allowed. The extension is recognised by its ID: `extension/manifest.json`
+carries a public `key`, so the unpacked extension always gets the ID
+`hbgnggamecjggjhmlnpfkcpocopcbokm`, which is the default for `ALLOWED_EXTENSION_IDS`.
+Loading another copy (such as the store build in `dist/chrome`, whose `key` is
+removed) gives a different ID: add it to `ALLOWED_EXTENSION_IDS` in `backend/.env`.
 
 ## Backend details (advanced)
 
@@ -642,7 +652,8 @@ gate pass times out.
 stored in `fact_checker.db` through the configured verifier (or `--provider
 anthropic|openrouter`, `--model ...`) and prints label, evidence and fallback
 histograms plus latency — it spends credits, so it insists on `--yes-spend-credits`.
-`POST /debug/text` runs the gate → verify path on raw text.
+`POST /debug/text` runs the gate → verify path on raw text (needs
+`DEBUG_ENDPOINTS=true`).
 
 **On the transcription model.** `openai/whisper-small.en` stays the torch default on
 an integrated Intel GPU: after the startup warm-up it runs ~0.9 s per 4 s window, and
@@ -712,7 +723,8 @@ pytest -m "not slow"
 ```
 
 **No-audio end-to-end** — exercise gate → dedupe → grounded verify; if a WS session is
-open, the verdict also pops on the captured tab:
+open, the verdict also pops on the captured tab. Needs `DEBUG_ENDPOINTS=true` in
+`backend/.env` (off by default, since these calls spend API credit):
 
 ```bash
 curl -X POST http://127.0.0.1:8710/debug/text \
@@ -758,3 +770,6 @@ python scripts/stream_wav.py tests/fixtures/claims_16k.wav --speed 3   # backpre
 - **Slow first start / startup hang** — the ~170 MB Whisper model is downloading;
   watch the backend log. Model, device, and compute type are configurable in `.env`.
 - **`/debug/text` returns 404** — set `DEBUG_ENDPOINTS=true` in `.env`.
+- **The extension says the backend refused it (403)** — the backend only accepts
+  extension IDs in `ALLOWED_EXTENSION_IDS`. Copy the ID from `chrome://extensions`
+  into that setting in `backend/.env` and restart the backend.

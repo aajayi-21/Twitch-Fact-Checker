@@ -5,6 +5,7 @@
   "version": "0.1.0",
   "description": "Fact-checks what is said in a live stream you are watching and shows sourced verdicts over the player.",
   "minimum_chrome_version": "116",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA4Sd7C45b+b/mvc+28VZAxsenyX30kHgJCsgJjHWUMXMqQlOb1Elvyo0FZg/0Ed7WNArn8A9F2hzYIiqjYLbkNwUuF+3++qiei+dZ8X/gKx8kFBPbu6ZUkgDFMCbMyK9vC5sOegfvxbSI26VMyf25C6vZOpmRCwACsalVzXaYe9jPaF1x8Hujdh4gYhTYb371ji9lBwiu+iIOWRi/6P+zHJ3aPW4zn/tbHHBYaUPtcvYDuxcw5cjX3IrkGVXdA61oLAwHIRa2TCiFihEiqcMLrXRijx3uAY/ijB0CCdt3UDfzIQdeag2TF0Kmtuuktjs55lPJFjho2Ux+GmGNgbvFSQIDAQAB",
   "permissions": ["tabCapture", "offscreen", "storage", "activeTab", "alarms", "unlimitedStorage"],
   "host_permissions": [
     "http://127.0.0.1/*",

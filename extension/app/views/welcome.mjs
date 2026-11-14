@@ -457,7 +457,7 @@ const describeTestError = (error) => {
     case BACKEND_ERROR.TIMEOUT:
       return "The check took too long. It may still work on a stream; try again if you like.";
     case BACKEND_ERROR.INVALID:
-      return "This backend has its test endpoint switched off, so the sample check is unavailable. Everything else is ready.";
+      return "This backend is too old for the sample check. Update it to try one; everything else is ready.";
     default:
       return error?.message || "The sample check failed.";
   }

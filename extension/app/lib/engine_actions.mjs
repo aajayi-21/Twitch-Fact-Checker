@@ -228,7 +228,7 @@ const recordSampleUsage = async (stage, config, usage) => {
  * Run one sentence through the real gate and verify calls with the viewer's
  * own key — the same two calls a stream makes. Costs about a cent.
  *
- * Returns the backend's `/debug/text` shape, so the welcome flow shows the
+ * Returns the backend's `/setup/test-check` shape, so the welcome flow shows the
  * result of either engine the same way.
  *
  * @param {string} text

@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from pathlib import Path
 from typing import Any, Literal
 
@@ -48,20 +47,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
-
-# Same origins the HTTP CORS layer trusts (app/main.py) — reused here because
-# WebSockets bypass CORS entirely.
-_ALLOWED_ORIGIN_RE = re.compile(
-    r"^(chrome-extension://[a-z]{32}|https?://(localhost|127\.0\.0\.1)(:\d+)?)$"
-)
-
-
-def _origin_allowed(websocket: WebSocket) -> bool:
-    origin = websocket.headers.get("origin")
-    if origin is None or origin == "null":
-        return True  # OBS browser sources send one of these
-    return _ALLOWED_ORIGIN_RE.match(origin) is not None
-
 
 # --------------------------------------------------------------------------- #
 # Pages
@@ -93,10 +78,9 @@ async def meta_topics() -> dict[str, Any]:
 @router.websocket("/ws/events")
 async def events_ws(websocket: WebSocket) -> None:
     """Pure reader over the hub: no hello, no session, preempts nothing."""
+    # Origins are checked by app.origins.OriginGuardMiddleware, which also
+    # accepts the "null" origin of an OBS browser source here.
     settings: StreamerSettings = websocket.app.state.settings
-    if not _origin_allowed(websocket):
-        await websocket.close(code=1008)
-        return
     token = settings.events_token.strip()
     if token and websocket.query_params.get("token", "") != token:
         await websocket.close(code=1008)
@@ -649,7 +633,6 @@ async def twitch_status(request: Request) -> dict[str, Any]:
 async def twitch_paste(body: TwitchPasteRequest, request: Request) -> dict[str, Any]:
     """Paste-a-token path: validate live, persist, hot-apply."""
     from app.setup import ProviderKeyRejected, ProviderUnreachable
-    from streamer.twitch_auth import persist_credentials
 
     try:
         info = await validate_token(body.token)
@@ -657,7 +640,9 @@ async def twitch_paste(body: TwitchPasteRequest, request: Request) -> dict[str, 
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     except ProviderUnreachable as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    persist_credentials(token=body.token, refresh=None, info=info, channel=body.channel)
+    _persist_twitch_credentials(
+        token=body.token, refresh=None, info=info, channel=body.channel
+    )
     _apply_credentials(request, token=body.token, info=info, channel=body.channel)
     return await twitch_status(request)
 
@@ -704,7 +689,6 @@ async def twitch_device_poll(
     body: DevicePollRequest, request: Request
 ) -> dict[str, Any]:
     from app.setup import ProviderKeyRejected, ProviderUnreachable
-    from streamer.twitch_auth import persist_credentials
 
     settings: StreamerSettings = request.app.state.settings
     grant: DeviceCodeGrant | None = getattr(request.app.state, "device_grant", None)
@@ -723,12 +707,35 @@ async def twitch_device_poll(
         return {"pending": True}
     token, refresh = pair
     request.app.state.device_grant = None
-    info = await validate_token(token)
-    persist_credentials(token=token, refresh=refresh, info=info, channel=body.channel)
+    try:
+        info = await validate_token(token)
+    except ProviderKeyRejected as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except ProviderUnreachable as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    _persist_twitch_credentials(
+        token=token, refresh=refresh, info=info, channel=body.channel
+    )
     _apply_credentials(
         request, token=token, refresh=refresh, info=info, channel=body.channel
     )
     return {"pending": False, **(await twitch_status(request))}
+
+
+def _persist_twitch_credentials(**credentials: Any) -> None:
+    """:func:`streamer.twitch_auth.persist_credentials`, with its failures as
+    HTTP errors: 400 for a value ``.env`` cannot hold (a line break), 500 with
+    the reason when the file cannot be written."""
+    from streamer.twitch_auth import persist_credentials
+
+    try:
+        persist_credentials(**credentials)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500, detail=f"could not save the Twitch credentials: {exc}"
+        ) from exc
 
 
 def _apply_credentials(

@@ -14,13 +14,16 @@ Preemption is SCOPED, and the scope is a setting:
   identity share the ``(None, None)`` bucket.
 - ``"none"`` — never preempt (load tests, deliberate multi-tab).
 
-**Why the default is still global.** Only the global scope can preempt on
-*connect*. The channel scope cannot know the channel until the hello parses,
-so it necessarily leaves the incumbent alive for up to ``HELLO_TIMEOUT_S`` —
-which breaks the §3.2 promptness rule the extension's reconnect depends on
-(and is exactly what ``TestPreemption::test_new_connection_preempts_old``
-pins down). The scope exists so that property is a deliberate, documented
-trade rather than an accident.
+**When preemption happens.** Under every scope, only once the new
+connection's hello has parsed (:meth:`SessionRegistry.register`). A real
+client sends its hello the moment the socket opens, so a reconnect still
+replaces the old session within milliseconds; a connection that never sends a
+valid hello cannot end a live session. (Until 2026-11 the global scope
+preempted on connect, before the hello; see docs/release-build-plan.md §4.)
+
+**Why the default is still global.** Concurrency buys little here; see
+"On capacity" below. The scope exists so that running several channels in one
+process is a deliberate, documented choice rather than an accident.
 
 **On capacity.** Lifting the single-session limit is a structural fix, not a
 throughput one: the STT executor is deliberately ``max_workers=1``
@@ -103,20 +106,6 @@ class SessionRegistry:
     @property
     def scope(self) -> PreemptScope:
         return self._scope
-
-    async def preempt_on_accept(self) -> None:
-        """GLOBAL scope only: kill the incumbent before this hello arrives.
-
-        This is the §3.2 latency rule — the old session dies immediately
-        instead of waiting up to 5 s for a hello that may never come. Channel
-        scope CANNOT do it: the channel is only known once the hello parses,
-        so under that scope the preempt happens entirely inside
-        :meth:`register`.
-        """
-        if self._scope != "global":
-            return
-        for victim in list(self._sessions.values()):
-            await victim.preempt()
 
     async def register(self, pipeline: SessionPipeline) -> None:
         """Preempt whatever this pipeline supersedes, then take a slot.

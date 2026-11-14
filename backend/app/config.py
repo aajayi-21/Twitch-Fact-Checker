@@ -14,8 +14,10 @@ import re
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from app.origins import DEFAULT_ALLOWED_EXTENSION_IDS, parse_extension_ids
 
 SERVER_VERSION: str = "0.1.0"
 
@@ -471,23 +473,41 @@ class Settings(BaseSettings):
     verify_timeout_s: float = 45.0
 
     send_transcripts: bool = True
-    debug_endpoints: bool = True
+    # /debug/text (injects verdicts into live sessions) and /debug/stt/fail.
+    # Off by default: they exist for development and tests, and /debug/text
+    # spends API credit. The app's sample check uses /setup/test-check.
+    debug_endpoints: bool = False
+    # Chrome extension IDs allowed to use this backend, comma-separated
+    # (app/origins.py). The default is the development extension's fixed ID;
+    # add the ID shown on chrome://extensions for any other copy you load,
+    # such as the store build in dist/chrome.
+    allowed_extension_ids: str = ",".join(DEFAULT_ALLOWED_EXTENSION_IDS)
+
+    @field_validator("allowed_extension_ids")
+    @classmethod
+    def validate_allowed_extension_ids(cls, value: str) -> str:
+        """Fail at startup on an entry that is not an extension ID."""
+        return ",".join(sorted(parse_extension_ids(value)))
+
+    @property
+    def allowed_extension_id_set(self) -> frozenset[str]:
+        """``ALLOWED_EXTENSION_IDS`` as a set (already validated)."""
+        return parse_extension_ids(self.allowed_extension_ids)
+
     # Attach a captured stream frame to verification when the claim contains
     # a visual cue ("this chart", "on screen", ...). Frames only exist when
     # the extension's opt-in capture toggle is on; they are never persisted.
     vision_enabled: bool = True
 
-    # Which live sessions a new /ws/audio connection preempts (app/sessions.py):
-    #   global  - any existing session (DEFAULT — today's behaviour, unchanged).
+    # Which live sessions a new /ws/audio session preempts once its hello has
+    # parsed (app/sessions.py):
+    #   global  - any existing session (DEFAULT).
     #   channel - same (platform, channel) only, so two channels coexist.
     #   none    - never preempt (load tests, deliberate multi-tab).
     #
-    # Default stays "global" deliberately. Only the global scope can preempt on
-    # CONNECT; the channel scope cannot know the channel until the hello parses,
-    # so it leaves the old session alive for up to HELLO_TIMEOUT_S — losing the
-    # §3.2 promptness rule the extension's reconnect relies on. And it buys
-    # little: the STT executor has ONE worker, so concurrent sessions serialize
-    # on a single Whisper model rather than adding throughput. The deployment
+    # Default stays "global" deliberately: other scopes buy little, because
+    # the STT executor has ONE worker, so concurrent sessions serialize on a
+    # single Whisper model rather than adding throughput. The deployment
     # unit for multiple channels is one backend PROCESS per channel (which is
     # also what the business analysis's "one VPS, <=5 channels" describes).
     session_preempt_scope: Literal["global", "channel", "none"] = "global"

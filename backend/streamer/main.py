@@ -37,7 +37,7 @@ from app.events import EventHub
 from app.feedback import router as feedback_router
 from app.llm_provider import build_llm_runtime, close_llm_runtime
 from app.logging_setup import configure_logging
-from app.main import _CORS_ORIGIN_REGEX
+from app.origins import CORS_ORIGIN_REGEX, OriginGuardMiddleware
 from app.rate_limit import QuotaCooldown, TokenBucket
 from app.sessions import SessionRegistry
 from app.setup import router as setup_router
@@ -229,12 +229,15 @@ def create_app() -> FastAPI:
         version=STREAMER_VERSION,
         lifespan=lifespan,
     )
+    # Same order as app/main.py: TrustedHost, then the origin guard (which
+    # also lets OBS's "null" origin read /ws/events), then CORS.
     application.add_middleware(
         CORSMiddleware,
-        allow_origin_regex=_CORS_ORIGIN_REGEX,
+        allow_origin_regex=CORS_ORIGIN_REGEX,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    application.add_middleware(OriginGuardMiddleware)
     application.add_middleware(
         TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"]
     )

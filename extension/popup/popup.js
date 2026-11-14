@@ -83,6 +83,8 @@ const elements = {
   errorLine: document.getElementById("error-line"),
   hintLine: document.getElementById("hint-line"),
   offlineHint: document.getElementById("offline-hint"),
+  refusedHint: document.getElementById("refused-hint"),
+  refusedExtensionId: document.getElementById("refused-extension-id"),
   startButton: document.getElementById("start-button"),
   stopButton: document.getElementById("stop-button"),
   topicsSummary: document.getElementById("topics-summary"),
@@ -96,6 +98,9 @@ const elements = {
 const state = {
   backendOnline: false,
   backendChecked: false,
+  // The backend answered 403: it does not allow this extension's ID
+  // (ALLOWED_EXTENSION_IDS, backend/app/origins.py).
+  backendRefused: false,
   // healthz "configured" flag: false while the backend has no API key yet.
   // Defaults to true so the setup card never flashes before the first check.
   backendConfigured: true,
@@ -159,6 +164,9 @@ const render = () => {
   } else if (backendOnline) {
     elements.backendLine.textContent = "Backend online";
     elements.backendLine.dataset.state = "online";
+  } else if (state.backendRefused) {
+    elements.backendLine.textContent = "Backend refused this extension";
+    elements.backendLine.dataset.state = "offline";
   } else {
     elements.backendLine.textContent = "Backend offline";
     elements.backendLine.dataset.state = "offline";
@@ -203,7 +211,9 @@ const render = () => {
 
   // Offline hint (with the port the popup actually polls) while stopped and
   // unreachable.
-  elements.offlineHint.hidden = !(backendChecked && !backendOnline && !active);
+  const unreachable = backendChecked && !backendOnline && !active;
+  elements.offlineHint.hidden = !(unreachable && !state.backendRefused);
+  elements.refusedHint.hidden = !(unreachable && state.backendRefused);
 
   // Setup state: backend reachable but no API key configured yet. Shown
   // above the start controls; Start stays disabled until a key is added.
@@ -255,6 +265,7 @@ const checkBackendHealth = async () => {
       cache: "no-store",
     });
     state.backendOnline = response.ok;
+    state.backendRefused = response.status === 403;
     if (response.ok) {
       try {
         const health = await response.json();
@@ -273,6 +284,7 @@ const checkBackendHealth = async () => {
     }
   } catch (error) {
     state.backendOnline = false;
+    state.backendRefused = false;
   }
   state.backendChecked = true;
   render();
@@ -346,6 +358,7 @@ elements.openSettingsButton.addEventListener("click", () => openApp(APP_ROUTE.PR
 elements.openDashboard.addEventListener("click", () => openApp(APP_ROUTE.HOME));
 
 const init = async () => {
+  elements.refusedExtensionId.textContent = chrome.runtime.id;
   const settings = await loadSettings();
   state.healthUrl = deriveHealthUrl(settings.backendUrl);
   renderTopicsSummary(settings);
