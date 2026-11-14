@@ -167,7 +167,7 @@ export const SpeechCard = () => {
   const runtimeMissing = speech.loaded && speech.runtimeVersion === null;
 
   return html`
-    <${Card} title="Speech recognition">
+    <${Card} title="Speech recognition" id="section-speech">
       ${browserEngine
         ? html`<p class="setting-help">
             Speech is turned into text inside this browser, by a model that runs on this

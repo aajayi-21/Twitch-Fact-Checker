@@ -43,32 +43,33 @@ const JEV_MODES = Object.freeze([
   {value: "screen", label: "Screen (skip unlikely batches)"},
 ]);
 
-const ProviderCard = ({provider, setup}) => {
+/** One provider as a row: what it is, how it stands, what you can do. */
+const ProviderRow = ({provider, setup}) => {
   const [editing, setEditing] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
   const connection = describeConnection(setup, provider.id);
   const connected = connection.state === "connected";
+  const inUse =
+    Boolean(setup?.configured) && [setup.gate?.provider, setup.verify?.provider].includes(provider.id);
 
   return html`
-    <${Card}
-      title=${provider.label}
-      aside=${html`<${StatusPill} state=${connected ? "ok" : "idle"}>
-        ${connected ? "Connected" : "Not connected"}
-      <//>`}
-    >
-      <p class="card-line">${provider.blurb}</p>
-      <p class="card-line muted">${connection.detail}</p>
-      ${justSaved ? html`<${Notice} tone="success">Key checked and saved.<//>` : null}
+    <li class="provider">
+      <div class="provider-head">
+        <div class="provider-name">
+          <h2 class="card-title">${provider.label}</h2>
+          ${inUse ? html`<span class="in-use">In use</span>` : null}
+        </div>
+        <p class="muted">${provider.blurb}</p>
+      </div>
+      <div class="provider-status">
+        <${StatusPill} flat state=${connected ? "ok" : "idle"}>
+          ${connected ? "Connected" : "Not connected"}
+        <//>
+        <span class="provider-key">${connection.detail}</span>
+      </div>
       ${editing
-        ? html`<${KeyForm}
-            provider=${provider}
-            onSaved=${() => {
-              setEditing(false);
-              setJustSaved(true);
-            }}
-            onCancel=${() => setEditing(false)}
-          />`
-        : html`<div class="form-actions">
+        ? null
+        : html`<div class="form-actions provider-actions">
             <${Button}
               variant=${connected ? "secondary" : "primary"}
               onClick=${() => {
@@ -79,7 +80,22 @@ const ProviderCard = ({provider, setup}) => {
               ${connection.method === "api_key" ? "Replace key" : "Add a key"}
             <//>
           </div>`}
-    <//>
+      ${justSaved || editing
+        ? html`<div class="provider-extra">
+            ${justSaved ? html`<${Notice} tone="success">Key checked and saved.<//>` : null}
+            ${editing
+              ? html`<${KeyForm}
+                  provider=${provider}
+                  onSaved=${() => {
+                    setEditing(false);
+                    setJustSaved(true);
+                  }}
+                  onCancel=${() => setEditing(false)}
+                />`
+              : null}
+          </div>`
+        : null}
+    </li>
   `;
 };
 
@@ -270,11 +286,11 @@ const BackendProvidersView = () => {
           ${summary ? `In use: ${summary}.` : "Add one API key to start fact-checking."}
         </p>
       </header>
-      <div class="card-grid">
+      <ul class="card provider-list">
         ${KEY_PROVIDERS.map(
-          (provider) => html`<${ProviderCard} key=${provider.id} provider=${provider} setup=${setup} />`
+          (provider) => html`<${ProviderRow} key=${provider.id} provider=${provider} setup=${setup} />`
         )}
-      </div>
+      </ul>
       <p class="muted">
         OpenAI and Gemini keys work with the built-in engine — choose “This browser” below.
       </p>

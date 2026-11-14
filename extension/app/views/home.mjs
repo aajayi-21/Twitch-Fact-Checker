@@ -15,7 +15,7 @@ import {
 } from "../../ledger/queries.mjs";
 import {SPEECH_ENGINE, describeSpeechState} from "../../engine/stt/speech_setup.mjs";
 import {LABELS} from "../../ledger/records.mjs";
-import {Button, Card, LabelChip, Notice, StatusPill} from "../components.mjs";
+import {Card, LabelChip, Notice, StatusPill} from "../components.mjs";
 import {refreshBackend, useAppState} from "../lib/app_store.mjs";
 import {ENGINE_MODE, useEngine} from "../lib/engine_actions.mjs";
 import {formatCost, formatDateTime, labelName, platformLabel, plural} from "../lib/format.mjs";
@@ -27,6 +27,15 @@ import {describeStages} from "../lib/setup_model.mjs";
 import {ImportHistory} from "./import_history.mjs";
 
 const LATEST_RESULTS = 5;
+
+/** What a speech status dot means, for readers who cannot see its colour. */
+const SPEECH_STATE_WORDS = Object.freeze({
+  ok: "Ready",
+  warn: "Needs attention",
+  bad: "Not working",
+  busy: "Working",
+  idle: "Idle",
+});
 
 /** How the speech engine is doing, from /healthz. */
 const describeSpeech = (health) => {
@@ -50,6 +59,10 @@ const Stat = ({value, label}) => html`
   </div>
 `;
 
+/**
+ * Every verdict as one bar split by label, with the counts listed under it.
+ * The legend names each label, so the colour never has to carry it alone.
+ */
 const LabelBreakdown = ({labels}) => {
   const total = LABELS.reduce((sum, label) => sum + (labels?.[label] ?? 0), 0);
   if (total === 0) {
@@ -57,23 +70,48 @@ const LabelBreakdown = ({labels}) => {
       No results yet. They will appear here once you have checked a stream.
     </p>`;
   }
+  const counted = LABELS.map((label) => ({label, count: labels?.[label] ?? 0}));
   return html`
-    <ul class="label-bars">
-      ${LABELS.map((label) => {
-        const count = labels?.[label] ?? 0;
-        return html`
-          <li key=${label} class="label-bar" data-label=${label}>
-            <span class="label-bar-name">${labelName(label)}</span>
-            <span class="label-bar-track"
-              ><span class="label-bar-fill" style=${`width: ${(count / total) * 100}%`}></span
-            ></span>
-            <span class="label-bar-count">${count}</span>
+    <div
+      class="label-split"
+      role="img"
+      aria-label=${`${plural(total, "check")}: ${counted
+        .map(({label, count}) => `${count} ${labelName(label).toLowerCase()}`)
+        .join(", ")}`}
+    >
+      ${counted
+        .filter(({count}) => count > 0)
+        .map(
+          ({label, count}) => html`
+            <span key=${label} class="label-split-part" data-label=${label} style=${`flex: ${count} 1 0`}></span>
+          `
+        )}
+    </div>
+    <ul class="label-legend">
+      ${counted.map(
+        ({label, count}) => html`
+          <li key=${label} class="label-legend-row" data-label=${label}>
+            <span class="label-legend-swatch" aria-hidden="true"></span>
+            <span>${labelName(label)}</span>
+            <span>${count}</span>
+            <span class="label-legend-share">${Math.round((count / total) * 100)}%</span>
           </li>
-        `;
-      })}
+        `
+      )}
     </ul>
   `;
 };
+
+/** One line of the Setup card: what it is, and how it is doing. */
+const SetupRow = ({name, status, children}) => html`
+  <li class="fact-row">
+    <span class="fact-name">${name}</span>
+    ${status}
+    <div class="fact-value">${children}</div>
+  </li>
+`;
+
+const TODAY_FORMAT = new Intl.DateTimeFormat(undefined, {weekday: "short", month: "short", day: "numeric"});
 
 /** The newest few results. */
 const LatestResults = ({verdicts}) => html`
@@ -164,55 +202,6 @@ export const HomeView = ({navigate}) => {
           <//>`
         : null}
 
-      <div class="card-grid">
-        <${Card}
-          title=${browserEngine ? "Engine" : "Local backend"}
-          aside=${browserEngine
-            ? html`<${StatusPill} state="ok">This browser<//>`
-            : html`<${StatusPill} state=${up ? "ok" : backendState === "checking" ? "busy" : "bad"}>
-                ${up ? "Running" : backendState === "checking" ? "Checking…" : "Not running"}
-              <//>`}
-        >
-          <p class="card-line">
-            ${browserEngine
-              ? "Speech recognition and checking run inside this extension. Nothing else to start."
-              : up
-                ? settings?.backendUrl
-                : "Speech recognition and checking run here."}
-          </p>
-          ${speech
-            ? html`<p class="card-line">
-                <${StatusPill} state=${speech.state}>${speech.text}<//>
-                ${speech.state === "warn" && speechInBrowser
-                  ? html`${" "}<button
-                        type="button"
-                        class="link-button"
-                        onClick=${() => navigate(ROUTES.SETTINGS)}
-                      >
-                        Set up
-                      </button>`
-                  : null}
-              </p>`
-            : null}
-        <//>
-        <${Card}
-          title="AI provider"
-          aside=${html`<${StatusPill} state=${configured ? "ok" : up || browserEngine ? "warn" : "idle"}>
-            ${configured ? "Connected" : up || browserEngine ? "Not connected" : "Unknown"}
-          <//>`}
-        >
-          <p class="card-line">
-            ${(browserEngine ? engine.plan.summary : describeStages(setup)) ??
-            "Add an API key to start checking claims."}
-          </p>
-          <div class="form-actions">
-            <${Button} onClick=${() => navigate(ROUTES.PROVIDERS)}>
-              ${configured ? "Manage" : "Add a key"}
-            <//>
-          </div>
-        <//>
-      </div>
-
       ${canImport
         ? html`<${Card} title="Bring your past results across">
             <p class="lede">
@@ -223,42 +212,110 @@ export const HomeView = ({navigate}) => {
           <//>`
         : null}
 
-      <${Card} title="Today">
+      <section class="card stat-card" aria-label="Today">
+        <header class="stat-card-header">
+          <h2 class="eyebrow">Today</h2>
+          <span>${TODAY_FORMAT.format(new Date())}</span>
+        </header>
         <div class="stat-row">
           <${Stat} value=${today.checks} label="fact-checks" />
           <${Stat} value=${today.claims} label="claims heard" />
-          <${Stat} value=${today.sessions} label="sessions" />
+          <${Stat} value=${today.sessions} label=${today.sessions === 1 ? "session" : "sessions"} />
           <${Stat} value=${formatCost(today.total.cost)} label="spend" />
         </div>
-      <//>
+      </section>
 
-      <${Card}
-        title="Latest results"
-        aside=${latest.length > 0
-          ? html`<button type="button" class="link-button" onClick=${() => navigate(ROUTES.HISTORY)}>
-              See all ${ledger.verdicts.length}
-            </button>`
-          : null}
-      >
-        ${latest.length > 0
-          ? html`<${LatestResults} verdicts=${latest} />`
-          : html`<p class="muted">
-              ${ledger.loaded
-                ? "Nothing checked yet. Results appear here as a stream is checked."
-                : "Loading…"}
-            </p>`}
-      <//>
+      <div class="split">
+        <div class="split-main">
+          <${Card}
+            title="Latest results"
+            aside=${latest.length > 0
+              ? html`<button type="button" class="link-button" onClick=${() => navigate(ROUTES.HISTORY)}>
+                  See all ${ledger.verdicts.length}
+                </button>`
+              : null}
+          >
+            ${latest.length > 0
+              ? html`<${LatestResults} verdicts=${latest} />`
+              : html`<p class="muted">
+                  ${ledger.loaded
+                    ? "Nothing checked yet. Results appear here as a stream is checked."
+                    : "Loading…"}
+                </p>`}
+          <//>
+        </div>
 
-      <${Card}
-        title="All time"
-        aside=${allTime.checks > 0
-          ? html`<button type="button" class="link-button" onClick=${() => navigate(ROUTES.USAGE)}>
-              ${plural(allTime.checks, "check")} · ${formatCost(allTime.total.cost)}
-            </button>`
-          : null}
-      >
-        <${LabelBreakdown} labels=${countLabels(ledger.verdicts)} />
-      <//>
+        <div class="split-side">
+          <${Card}
+            title="Setup"
+            aside=${html`<button type="button" class="link-button" onClick=${() => navigate(ROUTES.PROVIDERS)}>
+              ${configured ? "Manage" : "Add a key"}
+            </button>`}
+          >
+            <ul class="fact-rows">
+              <${SetupRow}
+                name="Runs on"
+                status=${browserEngine
+                  ? html`<${StatusPill} flat state="ok">Built in<//>`
+                  : html`<${StatusPill} flat state=${up ? "ok" : backendState === "checking" ? "busy" : "bad"}>
+                      ${up ? "Running" : backendState === "checking" ? "Checking…" : "Not running"}
+                    <//>`}
+              >
+                ${browserEngine ? "This browser" : "Local backend"}
+                <div class="fact-sub">
+                  ${browserEngine
+                    ? "Speech recognition and checking run inside this extension. Nothing else to start."
+                    : up
+                      ? settings?.backendUrl
+                      : "Speech recognition and checking run here."}
+                </div>
+              <//>
+              ${speech
+                ? html`<${SetupRow}
+                    name="Speech recognition"
+                    status=${html`<${StatusPill} flat state=${speech.state}>
+                      <span class="visually-hidden">${SPEECH_STATE_WORDS[speech.state] ?? ""}</span>
+                    <//>`}
+                  >
+                    ${speech.text}
+                    ${speech.state === "warn" && speechInBrowser
+                      ? html`${" "}<button
+                            type="button"
+                            class="link-button"
+                            onClick=${() => navigate(ROUTES.SETTINGS)}
+                          >
+                            Set up
+                          </button>`
+                      : null}
+                  <//>`
+                : null}
+              <${SetupRow}
+                name="AI provider"
+                status=${html`<${StatusPill}
+                  flat
+                  state=${configured ? "ok" : up || browserEngine ? "warn" : "idle"}
+                >
+                  ${configured ? "Connected" : up || browserEngine ? "Not connected" : "Unknown"}
+                <//>`}
+              >
+                ${(browserEngine ? engine.plan.summary : describeStages(setup)) ??
+                "Add an API key to start checking claims."}
+              <//>
+            </ul>
+          <//>
+
+          <${Card}
+            title="All time"
+            aside=${allTime.checks > 0
+              ? html`<button type="button" class="link-button" onClick=${() => navigate(ROUTES.USAGE)}>
+                  ${plural(allTime.checks, "check")} · ${formatCost(allTime.total.cost)}
+                </button>`
+              : null}
+          >
+            <${LabelBreakdown} labels=${countLabels(ledger.verdicts)} />
+          <//>
+        </div>
+      </div>
     </div>
   `;
 };

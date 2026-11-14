@@ -1,6 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "Live Stream Fact-Checker",
+  "name": "Doxa: Live Stream Fact-Checker",
+  "short_name": "Doxa",
   "version": "0.1.0",
   "description": "Fact-checks what is said in a live stream you are watching and shows sourced verdicts over the player.",
   "minimum_chrome_version": "116",
@@ -28,7 +29,7 @@
     "type": "module"
   },
   "action": {
-    "default_title": "Live Stream Fact-Checker",
+    "default_title": "Doxa",
     "default_popup": "popup/popup.html",
     "default_icon": {
       "16": "icons/icon16_off.png",

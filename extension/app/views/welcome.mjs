@@ -567,7 +567,7 @@ export const WelcomeView = ({navigate}) => {
       <header class="wizard-header">
         <img src="../icons/icon48.png" width="40" height="40" alt="" />
         <div>
-          <h1 class="page-title">Welcome to Live Stream Fact-Checker</h1>
+          <h1 class="page-title">Welcome to Doxa</h1>
           <p class="page-subtitle">Five short steps and you are ready to watch.</p>
         </div>
       </header>

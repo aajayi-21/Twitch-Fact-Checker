@@ -1,9 +1,11 @@
 """Generate the extension toolbar icons.
 
-Draws a bold white check mark on a rounded, vertically-gradient square and
-writes 16/32/48/128 px PNGs in an active (violet) and an "off" (grey)
-variant. Pure standard library: PIL is not assumed to be installed, so the
-PNG encoder is hand-rolled with zlib/struct and shapes are rendered from
+Draws the Doxa mark — a D built from transcript lines, one of them (the
+flagged claim) in the brand purple — on a dark rounded square, and writes
+16/32/48/128 px PNGs in an active and an "off" (all grey) variant. The two
+small sizes use three thick lines instead of five thin ones, which would
+blur together. Pure standard library: PIL is not assumed to be installed, so
+the PNG encoder is hand-rolled with zlib/struct and shapes are rendered from
 signed-distance functions with 4x4 supersampling for clean edges at 16 px.
 
 Usage: python3 make_icons.py  (writes PNGs next to this file)
@@ -21,19 +23,37 @@ SUBSAMPLES: int = 4  # 4x4 supersampling per pixel
 
 Rgb = tuple[int, int, int]
 
-# (gradient top, gradient bottom, check color) per variant.
-VARIANTS: dict[str, tuple[Rgb, Rgb, Rgb]] = {
-    "": ((154, 92, 255), (108, 43, 217), (255, 255, 255)),  # active: violet
-    "_off": ((168, 173, 184), (110, 116, 128), (236, 237, 239)),  # grey
+# (gradient top, gradient bottom, line color, flagged-line color) per variant.
+VARIANTS: dict[str, tuple[Rgb, Rgb, Rgb, Rgb]] = {
+    # active: graphite tile, ink lines, the flagged line in purple
+    "": ((30, 30, 33), (15, 15, 16), (240, 240, 241), (145, 71, 255)),
+    # off: grey tile, every line the same — nothing is being checked
+    "_off": ((150, 150, 156), (104, 104, 110), (236, 236, 238), (236, 236, 238)),
 }
 
-# Unit-square geometry (0..1). The check is two capped strokes.
-CHECK_POINTS: tuple[tuple[float, float], ...] = (
-    (0.27, 0.54),
-    (0.445, 0.705),
-    (0.755, 0.33),
+# Geometry on a 128-unit square. Each line is (y, x_start, x_end): the right
+# ends trace the bowl of the D. The stroke is round-capped.
+Line = tuple[float, float, float]
+DETAILED_LINES: tuple[Line, ...] = (
+    (34.5, 40.5, 70.4),
+    (49.25, 40.5, 84.1),
+    (64.0, 40.5, 87.5),
+    (78.75, 40.5, 84.1),
+    (93.5, 40.5, 70.4),
 )
-CHECK_HALF_WIDTH: float = 0.075
+DETAILED_HALF_WIDTH: float = 4.5
+DETAILED_FLAGGED: int = 3
+SIMPLE_LINES: tuple[Line, ...] = (
+    (38.0, 44.0, 71.9),
+    (64.0, 44.0, 84.0),
+    (90.0, 44.0, 71.9),
+)
+SIMPLE_HALF_WIDTH: float = 8.0
+SIMPLE_FLAGGED: int = 1
+# Sizes up to this many pixels get the three-line mark.
+SIMPLE_MAX_SIZE: int = 32
+DESIGN_UNITS: float = 128.0
+
 CORNER_RADIUS: float = 0.22
 SQUARE_INSET: float = 0.02
 
@@ -64,23 +84,31 @@ def segment_sdf(
     return math.hypot(apx - t * abx, apy - t * aby)
 
 
-def check_sdf(x: float, y: float, size: float) -> float:
-    """Signed distance to the check-mark stroke (negative inside)."""
-    points = [(px * size, py * size) for px, py in CHECK_POINTS]
-    distance = min(
-        segment_sdf(x, y, *points[0], *points[1]),
-        segment_sdf(x, y, *points[1], *points[2]),
-    )
-    return distance - CHECK_HALF_WIDTH * size
-
-
 def lerp_color(top: Rgb, bottom: Rgb, t: float) -> Rgb:
     red, green, blue = (round(a + (b - a) * t) for a, b in zip(top, bottom))
     return (red, green, blue)
 
 
-def render_icon(size: int, top: Rgb, bottom: Rgb, check: Rgb) -> list[bytes]:
+def line_hit(x: float, y: float, size: int) -> int | None:
+    """Index of the transcript line covering (x, y), or None for the tile."""
+    simple = size <= SIMPLE_MAX_SIZE
+    lines = SIMPLE_LINES if simple else DETAILED_LINES
+    half_width = SIMPLE_HALF_WIDTH if simple else DETAILED_HALF_WIDTH
+    scale = size / DESIGN_UNITS
+    for index, (line_y, x_start, x_end) in enumerate(lines):
+        distance = segment_sdf(
+            x, y, x_start * scale, line_y * scale, x_end * scale, line_y * scale
+        )
+        if distance <= half_width * scale:
+            return index
+    return None
+
+
+def render_icon(
+    size: int, top: Rgb, bottom: Rgb, line_color: Rgb, flagged_color: Rgb
+) -> list[bytes]:
     """Render one icon as RGBA rows using supersampled SDF coverage."""
+    flagged = SIMPLE_FLAGGED if size <= SIMPLE_MAX_SIZE else DETAILED_FLAGGED
     rows: list[bytes] = []
     step = 1.0 / SUBSAMPLES
     total = SUBSAMPLES * SUBSAMPLES
@@ -89,24 +117,26 @@ def render_icon(size: int, top: Rgb, bottom: Rgb, check: Rgb) -> list[bytes]:
         base_color = lerp_color(top, bottom, py / max(size - 1, 1))
         for px in range(size):
             square_hits = 0
-            check_hits = 0
+            sums = [0, 0, 0]
             for sy in range(SUBSAMPLES):
                 y = py + (sy + 0.5) * step
                 for sx in range(SUBSAMPLES):
                     x = px + (sx + 0.5) * step
-                    if rounded_square_sdf(x, y, size) <= 0.0:
-                        square_hits += 1
-                        if check_sdf(x, y, size) <= 0.0:
-                            check_hits += 1
-            alpha = square_hits / total
-            if alpha == 0.0:
+                    if rounded_square_sdf(x, y, size) > 0.0:
+                        continue
+                    square_hits += 1
+                    hit = line_hit(x, y, size)
+                    if hit is None:
+                        sample = base_color
+                    else:
+                        sample = flagged_color if hit == flagged else line_color
+                    for channel in range(3):
+                        sums[channel] += sample[channel]
+            if square_hits == 0:
                 row.extend((0, 0, 0, 0))
                 continue
-            check_mix = check_hits / square_hits
-            red = round(base_color[0] + (check[0] - base_color[0]) * check_mix)
-            green = round(base_color[1] + (check[1] - base_color[1]) * check_mix)
-            blue = round(base_color[2] + (check[2] - base_color[2]) * check_mix)
-            row.extend((red, green, blue, round(alpha * 255)))
+            red, green, blue = (round(total_value / square_hits) for total_value in sums)
+            row.extend((red, green, blue, round(square_hits / total * 255)))
         rows.append(bytes(row))
     return rows
 
@@ -131,9 +161,9 @@ def write_png(path: Path, size: int, rows: list[bytes]) -> None:
 
 def main() -> None:
     out_dir = Path(__file__).resolve().parent
-    for suffix, (top, bottom, check) in VARIANTS.items():
+    for suffix, (top, bottom, line_color, flagged_color) in VARIANTS.items():
         for size in SIZES:
-            rows = render_icon(size, top, bottom, check)
+            rows = render_icon(size, top, bottom, line_color, flagged_color)
             target = out_dir / f"icon{size}{suffix}.png"
             write_png(target, size, rows)
             print(f"wrote {target}")

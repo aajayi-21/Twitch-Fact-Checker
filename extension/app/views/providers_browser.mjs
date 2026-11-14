@@ -37,40 +37,30 @@ const STAGE_LABELS = Object.freeze({gate: "Finding claims", verify: "Checking cl
 export const browserKeyHelp = (provider) =>
   `Checked with ${provider.label}, then kept in this browser on this device only. It is sent nowhere else, and you can remove it at any time.`;
 
-const ProviderCard = ({provider, hint}) => {
+/** One provider as a row: what it is, how it stands, what you can do. */
+const ProviderRow = ({provider, hint, inUse}) => {
   const [editing, setEditing] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
   const connected = Boolean(hint);
 
   return html`
-    <${Card}
-      title=${provider.label}
-      aside=${html`<${StatusPill} state=${connected ? "ok" : "idle"}>
-        ${connected ? "Connected" : "Not connected"}
-      <//>`}
-    >
-      <p class="card-line">${provider.blurb}</p>
-      <p class="card-line muted">${connected ? `Key ending ${hint}` : "No key added"}</p>
-      ${provider.verifiedLive
-        ? null
-        : html`<${Notice} tone="info">
-            Not yet tested against ${provider.label}'s live service from this extension. It
-            follows their published API; if it fails, the message below will say why.
-          <//>`}
-      ${justSaved ? html`<${Notice} tone="success">Key checked and saved.<//>` : null}
+    <li class="provider">
+      <div class="provider-head">
+        <div class="provider-name">
+          <h2 class="card-title">${provider.label}</h2>
+          ${inUse ? html`<span class="in-use">In use</span>` : null}
+        </div>
+        <p class="muted">${provider.blurb}</p>
+      </div>
+      <div class="provider-status">
+        <${StatusPill} flat state=${connected ? "ok" : "idle"}>
+          ${connected ? "Connected" : "Not connected"}
+        <//>
+        <span class="provider-key">${connected ? `Key ending ${hint}` : "No key added"}</span>
+      </div>
       ${editing
-        ? html`<${KeyForm}
-            provider=${provider}
-            save=${connectProvider}
-            describeError=${describeProviderError}
-            help=${browserKeyHelp(provider)}
-            onSaved=${() => {
-              setEditing(false);
-              setJustSaved(true);
-            }}
-            onCancel=${() => setEditing(false)}
-          />`
-        : html`<div class="form-actions">
+        ? null
+        : html`<div class="form-actions provider-actions">
             <${Button}
               variant=${connected ? "secondary" : "primary"}
               onClick=${() => {
@@ -90,7 +80,31 @@ const ProviderCard = ({provider, hint}) => {
                 <//>`
               : html`<${ExternalLink} href=${provider.keyUrl}>Get a key<//>`}
           </div>`}
-    <//>
+      ${provider.verifiedLive && !justSaved && !editing
+        ? null
+        : html`<div class="provider-extra">
+      ${provider.verifiedLive
+        ? null
+        : html`<${Notice} tone="info">
+            Not yet tested against ${provider.label}'s live service from this extension. It
+            follows their published API; if it fails, the message below will say why.
+          <//>`}
+      ${justSaved ? html`<${Notice} tone="success">Key checked and saved.<//>` : null}
+      ${editing
+        ? html`<${KeyForm}
+            provider=${provider}
+            save=${connectProvider}
+            describeError=${describeProviderError}
+            help=${browserKeyHelp(provider)}
+            onSaved=${() => {
+              setEditing(false);
+              setJustSaved(true);
+            }}
+            onCancel=${() => setEditing(false)}
+          />`
+        : null}
+          </div>`}
+    </li>
   `;
 };
 
@@ -250,13 +264,19 @@ export const BrowserProvidersView = () => {
             No provider is connected yet, so nothing can be checked. Add a key below.
           <//>`}
 
-      <div class="card-grid">
+      <ul class="card provider-list">
         ${BROWSER_PROVIDERS.map(
           (provider) => html`
-            <${ProviderCard} key=${provider.id} provider=${provider} hint=${engine.hints[provider.id]} />
+            <${ProviderRow}
+              key=${provider.id}
+              provider=${provider}
+              hint=${engine.hints[provider.id]}
+              inUse=${engine.plan.ready &&
+              [engine.plan.gate?.providerId, engine.plan.verify?.providerId].includes(provider.id)}
+            />
           `
         )}
-      </div>
+      </ul>
 
       <${StageRouting} engine=${engine} />
       <${BudgetCard} engine=${engine} />

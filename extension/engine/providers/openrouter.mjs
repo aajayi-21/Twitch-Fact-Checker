@@ -30,7 +30,7 @@ import {finalizeVerdict, normalizeGateClaims, selectSources} from "../pipeline/v
 import {ERROR_KIND, ProviderError, addUsage, emptyUsage, parseModelJson, requestJson} from "./common.mjs";
 
 const API_ORIGIN = "https://openrouter.ai";
-const APP_TITLE = "Live Stream Fact-Checker";
+const APP_TITLE = "Doxa";
 
 export const id = "openrouter";
 export const label = "OpenRouter";

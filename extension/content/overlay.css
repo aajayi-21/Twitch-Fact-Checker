@@ -26,17 +26,18 @@
     Arial, sans-serif;
   font-size: 13px;
   line-height: 1.45;
-  color: #efeff4;
+  color: #f0f0f1;
   -webkit-font-smoothing: antialiased;
   --fc-true: #22c55e;
   --fc-false: #ef4444;
   --fc-misleading: #f59e0b;
   --fc-unverified: #9ca3af;
+  /* The brand purple is an accent only: the spinner and the focus ring. */
   --fc-accent: #9147ff;
-  --fc-glass: rgba(13, 13, 20, 0.86);
-  --fc-glass-hover: rgba(28, 28, 40, 0.9);
+  --fc-glass: rgba(13, 13, 14, 0.88);
+  --fc-glass-hover: rgba(28, 28, 30, 0.92);
   --fc-border: rgba(255, 255, 255, 0.1);
-  --fc-dim: #a3a3b8;
+  --fc-dim: #a8a8ad;
   --fc-enter-shift: -10px; /* toasts slide down from above in top corners */
 }
 
@@ -148,7 +149,7 @@
   backdrop-filter: blur(16px) saturate(1.3);
   border: 1px solid var(--fc-border);
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
-  color: #efeff4;
+  color: #f0f0f1;
   font-family: inherit;
   font-size: 12px;
   font-weight: 600;
@@ -373,7 +374,7 @@
 }
 
 .fc-feedback-btn[data-selected="true"] {
-  background: rgba(145, 71, 255, 0.28);
+  background: rgba(255, 255, 255, 0.18);
   filter: grayscale(0) opacity(1);
 }
 
@@ -393,7 +394,7 @@
 .fc-explanation {
   margin: 0;
   font-size: 12.5px;
-  color: #cfcfdd;
+  color: #d0d0d4;
   overflow-wrap: break-word;
 }
 
@@ -410,18 +411,18 @@
   pointer-events: auto;
   font-size: 11px;
   line-height: 1.5;
-  color: #c4a7ff;
+  color: #e6e6e8;
   text-decoration: none;
-  background: rgba(145, 71, 255, 0.14);
-  border: 1px solid rgba(145, 71, 255, 0.3);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.16);
   padding: 2px 8px;
   border-radius: 999px;
   transition: background 120ms ease, color 120ms ease;
 }
 
 .fc-source-link:hover {
-  background: rgba(145, 71, 255, 0.28);
-  color: #e5d7ff;
+  background: rgba(255, 255, 255, 0.16);
+  color: #ffffff;
 }
 
 /* ------------------------------------------------------ "checking" chip -- */
@@ -594,14 +595,15 @@
   font-family: inherit;
   font-size: 11px;
   font-weight: 600;
-  color: #c4a7ff;
+  color: #d0d0d4;
+  text-decoration: underline;
+  text-underline-offset: 2px;
   cursor: pointer;
   transition: color 120ms ease;
 }
 
 .fc-edit-topics:hover {
-  color: #e5d7ff;
-  text-decoration: underline;
+  color: #ffffff;
 }
 
 .fc-entry {

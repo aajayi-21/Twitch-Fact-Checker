@@ -53,7 +53,8 @@ const chartDays = (period, usage, now = new Date()) => {
 /* Daily spend chart                                                    */
 /* ------------------------------------------------------------------ */
 
-const CHART = Object.freeze({width: 720, height: 190, left: 52, right: 8, top: 16, bottom: 24});
+// Drawn close to the width of the page column, so its text is not scaled up.
+const CHART = Object.freeze({width: 900, height: 210, left: 52, right: 8, top: 16, bottom: 24});
 const MAX_BAR_WIDTH = 24;
 const BAR_GAP = 2;
 const BAR_RADIUS = 4;
@@ -128,12 +129,19 @@ const SpendChart = ({days}) => {
                   ? html`<path
                       class="chart-bar"
                       data-active=${index === activeIndex ? "true" : undefined}
+                      data-today=${index === days.length - 1 ? "true" : undefined}
                       d=${columnPath(center - barWidth / 2, yOf(day.usd), barWidth, baseline)}
                     />`
                   : null}
                 ${labelled.has(index)
-                  ? html`<text class="chart-axis" x=${center} y=${CHART.height - 6} text-anchor="middle">
-                      ${formatDay(day.dayMs)}
+                  ? html`<text
+                      class="chart-axis"
+                      data-today=${index === days.length - 1 ? "true" : undefined}
+                      x=${center}
+                      y=${CHART.height - 6}
+                      text-anchor="middle"
+                    >
+                      ${index === days.length - 1 ? "Today" : formatDay(day.dayMs)}
                     </text>`
                   : null}
                 <rect
@@ -326,24 +334,26 @@ export const UsageView = () => {
 
   return html`
     <div class="page">
-      <header class="page-header">
-        <h1 class="page-title">Usage</h1>
-        <p class="page-subtitle">What the checker did and what it cost you at your AI provider.</p>
+      <header class="page-header page-header-split">
+        <div>
+          <h1 class="page-title">Usage</h1>
+          <p class="page-subtitle">What the checker did and what it cost you at your AI provider.</p>
+        </div>
+        <${Segmented}
+          compact
+          name="usage-period"
+          label="Period"
+          options=${PERIOD_OPTIONS}
+          value=${period}
+          onChange=${setPeriod}
+        />
       </header>
 
       ${ledger.error
         ? html`<${Notice} tone="error">The history could not be read: ${ledger.error}<//>`
         : null}
 
-      <${Segmented}
-        name="usage-period"
-        label="Period"
-        options=${PERIOD_OPTIONS}
-        value=${period}
-        onChange=${setPeriod}
-      />
-
-      <${Card}>
+      <section class="card stat-card" aria-label="Totals for this period">
         <div class="stat-row">
           <${Stat} value=${summary.checks} label="fact-checks" />
           <${Stat}
@@ -360,19 +370,19 @@ export const UsageView = () => {
           />
         </div>
         ${total.calls === 0
-          ? html`<p class="muted">
+          ? html`<p class="stat-note">
               ${ledger.loaded
                 ? "No provider calls in this period. Usage is recorded while a stream is being checked."
                 : "Loading…"}
             </p>`
-          : html`<p class="muted">
+          : html`<p class="stat-note">
               ${[
                 plural(total.calls, "provider call"),
                 plural(total.webSearches, "web search", "web searches"),
                 `${formatTokens(total.inputTokens + total.cachedInputTokens)} tokens in, ${formatTokens(total.outputTokens)} out`,
               ].join(" · ")}
             </p>`}
-      <//>
+      </section>
 
       ${total.cost.unpricedCalls > 0
         ? html`<${Notice} tone="warn">

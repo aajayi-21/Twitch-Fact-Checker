@@ -7,7 +7,7 @@
  * htm are vendored as ES modules under extension/vendor.
  */
 
-import {StatusPill} from "./components.mjs";
+import {BrandMark, BrandWordmark, StatusPill} from "./components.mjs";
 import {initApp, refreshBackend, useAppState} from "./lib/app_store.mjs";
 import {ENGINE_MODE, initEngine, useEngine} from "./lib/engine_actions.mjs";
 import {initLedger} from "./lib/ledger_store.mjs";
@@ -79,15 +79,17 @@ const useReadiness = () => {
     : {state: "bad", text: "Backend not running"};
 };
 
-const Sidebar = ({route}) => {
+/** The bar across the top: the brand, the sections, and whether it is ready. */
+const Topbar = ({route}) => {
   const readiness = useReadiness();
   return html`
-    <aside class="sidebar">
-      <a class="brand" href=${`#${ROUTES.HOME}`}>
-        <img src="../icons/icon48.png" width="28" height="28" alt="" />
-        <span class="brand-name">Live Stream<br />Fact-Checker</span>
-      </a>
-      <nav class="nav" aria-label="Sections">
+    <header class="topbar">
+      <div class="topbar-inner">
+        <a class="brand" href=${`#${ROUTES.HOME}`}>
+          <${BrandMark} />
+          <${BrandWordmark} />
+        </a>
+        <nav class="nav" aria-label="Sections">
         ${NAV_ITEMS.map(
           (item) => html`
             <a
@@ -100,18 +102,24 @@ const Sidebar = ({route}) => {
             </a>
           `
         )}
-      </nav>
-      <div class="sidebar-footer">
+        </nav>
         <${StatusPill} state=${readiness.state}>${readiness.text}<//>
-        <a class="sidebar-link" href=${`#${ROUTES.WELCOME}`}>Setup guide</a>
-        <a class="sidebar-link" href=${PRIVACY_POLICY_URL} target="_blank" rel="noopener noreferrer">
-          Privacy policy
-        </a>
-        <span class="version">Version ${chrome.runtime.getManifest().version}</span>
       </div>
-    </aside>
+    </header>
   `;
 };
+
+const Footer = () => html`
+  <footer class="footer">
+    <div class="footer-inner">
+      <a class="footer-link" href=${`#${ROUTES.WELCOME}`}>Setup guide</a>
+      <a class="footer-link" href=${PRIVACY_POLICY_URL} target="_blank" rel="noopener noreferrer">
+        Privacy policy
+      </a>
+      <span class="version">Version ${chrome.runtime.getManifest().version}</span>
+    </div>
+  </footer>
+`;
 
 const App = () => {
   const {ready, onboarding, setup, backendState} = useAppState();
@@ -142,7 +150,7 @@ const App = () => {
 
   useEffect(() => {
     const label = NAV_ITEMS.find((item) => item.route === route)?.label;
-    document.title = `${route === ROUTES.WELCOME ? "Welcome" : (label ?? "Loading")} — Live Stream Fact-Checker`;
+    document.title = `${route === ROUTES.WELCOME ? "Welcome" : (label ?? "Loading")} — Doxa`;
     // Move focus with the page so keyboard and screen-reader users land on
     // the new content, not on the link they just used.
     document.querySelector("main")?.focus();
@@ -161,10 +169,11 @@ const App = () => {
   const View = VIEWS[route];
   return html`
     <div class="layout">
-      <${Sidebar} route=${route} />
+      <${Topbar} route=${route} />
       <main class="content" tabindex="-1">
         <${View} navigate=${navigate} />
       </main>
+      <${Footer} />
     </div>
   `;
 };
