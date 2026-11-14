@@ -23,9 +23,6 @@ import {
   loadSettings,
 } from "../shared/settings.js";
 
-// Promise-safe API namespace (see shared/capabilities.js § namespace idiom).
-const chrome = globalThis.browser ?? globalThis.chrome;
-
 const CAPTURE_SESSION_KEY = "captureSession";
 const HEALTH_TIMEOUT_MS = 1500;
 const HEALTH_POLL_INTERVAL_MS = 3000;
@@ -54,8 +51,8 @@ const ERROR_COPY = {
   [ERR.ERR_NOT_CONFIGURED]: "Backend has no API key — add one in settings.",
   [ERR.ERR_CREDENTIALS_UPDATED]:
     "Session restarted after key update — press Start again.",
-  // Generic backend fatal codes arrive as "backend:<code>" (offscreen.js /
-  // page_session.js); the speech engine's unrecoverable failure gets copy.
+  // Generic backend fatal codes arrive as "backend:<code>" (offscreen.js);
+  // the speech engine's unrecoverable failure gets copy.
   "backend:stt_failure":
     "Transcription engine failed — restart the backend, then click Start.",
   [ERR.ERR_KEY_REMOVED]: "Stopped because the API key in use was removed.",

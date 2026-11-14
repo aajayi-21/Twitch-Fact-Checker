@@ -28,18 +28,10 @@ needed.
    The server starts key-less in a "needs setup" state — the extension will walk you
    through adding a key.
 
-2. **Load the extension** — the same `extension/` folder works in both browsers:
-
-   - **Chrome 116+**: open `chrome://extensions/`, enable **Developer mode**
-     (top right), click **Load unpacked**, select `extension/`.
-   - **Firefox 128+**: open `about:debugging#/runtime/this-firefox`, click
-     **Load Temporary Add-on…**, and select `extension/manifest.json`.
-     (Temporary add-ons are cleared when Firefox restarts.)
-
-   Each browser warns about the other's manifest keys — Chrome about
-   `background.scripts` and `browser_specific_settings`, Firefox about the
-   `tabCapture`/`offscreen` permissions. Both are expected: the manifest
-   deliberately carries both browsers' keys so there is no build step.
+2. **Load the extension** in Chrome 116+ or another Chromium browser (Edge, Brave):
+   open `chrome://extensions/`, enable **Developer mode** (top right), click
+   **Load unpacked**, and select `extension/`. Firefox is not supported: it has
+   neither `tabCapture` nor offscreen documents.
 
 3. **Connect your AI provider**: the extension opens a welcome tab the first time
    it is installed and walks you through it. To get back to it later, click the
@@ -82,51 +74,6 @@ Chrome (extension)                              Local backend (127.0.0.1:8710)
 
 No build step, no auth — everything runs locally, single user. Analytics live in
 one SQLite file (`backend/fact_checker.db`; delete it to reset).
-
-**Firefox uses a different front half.** Firefox implements neither
-`chrome.tabCapture` nor the offscreen-document API, so there is no way to
-capture a tab's audio and nowhere Chrome-shaped to put the session. The
-extension detects this at load (`extension/shared/capabilities.js`) and swaps
-in a second capture path; the backend never notices the difference.
-
-```
-Firefox (extension)                             Local backend (127.0.0.1:8710)
-┌─────────────────────────────────┐
-│ popup ── Start/Stop (gesture)   │
-│   │                             │
-│ content script                  │
-│   page's own <video>            │
-│   → AudioContext (+ loopback)   │           ┌───────────────────────────────┐
-│   → lowpass ×2 → worklet        │           │ FastAPI  /ws/audio            │
-│   → Int16 PCM → base64          │  16 kHz   │  ring buffer → faster-whisper │
-│   │ runtime messages            │  PCM over │                               │
-│ background EVENT PAGE (has DOM) │  WebSocket│                               │
-│   WebSocket ───────────────────────────────→│  (identical protocol)         │
-│   ← JSON verdict frames ────────────────────←─                              │
-│   │ relayed to the same overlay │           └───────────────────────────────┘
-└─────────────────────────────────┘
-```
-
-Why it is shaped that way: a content script's network requests run in the
-*page's* context under MV3, and Twitch/YouTube ship a `connect-src` CSP that
-would block `ws://127.0.0.1` — so the WebSocket has to live in an extension
-page. Firefox's MV3 background is an event page with a real DOM (not a service
-worker), so it can hold the socket and reuse the same `BackendSocket` client.
-PCM crosses as base64 because runtime messaging is JSON-serialized in both
-browsers (an `ArrayBuffer` would arrive as `{}`).
-
-Firefox-specific caveats:
-
-- Audio is tapped from the page's `<video>` via `createMediaElementSource`,
-  which **reroutes** that element's audio through the extension's
-  AudioContext. The graph therefore keeps a permanent loopback to the
-  speakers and never closes the context — and capture refuses to start if the
-  context cannot leave the `suspended` state, rather than risk muting the
-  stream.
-- It follows that capture only works on pages with a real media element (all
-  four supported sites) and not on DRM-protected video.
-- A full page navigation ends the session (the content script owns the tap);
-  in-page SPA route changes are handled by re-attaching to the new player.
 
 ## Backend details (advanced)
 
@@ -355,7 +302,7 @@ last four characters. **AI provider** also holds the spending limits — on by d
 150 fact-checks a day and $10 a month — and the switch back to the local backend.
 
 What the backend still does that this engine does not: the Jev pre-screen,
-contradiction alerts, on-screen (vision) claims, Ollama, and Firefox.
+contradiction alerts, on-screen (vision) claims, and Ollama.
 
 ```bash
 # Real, paid calls (about five cents): install -> key -> speech -> verdicts, no backend.
@@ -369,12 +316,13 @@ Not published anywhere; this only produces the files.
 
 ```bash
 python scripts/vendor_stt_runtime.py     # once: the pinned speech runtime
-python scripts/build_extension.py        # -> dist/chrome/, dist/firefox/ and a zip of each
+python scripts/build_extension.py        # -> dist/chrome/ and its zip
 python scripts/build_extension.py --check   # lint only
 ```
 
-The build derives a clean manifest per browser from `extension/manifest.json`, leaves
-out tests and tooling, and fails on anything a store would reject that it can detect.
+The build derives a clean store manifest from `extension/manifest.json` (one package
+serves Chrome and Edge), leaves out tests and tooling, and fails on anything a store
+would reject that it can detect.
 `dist/chrome` can be loaded unpacked to try exactly what would be uploaded:
 
 ```bash
@@ -408,8 +356,7 @@ With speech in the browser the backend no longer needs its own model. `STT_BACKE
 in `backend/.env` starts it without one — it comes up in a few seconds and uses far less
 memory, and it then accepts only sessions that send text.
 
-Chrome only (Firefox has no offscreen document, so there the backend always
-transcribes). Detection of music and noise is still basic; see the build guide.
+Detection of music and noise is still basic; see the build guide.
 
 ```bash
 node scripts/run_browser_speech_e2e.mjs    # real model, real capture, model-less fake backend
@@ -711,8 +658,7 @@ the hosted tier, not a replacement for local Whisper today.
 ## Usage
 
 Installed via the [Quickstart](#quickstart) above. After code changes to the
-extension, reload it: the refresh icon on its card in `chrome://extensions/`, or
-**Reload** on `about:debugging#/runtime/this-firefox` in Firefox.
+extension, reload it: the refresh icon on its card in `chrome://extensions/`.
 
 1. Start the backend, then open a stream on a supported site: Twitch
    (`https://www.twitch.tv/...`), YouTube (`/watch?v=` or `/live/...`), Kick

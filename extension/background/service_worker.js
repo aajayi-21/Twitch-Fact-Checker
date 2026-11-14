@@ -1,22 +1,14 @@
 /**
- * Background message router — a service worker in Chrome, an event page in
- * Firefox (the manifest declares both; each browser picks its own).
+ * Background message router (the MV3 service worker).
  *
- * TWO CAPTURE PATHS, chosen by `HAS_OFFSCREEN_CAPTURE`:
- *
- *  - Chrome: tabCapture mints a stream id and the OFFSCREEN DOCUMENT owns
- *    the session (MediaStream + AudioContext + WebSocket). This file stays a
- *    stateless router — MV3 service workers die after ~30 s idle, so the
- *    captured tab id lives in chrome.storage.session and is re-read on every
- *    event.
- *  - Firefox: neither tabCapture nor offscreen documents exist, so the
- *    CONTENT SCRIPT taps the page's <video> and streams base64 PCM here,
- *    where `page_session.js` owns the WebSocket. Firefox's background page
- *    has a DOM and stays alive under the 4 msg/s audio cadence.
- *    See shared/capabilities.js for the full rationale.
+ * tabCapture mints a stream id and the OFFSCREEN DOCUMENT owns the session
+ * (MediaStream + AudioContext + WebSocket or in-browser pipeline). This file
+ * stays a stateless router — MV3 service workers die after ~30 s idle, so the
+ * captured tab id lives in chrome.storage.session and is re-read on every
+ * event.
  *
  * Responsibilities:
- *  - offscreen document lifecycle (Chrome) / page_session wiring (Firefox),
+ *  - offscreen document lifecycle,
  *  - the capture start sequence (offscreen doc FIRST, then getMediaStreamId,
  *    then OFFSCREEN_START in the same tick — the stream id expires in seconds),
  *  - one automatic full-sequence retry on stream-id failure,
@@ -71,17 +63,12 @@ import {currentSpend, monthStartIso} from "../ledger/queries.mjs";
 import {createSessionRecorder} from "../ledger/session_recorder.mjs";
 import {identityFromPage} from "../ledger/stream_identity.mjs";
 import {APP_ROUTE, openAppTab} from "../shared/app_tab.js";
-import {HAS_OFFSCREEN_CAPTURE} from "../shared/capabilities.js";
 import {ERR, MSG, TARGET, makeMsg} from "../shared/messages.js";
 import {
   deriveBackendHttpOrigin,
   getEnabledTopicSlugs,
   loadSettings,
 } from "../shared/settings.js";
-import * as pageSession from "./page_session.js";
-
-// Promise-safe API namespace (see shared/capabilities.js § namespace idiom).
-const chrome = globalThis.browser ?? globalThis.chrome;
 
 const OFFSCREEN_DOCUMENT_PATH = "offscreen/offscreen.html";
 const CAPTURED_TAB_KEY = "capturedTabId";
@@ -215,9 +202,6 @@ const ensureOffscreenDocument = async () => {
 };
 
 const closeOffscreenDocument = async () => {
-  if (!HAS_OFFSCREEN_CAPTURE) {
-    return; // Firefox: no offscreen documents exist to close
-  }
   try {
     if (await chrome.offscreen.hasDocument()) {
       await chrome.offscreen.closeDocument();
@@ -321,39 +305,37 @@ const handleCaptureStart = async (tabId) => {
   const settings = await loadSettings();
   // Identity is best-effort: a tabs.get failure must not abort the start.
   const tab = await chrome.tabs.get(tabId).catch(() => null);
-  // Which engine checks claims. The browser engine is Chrome-only (it needs
-  // the offscreen document); Firefox always uses the backend.
+  // Which engine checks claims: the backend, or the offscreen document with
+  // the viewer's own provider keys.
   let browserEngine = null;
-  if (HAS_OFFSCREEN_CAPTURE) {
-    const engineState = await loadEngineState();
-    if (engineState.mode === ENGINE_MODE.BROWSER) {
-      const plan = planBrowserEngine(engineState, await loadProviderKeys());
-      if (!plan.ready) {
-        console.error(`[fact-checker] browser engine not ready: ${plan.reason}`);
-        await writeCaptureSession({
-          status: "error",
-          tabId: null,
-          wsState: "closed",
-          lastError: ERR.ERR_NOT_CONFIGURED,
-        });
-        return;
-      }
-      // Where the viewer stands against the spending limits. A history that
-      // cannot be read must not stop the session; it starts from zero.
-      const spent = await ledger
-        .loadUsageSince(monthStartIso())
-        .then((usage) => currentSpend(usage))
-        .catch((error) => {
-          console.warn("[fact-checker] could not read this month's usage:", error);
-          return {checksToday: 0, spendThisMonthUsd: 0};
-        });
-      browserEngine = {
-        gate: plan.gate,
-        verify: plan.verify,
-        budgets: engineState.budgets,
-        spent,
-      };
+  const engineState = await loadEngineState();
+  if (engineState.mode === ENGINE_MODE.BROWSER) {
+    const plan = planBrowserEngine(engineState, await loadProviderKeys());
+    if (!plan.ready) {
+      console.error(`[fact-checker] browser engine not ready: ${plan.reason}`);
+      await writeCaptureSession({
+        status: "error",
+        tabId: null,
+        wsState: "closed",
+        lastError: ERR.ERR_NOT_CONFIGURED,
+      });
+      return;
     }
+    // Where the viewer stands against the spending limits. A history that
+    // cannot be read must not stop the session; it starts from zero.
+    const spent = await ledger
+      .loadUsageSince(monthStartIso())
+      .then((usage) => currentSpend(usage))
+      .catch((error) => {
+        console.warn("[fact-checker] could not read this month's usage:", error);
+        return {checksToday: 0, spendThisMonthUsd: 0};
+      });
+    browserEngine = {
+      gate: plan.gate,
+      verify: plan.verify,
+      budgets: engineState.budgets,
+      spent,
+    };
   }
   await chrome.storage.session.set({
     [SESSION_PROVIDERS_KEY]: browserEngine
@@ -364,30 +346,28 @@ const handleCaptureStart = async (tabId) => {
   // Where speech is transcribed. With the browser engine there is no backend
   // to send audio to, so speech is in the browser whatever the setting says.
   let speechConfig = null;
-  if (HAS_OFFSCREEN_CAPTURE) {
-    const {state: speechState, tripped} = await loadGuardedSpeechState();
-    if (tripped) {
-      console.warn("[fact-checker] GPU speech blocked after an unfinished attempt");
-    }
-    if (speechState.settings.engine === SPEECH_ENGINE.BROWSER || browserEngine) {
-      const plan = planBrowserSpeech(speechState, {
-        browserMajor: browserMajorVersion(),
-        runtimeVersion: (await loadRuntimeVersion()) ?? "missing",
+  const {state: speechState, tripped} = await loadGuardedSpeechState();
+  if (tripped) {
+    console.warn("[fact-checker] GPU speech blocked after an unfinished attempt");
+  }
+  if (speechState.settings.engine === SPEECH_ENGINE.BROWSER || browserEngine) {
+    const plan = planBrowserSpeech(speechState, {
+      browserMajor: browserMajorVersion(),
+      runtimeVersion: (await loadRuntimeVersion()) ?? "missing",
+    });
+    if (!plan.ready) {
+      // The viewer asked for in-browser speech and it cannot run. Say so
+      // rather than quietly sending their audio somewhere else.
+      console.error(`[fact-checker] in-browser speech not ready: ${plan.reason}`);
+      await writeCaptureSession({
+        status: "error",
+        tabId: null,
+        wsState: "closed",
+        lastError: ERR.ERR_SPEECH_NOT_READY,
       });
-      if (!plan.ready) {
-        // The viewer asked for in-browser speech and it cannot run. Say so
-        // rather than quietly sending their audio somewhere else.
-        console.error(`[fact-checker] in-browser speech not ready: ${plan.reason}`);
-        await writeCaptureSession({
-          status: "error",
-          tabId: null,
-          wsState: "closed",
-          lastError: ERR.ERR_SPEECH_NOT_READY,
-        });
-        return;
-      }
-      speechConfig = plan.config;
+      return;
     }
+    speechConfig = plan.config;
   }
   const identity = await resolveTabIdentity(tab);
   recordSafely("capture start", recorder.captureStarting(tabId, identity));
@@ -408,27 +388,6 @@ const handleCaptureStart = async (tabId) => {
     channel: identity.channelId,
     streamTitle: identity.streamTitle,
   };
-  if (!HAS_OFFSCREEN_CAPTURE) {
-    // Firefox: open the socket here, then ask the content script to start
-    // tapping the page's <video>. Socket first so the hello handshake is
-    // already in flight when the first PCM frame lands.
-    try {
-      await pageSession.start(tabId, offscreenSettings);
-      await chrome.tabs.sendMessage(tabId, {
-        type: MSG.CONTENT_CAPTURE_START,
-        payload: {captureVideo: offscreenSettings.captureVideo},
-      });
-    } catch (error) {
-      console.error("[fact-checker] content capture start failed:", error);
-      await pageSession.captureFailed();
-      recordSafely("capture end", recorder.captureEnded());
-      return;
-    }
-    await setCapturedTabId(tabId);
-    await setToolbarIcon(true);
-    await notifySessionState(tabId, true);
-    return;
-  }
   try {
     await runStartSequence(tabId, offscreenSettings);
   } catch (firstError) {
@@ -462,20 +421,6 @@ const handleCaptureStart = async (tabId) => {
  * cleanup here so the popup never shows a zombie session.
  */
 const handleCaptureStop = async (reason) => {
-  if (!HAS_OFFSCREEN_CAPTURE) {
-    // Firefox: silence the content script first (a late PCM frame must not
-    // outlive the socket), then flush and close it here.
-    const capturedTabId = await getCapturedTabId();
-    if (capturedTabId !== null) {
-      await chrome.tabs
-        .sendMessage(capturedTabId, {type: MSG.CONTENT_CAPTURE_STOP, payload: {}})
-        .catch((error) => {
-          console.debug("[fact-checker] CONTENT_CAPTURE_STOP not delivered:", error);
-        });
-    }
-    await pageSession.stop(reason);
-    return;
-  }
   try {
     await chrome.runtime.sendMessage(
       makeMsg(TARGET.OFFSCREEN, MSG.OFFSCREEN_STOP, {reason})
@@ -595,10 +540,6 @@ const handleAdState = async (sender, payload) => {
     return;
   }
   const active = Boolean(payload?.active);
-  if (!HAS_OFFSCREEN_CAPTURE) {
-    pageSession.setAdActive(active);
-    return;
-  }
   if (!(await chrome.offscreen.hasDocument())) {
     return;
   }
@@ -731,20 +672,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           })
         );
         break;
-      // Firefox capture path (content script -> this page's WebSocket).
-      case MSG.AUDIO_CHUNK:
-        pageSession.submitAudio(message.payload?.pcmB64);
-        break;
-      case MSG.VIDEO_FRAME:
-        pageSession.submitVideoFrame(message.payload ?? {});
-        break;
-      case MSG.CONTENT_CAPTURE_FAILED:
-        console.error(
-          "[fact-checker] content capture failed:",
-          message.payload?.reason
-        );
-        await pageSession.captureFailed();
-        break;
       default:
         console.warn(`[fact-checker] unhandled message type: ${message.type}`);
     }
@@ -795,19 +722,6 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   });
 });
 
-// Firefox capture path: give page_session.js the same session/tab plumbing
-// the offscreen document reaches through messages. Harmless on Chrome — the
-// module is inert unless HAS_OFFSCREEN_CAPTURE is false.
-pageSession.configure({
-  onSessionPatch: writeCaptureSession,
-  onBackendEvent: (tabId, event) => {
-    relayBackendEvent({tabId, event}).catch((error) => {
-      console.debug("[fact-checker] backend event relay failed:", error);
-    });
-  },
-  onEnded: handleCaptureEnded,
-});
-
 /**
  * Relay live sensitivity and topic-filter changes from the app's Settings to
  * the offscreen document (offscreen docs cannot observe
@@ -834,12 +748,6 @@ const relaySettingsChange = async (changes) => {
     }
   }
   if (Object.keys(configPatch).length === 0) {
-    return;
-  }
-  if (!HAS_OFFSCREEN_CAPTURE) {
-    // Firefox: the socket lives here, so apply the change directly (a no-op
-    // when no session is running).
-    pageSession.sendConfig(configPatch);
     return;
   }
   if (!(await chrome.offscreen.hasDocument())) {

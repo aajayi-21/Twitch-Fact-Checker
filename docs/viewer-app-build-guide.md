@@ -101,7 +101,9 @@ keeps this from becoming two products.
 
 Firefox stays companion-only for now: it has neither `tabCapture` nor offscreen documents
 (`extension/shared/capabilities.js`), and the browser engine needs an offscreen document
-to hold the speech model.
+to hold the speech model. *Since 2026-11-13 Firefox is not supported at all: its capture
+path was removed and the extension targets Chromium browsers only
+([release plan](release-build-plan.md) §10).*
 
 The app is designed for the browser engine. The companion appears behind a single
 "I run the local backend" switch in Settings and is never part of the default path.
@@ -1008,7 +1010,7 @@ Open, in the order they matter:
 |---|---|
 | Licence | **Not chosen.** §10.1 blocker 1 stands. The MIT-for-`extension/` plan assumed the extension was useless without the backend; that is no longer true |
 | Submission, privacy-policy hosting, developer account, release tag | On hold; the owner's to do (`docs/store/submission-checklist.md`) |
-| Firefox package | Built and linted, with AMO's data-collection declaration. **Not run in Firefox** since Phase 1 |
+| Firefox package | **Removed 2026-11-13**, with the whole Firefox capture path: the extension now supports Chromium browsers only ([release plan](release-build-plan.md) §10) |
 | Edge | Not loaded in Edge |
 | "What changed" notice on update (§10.4) | Not built; needed before a release that changes data flow |
 | Publishing from CI (§10.5 step 4) | Not built; needs the store item to exist |

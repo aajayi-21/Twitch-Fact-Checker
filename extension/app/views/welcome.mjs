@@ -18,7 +18,6 @@ import {
   runTestCheck,
   useAppState,
 } from "../lib/app_store.mjs";
-import {HAS_OFFSCREEN_CAPTURE} from "../../shared/capabilities.js";
 import {
   ENGINE_MODE,
   connectProvider,
@@ -93,8 +92,8 @@ const EngineStep = ({onNext, onBack}) => {
   const {onboarding} = useAppState();
   const [mode, setMode] = useState(() =>
     // Someone revisiting the guide keeps what they chose; a first run starts
-    // on the browser engine where the browser can run it.
-    onboarding.completedAt || !HAS_OFFSCREEN_CAPTURE ? engine.state.mode : ENGINE_MODE.BROWSER
+    // on the browser engine.
+    onboarding.completedAt ? engine.state.mode : ENGINE_MODE.BROWSER
   );
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState(null);
@@ -117,18 +116,13 @@ const EngineStep = ({onNext, onBack}) => {
         The checker can run entirely inside this browser, or use a program on your computer.
         You can change this later under AI provider.
       </p>
-      ${HAS_OFFSCREEN_CAPTURE
-        ? html`<${Segmented}
-            name="welcome-engine"
-            label="Where it runs"
-            options=${ENGINE_OPTIONS}
-            value=${mode}
-            onChange=${setMode}
-          />`
-        : html`<${Notice} tone="info">
-            This browser can only use the local backend; running inside the browser needs Chrome
-            or Edge.
-          <//>`}
+      <${Segmented}
+        name="welcome-engine"
+        label="Where it runs"
+        options=${ENGINE_OPTIONS}
+        value=${mode}
+        onChange=${setMode}
+      />
       ${problem ? html`<${Notice} tone="warn">${problem}<//>` : null}
       <div class="form-actions">
         <${Button} variant="primary" onClick=${proceed} busy=${saving}>Continue<//>

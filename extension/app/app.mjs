@@ -22,9 +22,6 @@ import {SettingsView} from "./views/settings.mjs";
 import {UsageView} from "./views/usage.mjs";
 import {WelcomeView} from "./views/welcome.mjs";
 
-// Promise-safe API namespace (see shared/capabilities.js § namespace idiom).
-const chrome = globalThis.browser ?? globalThis.chrome;
-
 const NAV_ITEMS = Object.freeze([
   {route: ROUTES.HOME, label: "Home"},
   {route: ROUTES.HISTORY, label: "History"},

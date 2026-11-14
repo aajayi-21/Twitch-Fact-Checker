@@ -46,9 +46,6 @@
 (() => {
   "use strict";
 
-  // Promise-safe API namespace (see shared/capabilities.js § namespace idiom).
-  const chrome = globalThis.browser ?? globalThis.chrome;
-
   const HISTORY_LIMIT = 100;
   const REMOUNT_DEBOUNCE_MS = 500;
   const URL_POLL_INTERVAL_MS = 1000;
@@ -255,9 +252,6 @@
     // aggregate history-panel footer (never per-skip toasts). Page-lifetime,
     // like the verdict history.
     topicSkipCount: 0,
-    // PageAudioCapture instance on the Firefox path only (Chrome captures
-    // the tab from an offscreen document and leaves this null).
-    capture: null,
     // Ad-break tracking (see detectAdBreak / reportAdState).
     adActive: false,
     adMarkersGoneSinceMs: null,
@@ -623,56 +617,6 @@
     }
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Firefox capture path (see shared/capabilities.js)                   */
-  /* ------------------------------------------------------------------ */
-
-  /**
-   * Tap the page's own <video> and stream base64 PCM to the background
-   * page, which owns the WebSocket. Only Firefox ever asks for this —
-   * Chrome captures the tab through an offscreen document instead.
-   */
-  const startPageCapture = async ({captureVideo = false} = {}) => {
-    if (state.capture) {
-      state.capture.stop();
-      state.capture = null;
-    }
-    const capture = new PageAudioCapture({
-      onFrame: (pcmB64) => {
-        chrome.runtime
-          .sendMessage({
-            target: "background",
-            type: "AUDIO_CHUNK",
-            payload: {pcmB64},
-          })
-          .catch((error) => {
-            console.debug("[fact-checker] AUDIO_CHUNK send failed:", error);
-          });
-      },
-      onVideoFrame: ({imageB64, capturedAtMs}) => {
-        chrome.runtime
-          .sendMessage({
-            target: "background",
-            type: "VIDEO_FRAME",
-            payload: {imageB64, capturedAtMs},
-          })
-          .catch((error) => {
-            console.debug("[fact-checker] VIDEO_FRAME send failed:", error);
-          });
-      },
-    });
-    await capture.start({captureVideo});
-    state.capture = capture;
-  };
-
-  const stopPageCapture = () => {
-    if (!state.capture) {
-      return;
-    }
-    state.capture.stop();
-    state.capture = null;
-  };
-
   const listenForMessages = () => {
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (!message || typeof message.type !== "string") {
@@ -688,19 +632,6 @@
         handleBackendEvent(message.payload?.event);
       } else if (message.type === "SESSION_STATE") {
         setRunning(message.payload?.running);
-      } else if (message.type === "CONTENT_CAPTURE_START") {
-        startPageCapture(message.payload ?? {}).catch((error) => {
-          console.error("[fact-checker] page capture failed to start:", error);
-          chrome.runtime
-            .sendMessage({
-              target: "background",
-              type: "CONTENT_CAPTURE_FAILED",
-              payload: {reason: String(error?.message ?? error)},
-            })
-            .catch(() => {});
-        });
-      } else if (message.type === "CONTENT_CAPTURE_STOP") {
-        stopPageCapture();
       }
       return false;
     });
@@ -809,23 +740,6 @@
     for (const pipEvent of ["enterpictureinpicture", "leavepictureinpicture"]) {
       document.addEventListener(pipEvent, syncPlaybackState, true);
     }
-    // Firefox path only: a full navigation destroys this script (and with it
-    // the audio tap), so end the session rather than leave the backend
-    // socket open with nothing feeding it. SPA route changes do NOT fire
-    // pagehide — those are handled by PageAudioCapture's re-attach check.
-    window.addEventListener("pagehide", () => {
-      if (!state.capture) {
-        return;
-      }
-      stopPageCapture();
-      chrome.runtime
-        .sendMessage({
-          target: "background",
-          type: "CAPTURE_STOP",
-          payload: {reason: "navigated"},
-        })
-        .catch(() => {});
-    });
     listenForMessages();
     listenForSettingsChanges();
     watchForNavigation();

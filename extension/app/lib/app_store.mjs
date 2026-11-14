@@ -16,9 +16,6 @@ import {BACKEND_ERROR, BackendError, createBackendApi} from "./backend_api.mjs";
 import {ENGINE_MODE, getEngineView} from "./engine_actions.mjs";
 import {useEffect, useState} from "./html.mjs";
 
-// Promise-safe API namespace (see shared/capabilities.js § namespace idiom).
-const chrome = globalThis.browser ?? globalThis.chrome;
-
 const ONBOARDING_KEY = "onboarding";
 
 // Poll quickly while the backend is down (the person is probably starting

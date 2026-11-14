@@ -46,11 +46,6 @@ export const MSG = Object.freeze({
   // Ask the page who owns the stream; the content script answers through
   // sendResponse with {ownerHref, ownerName} (content/page_identity.js).
   GET_PAGE_IDENTITY: "GET_PAGE_IDENTITY",
-  // Firefox capture path only (no tabCapture/offscreen there): the content
-  // script taps the page's own <video> and streams PCM back to the
-  // background page. See shared/capabilities.js.
-  CONTENT_CAPTURE_START: "CONTENT_CAPTURE_START",
-  CONTENT_CAPTURE_STOP: "CONTENT_CAPTURE_STOP",
   // content script -> service worker
   CONTENT_READY: "CONTENT_READY",
   OPEN_OPTIONS: "OPEN_OPTIONS",
@@ -64,15 +59,8 @@ export const MSG = Object.freeze({
   PAGE_IDENTITY: "PAGE_IDENTITY",
   // content script -> service worker: the player is showing an ad ({active}).
   // Sent on every change and re-sent as a heartbeat while an ad lasts; the
-  // service worker routes it to whichever context owns the session.
+  // service worker routes it to the offscreen document (OFFSCREEN_AD_STATE).
   AD_STATE: "AD_STATE",
-  // Firefox capture path: audio/video payloads from the content script to
-  // the background page's WebSocket. PCM travels base64-encoded because
-  // runtime messaging is JSON-serialized in both browsers (an ArrayBuffer
-  // would arrive as {}).
-  AUDIO_CHUNK: "AUDIO_CHUNK",
-  VIDEO_FRAME: "VIDEO_FRAME",
-  CONTENT_CAPTURE_FAILED: "CONTENT_CAPTURE_FAILED",
 });
 
 /**

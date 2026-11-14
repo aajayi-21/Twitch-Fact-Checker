@@ -34,7 +34,6 @@ import {
   setTopicEnabled,
   topicsMasterState,
 } from "../lib/settings_rules.mjs";
-import {HAS_OFFSCREEN_CAPTURE} from "../../shared/capabilities.js";
 import {EngineCard} from "./engine_card.mjs";
 import {ImportHistory} from "./import_history.mjs";
 import {SpeechCard} from "./speech_card.mjs";
@@ -61,20 +60,15 @@ const RETENTION_OPTIONS = Object.freeze([
 
 const SAVED_NOTE_MS = 1800;
 
-/**
- * The page's sections, in order, for the list beside them. The two that
- * depend on in-browser capture are listed only where their cards exist.
- */
-const SECTIONS = Object.freeze(
-  [
-    HAS_OFFSCREEN_CAPTURE ? ["section-engine", "Where it runs"] : null,
-    ["section-checked", "What gets checked"],
-    ["section-verdicts", "How verdicts appear"],
-    HAS_OFFSCREEN_CAPTURE ? ["section-speech", "Speech recognition"] : null,
-    ["section-data", "Your data"],
-    ["section-advanced", "Advanced"],
-  ].filter(Boolean)
-);
+/** The page's sections, in order, for the list beside them. */
+const SECTIONS = Object.freeze([
+  ["section-engine", "Where it runs"],
+  ["section-checked", "What gets checked"],
+  ["section-verdicts", "How verdicts appear"],
+  ["section-speech", "Speech recognition"],
+  ["section-data", "Your data"],
+  ["section-advanced", "Advanced"],
+]);
 
 /**
  * Scrolls to a section. Buttons rather than #links: the address fragment
@@ -323,11 +317,7 @@ export const SettingsView = () => {
         <//>
       <//>
 
-      ${
-        // In-browser speech needs Chrome's offscreen document; elsewhere the
-        // backend always transcribes and there is nothing to choose.
-        HAS_OFFSCREEN_CAPTURE ? html`<${SpeechCard} />` : null
-      }
+      <${SpeechCard} />
 
       <${DataCard} settings=${settings} save=${save} />
 

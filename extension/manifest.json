@@ -17,15 +17,8 @@
     "wss://localhost/*"
   ],
   "optional_host_permissions": ["https://generativelanguage.googleapis.com/*"],
-  "browser_specific_settings": {
-    "gecko": {
-      "id": "live-stream-fact-checker@local",
-      "strict_min_version": "128.0"
-    }
-  },
   "background": {
     "service_worker": "background/service_worker.js",
-    "scripts": ["background/service_worker.js"],
     "type": "module"
   },
   "action": {
@@ -54,13 +47,13 @@
         "https://www.kick.com/*",
         "https://rumble.com/*"
       ],
-      "js": ["content/overlay.js", "content/capture.js", "content/page_identity.js", "content/content.js"],
+      "js": ["content/overlay.js", "content/page_identity.js", "content/content.js"],
       "run_at": "document_idle"
     }
   ],
   "web_accessible_resources": [
     {
-      "resources": ["content/overlay.css", "offscreen/pcm_worklet.js"],
+      "resources": ["content/overlay.css"],
       "matches": [
         "https://www.twitch.tv/*",
         "https://www.youtube.com/*",

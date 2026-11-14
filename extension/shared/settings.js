@@ -10,8 +10,6 @@
  * the label/color maps (classic content scripts cannot import modules) —
  * keep them in sync.
  */
-// Promise-safe API namespace (see shared/capabilities.js § namespace idiom).
-const chrome = globalThis.browser ?? globalThis.chrome;
 
 export const TOPIC_SLUGS = Object.freeze([
   "politics",

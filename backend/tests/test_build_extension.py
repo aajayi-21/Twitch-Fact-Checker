@@ -1,8 +1,8 @@
 """The store-package build (scripts/build_extension.py).
 
-Covers what a store would otherwise be the one to tell us: the per-browser
-manifests, the checks that fail a build, and that the same source always
-zips to the same bytes.
+Covers what a store would otherwise be the one to tell us: the store
+manifest, the checks that fail a build, and that the same source always zips
+to the same bytes.
 """
 
 import json
@@ -48,9 +48,9 @@ def make_extension(root: Path, manifest: dict[str, Any] | None = None) -> Path:
     return root
 
 
-class TestChromeManifest:
-    def test_keeps_only_what_chrome_uses(self) -> None:
-        manifest = build.chrome_manifest(DEV_MANIFEST, "1.2.3")
+class TestStoreManifest:
+    def test_stamps_the_version_and_keeps_the_service_worker(self) -> None:
+        manifest = build.store_manifest(DEV_MANIFEST, "1.2.3")
         assert manifest["version"] == "1.2.3"
         assert "browser_specific_settings" not in manifest
         assert manifest["background"] == {
@@ -59,7 +59,7 @@ class TestChromeManifest:
         }
 
     def test_installing_asks_for_no_host_at_all(self) -> None:
-        manifest = build.chrome_manifest(DEV_MANIFEST, "1.2.3")
+        manifest = build.store_manifest(DEV_MANIFEST, "1.2.3")
         assert "host_permissions" not in manifest
         # The backend's addresses and Gemini are asked for when first needed.
         optional = manifest["optional_host_permissions"]
@@ -70,50 +70,40 @@ class TestChromeManifest:
 
     def test_the_development_manifest_is_left_untouched(self) -> None:
         before = json.dumps(DEV_MANIFEST, sort_keys=True)
-        build.chrome_manifest(DEV_MANIFEST, "9.9.9")
-        build.firefox_manifest(DEV_MANIFEST, "9.9.9")
+        build.store_manifest(DEV_MANIFEST, "9.9.9")
         assert json.dumps(DEV_MANIFEST, sort_keys=True) == before
-
-
-class TestFirefoxManifest:
-    def test_drops_what_firefox_lacks_and_declares_data_collection(self) -> None:
-        manifest = build.firefox_manifest(DEV_MANIFEST, "1.2.3")
-        assert "service_worker" not in manifest["background"]
-        assert manifest["background"]["scripts"] == ["background/service_worker.js"]
-        assert "tabCapture" not in manifest["permissions"]
-        assert "offscreen" not in manifest["permissions"]
-        assert "minimum_chrome_version" not in manifest
-        assert "optional_host_permissions" not in manifest
-        gecko = manifest["browser_specific_settings"]["gecko"]
-        assert gecko["data_collection_permissions"] == {"required": ["websiteContent"]}
-        assert gecko["strict_min_version"] == "140.0"
-        assert gecko["id"]
 
 
 class TestFiles:
     def test_tests_spikes_and_tooling_are_left_out(self, tmp_path: Path) -> None:
-        files = build.collect_files(make_extension(tmp_path), "chrome")
+        files = build.collect_files(make_extension(tmp_path))
         assert "app/app.mjs" in files
         assert build.SPEECH_RUNTIME_MARKER in files
         assert not [name for name in files if name.startswith(("tests/", "spike/"))]
         assert "icons/make_icons.py" not in files
-        assert "manifest.json" not in files  # written per target
-
-    def test_firefox_leaves_out_the_speech_runtime(self, tmp_path: Path) -> None:
-        files = build.collect_files(make_extension(tmp_path), "firefox")
-        assert build.SPEECH_RUNTIME_MARKER not in files
-        assert "app/app.mjs" in files
+        assert "manifest.json" not in files  # written separately
 
 
 class TestLint:
-    def lint(self, tmp_path: Path, target: str = "chrome", **changes: Any) -> list[str]:
+    def lint(self, tmp_path: Path, **changes: Any) -> list[str]:
         root = make_extension(tmp_path)
-        manifest = build.build_manifest(target, {**DEV_MANIFEST, **changes}, "1.0.0")
-        return build.lint_manifest(target, manifest, build.collect_files(root, target))
+        manifest = build.store_manifest({**DEV_MANIFEST, **changes}, "1.0.0")
+        return build.lint_manifest(manifest, build.collect_files(root))
 
-    @pytest.mark.parametrize("target", build.TARGETS)
-    def test_the_real_manifest_is_clean(self, tmp_path: Path, target: str) -> None:
-        assert self.lint(tmp_path, target) == []
+    def test_the_real_manifest_is_clean(self, tmp_path: Path) -> None:
+        assert self.lint(tmp_path) == []
+
+    def test_firefox_keys_fail(self, tmp_path: Path) -> None:
+        problems = self.lint(
+            tmp_path,
+            browser_specific_settings={"gecko": {"id": "x@example.org"}},
+            background={
+                **DEV_MANIFEST["background"],
+                "scripts": ["background/service_worker.js"],
+            },
+        )
+        assert any("browser_specific_settings" in problem for problem in problems)
+        assert any("background.scripts" in problem for problem in problems)
 
     def test_a_description_over_the_store_limit_fails(self, tmp_path: Path) -> None:
         problems = self.lint(tmp_path, description="x" * 133)
@@ -132,19 +122,15 @@ class TestLint:
     def test_a_missing_file_named_by_the_manifest_fails(self, tmp_path: Path) -> None:
         root = make_extension(tmp_path)
         (root / "popup" / "popup.html").unlink()
-        manifest = build.chrome_manifest(DEV_MANIFEST, "1.0.0")
-        problems = build.lint_manifest(
-            "chrome", manifest, build.collect_files(root, "chrome")
-        )
+        manifest = build.store_manifest(DEV_MANIFEST, "1.0.0")
+        problems = build.lint_manifest(manifest, build.collect_files(root))
         assert any("popup/popup.html" in problem for problem in problems)
 
     def test_chrome_needs_the_speech_runtime_vendored(self, tmp_path: Path) -> None:
         root = make_extension(tmp_path)
         (root / build.SPEECH_RUNTIME_MARKER).unlink()
-        manifest = build.chrome_manifest(DEV_MANIFEST, "1.0.0")
-        problems = build.lint_manifest(
-            "chrome", manifest, build.collect_files(root, "chrome")
-        )
+        manifest = build.store_manifest(DEV_MANIFEST, "1.0.0")
+        problems = build.lint_manifest(manifest, build.collect_files(root))
         assert any("vendor_stt_runtime.py" in problem for problem in problems)
 
     def test_a_policy_allowing_eval_fails(self, tmp_path: Path) -> None:
@@ -158,10 +144,8 @@ class TestLint:
 
     def test_a_bad_version_and_a_pinned_key_fail(self, tmp_path: Path) -> None:
         root = make_extension(tmp_path)
-        manifest = build.chrome_manifest({**DEV_MANIFEST, "key": "abc"}, "1.0-beta")
-        problems = build.lint_manifest(
-            "chrome", manifest, build.collect_files(root, "chrome")
-        )
+        manifest = build.store_manifest({**DEV_MANIFEST, "key": "abc"}, "1.0-beta")
+        problems = build.lint_manifest(manifest, build.collect_files(root))
         assert any("version" in problem for problem in problems)
         assert any("'key'" in problem for problem in problems)
 
@@ -172,11 +156,11 @@ class TestCodeScan:
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
-        return build.scan_code(root, build.collect_files(root, "chrome"))
+        return build.scan_code(root, build.collect_files(root))
 
     def test_the_fixture_tree_is_clean(self, tmp_path: Path) -> None:
         root = make_extension(tmp_path)
-        assert build.scan_code(root, build.collect_files(root, "chrome")) == []
+        assert build.scan_code(root, build.collect_files(root)) == []
 
     @pytest.mark.parametrize(
         ("text", "what"),
@@ -250,11 +234,11 @@ class TestVersion:
 class TestBuild:
     def test_builds_a_package_and_a_reproducible_zip(self, tmp_path: Path) -> None:
         source = make_extension(tmp_path / "extension")
-        first = build.build_target(
-            "chrome", extension_dir=source, out_dir=tmp_path / "one", version="1.0.0"
+        first = build.build_package(
+            extension_dir=source, out_dir=tmp_path / "one", version="1.0.0"
         )
-        second = build.build_target(
-            "chrome", extension_dir=source, out_dir=tmp_path / "two", version="1.0.0"
+        second = build.build_package(
+            extension_dir=source, out_dir=tmp_path / "two", version="1.0.0"
         )
         assert first["sha256"] == second["sha256"]
         with zipfile.ZipFile(first["zip"]) as archive:
@@ -269,8 +253,7 @@ class TestBuild:
     def test_check_only_writes_nothing(self, tmp_path: Path) -> None:
         source = make_extension(tmp_path / "extension")
         out_dir = tmp_path / "out"
-        result = build.build_target(
-            "firefox",
+        result = build.build_package(
             extension_dir=source,
             out_dir=out_dir,
             version="1.0.0",
@@ -286,8 +269,7 @@ class TestBuild:
         )
         (source / "app" / "bad.mjs").write_text("eval('1')\n", encoding="utf-8")
         with pytest.raises(build.BuildError) as raised:
-            build.build_target(
-                "chrome",
+            build.build_package(
                 extension_dir=source,
                 out_dir=tmp_path / "out",
                 version="1.0.0",

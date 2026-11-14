@@ -213,6 +213,8 @@ zero external fetches, verified by a test. Registration is a one-time $5. Publis
 public listing to defend. `tabCapture`/`offscreen` will draw scrutiny — the disclosure is
 easy and true: audio goes to a server on the user's own machine, nothing leaves it.
 Firefox: AMO signs unlisted XPIs for self-distribution, so the same folder ships to both.
+*(2026-11-13: Firefox was dropped; the extension now targets Chromium browsers only. See
+[`release-build-plan.md`](release-build-plan.md) §10.)*
 
 **Rung 4 — this is the real gap, and it costs money.** OBS users do not run `uv`. The
 console is already a zero-build offline webapp, so the wrapper is thin: supervise the

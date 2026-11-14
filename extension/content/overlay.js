@@ -504,12 +504,7 @@ class FactCheckOverlay {
   #injectStyles() {
     const styleElement = document.createElement("style");
     this.#shadow.appendChild(styleElement);
-    // Inline namespace shim: this file is a classic content script sharing
-    // one global scope with the others, so it cannot declare a top-level
-    // `chrome` binding of its own (see shared/capabilities.js).
-    const cssUrl = (globalThis.browser ?? globalThis.chrome).runtime.getURL(
-      "content/overlay.css"
-    );
+    const cssUrl = chrome.runtime.getURL("content/overlay.css");
     fetch(cssUrl)
       .then((response) => {
         if (!response.ok) {

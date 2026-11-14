@@ -7,9 +7,6 @@
  * open extension pages themselves) and by the toolbar popup.
  */
 
-// Promise-safe API namespace (see shared/capabilities.js § namespace idiom).
-const chrome = globalThis.browser ?? globalThis.chrome;
-
 const APP_PAGE = "app/app.html";
 
 /** Routes of the app (mirrors app/lib/routes.mjs). */
@@ -21,22 +18,17 @@ export const APP_ROUTE = Object.freeze({
 });
 
 /**
- * Find an open app tab without the "tabs" permission. `runtime.getContexts`
- * lists the extension's own pages (Chrome 116+); Firefox lacks it, and there
- * `tabs.query` may see the extension's own tabs.
+ * Find an open app tab without the "tabs" permission: `runtime.getContexts`
+ * lists the extension's own pages (Chrome 116+, the manifest's minimum).
  *
  * @returns {Promise<{tabId: number, windowId: number}|null>}
  */
 const findAppTab = async () => {
   const appUrl = chrome.runtime.getURL(APP_PAGE);
   try {
-    if (chrome.runtime.getContexts) {
-      const contexts = await chrome.runtime.getContexts({contextTypes: ["TAB"]});
-      const context = contexts.find((candidate) => candidate.documentUrl?.startsWith(appUrl));
-      return context ? {tabId: context.tabId, windowId: context.windowId} : null;
-    }
-    const tabs = await chrome.tabs.query({url: `${appUrl}*`});
-    return tabs.length > 0 ? {tabId: tabs[0].id, windowId: tabs[0].windowId} : null;
+    const contexts = await chrome.runtime.getContexts({contextTypes: ["TAB"]});
+    const context = contexts.find((candidate) => candidate.documentUrl?.startsWith(appUrl));
+    return context ? {tabId: context.tabId, windowId: context.windowId} : null;
   } catch (error) {
     console.debug("[fact-checker] looking for an open app tab failed:", error);
     return null;

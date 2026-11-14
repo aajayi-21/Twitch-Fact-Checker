@@ -31,7 +31,7 @@ capture, but never on a real stream. The audit found the defects below.
 | Stream tabs opened before install or update | **Inject the overlay when Start is pressed** (adds the `scripting` permission, which shows no install warning) |
 | OpenAI and Gemini | **Test both live before release** and add their prices |
 | Monthly $ limit with an unpriced model | **Warn only**: spend keeps counting $0 for that model, with a clear warning wherever the limit is shown |
-| Browsers for v1 | **Chrome and Edge only.** Firefox is deferred |
+| Browsers for v1 | **Chrome and Edge only.** Firefox is deferred, and its code was removed (below) |
 | Licence | **Decide later.** The code work does not depend on it, but submission waits for it |
 | Extra scope | **The backend one-command install is in.** Streamer-mode launch, neural voice detection and hosted speech are deferred (§11) |
 
@@ -330,8 +330,10 @@ verdict, and a restart keeps the key.
 - **Listing and policy changes from this plan:** the `scripting` permission and its
   justification; OpenAI and Gemini described as tested; "Open source" stays out until a
   licence exists.
-- **Firefox out of v1:** the listing, README and submission checklist say Chrome and
-  Edge. CI keeps building the Firefox package so it doesn't rot; it just isn't released.
+- **Firefox removed ✅ (2026-11-13):** the Firefox capture path (`content/capture.js`,
+  `background/page_session.js`, `shared/capabilities.js` and its branches), the gecko
+  manifest keys and the Firefox package are gone; the build now fails if Firefox keys
+  come back. README, CI and the submission checklist say Chromium only.
 - **Edge:** load `dist/chrome` in Edge and repeat the no-key path and one keyed run.
 - A trademark search on "Doxa" in the software and app classes before the name goes on a
   store listing (your call whether to pay for one).
@@ -375,7 +377,7 @@ From [`store/submission-checklist.md`](store/submission-checklist.md), in order:
 
 | Item | Why not v1 |
 |---|---|
-| Firefox | Decided: Chrome and Edge only. It also needs the local backend on Firefox, which the listing would have to require |
+| Firefox | Decided: Chromium browsers only, and the Firefox code was removed. Coming back would mean rebuilding a capture path (Firefox has no `tabCapture` or offscreen documents) and requiring the local backend there; it is in git history before 2026-11-13 |
 | Streamer-mode launch (`docs/streamer-launch-checklist.md`) | A separate product with its own consent and dry-run gates. Only the approve fix (Phase 4) is in |
 | Neural voice detection | Energy-based segmentation works on the test clips; revisit if Phase 8 shows music or crowd noise producing claims |
 | Hosted speech fallback | Only matters for machines too slow for local speech, and none has been measured yet |

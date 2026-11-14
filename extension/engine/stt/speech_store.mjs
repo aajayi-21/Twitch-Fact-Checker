@@ -19,9 +19,6 @@ import {
   normalizeSpeechState,
 } from "./speech_setup.mjs";
 
-// Promise-safe API namespace (see shared/capabilities.js § namespace idiom).
-const chrome = globalThis.browser ?? globalThis.chrome;
-
 export const GPU_LOCK_NAME = "factchecker-gpu-speech";
 
 const RUNTIME_VERSIONS_PATH = "vendor/transformers/VERSIONS.txt";

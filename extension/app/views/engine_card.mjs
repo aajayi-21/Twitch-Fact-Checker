@@ -2,12 +2,8 @@
  * The one switch between the two engines: check claims inside this
  * extension with the viewer's own key, or use the local backend program.
  * Shown on the AI provider screen and in Settings.
- *
- * Chrome only: the browser engine needs the offscreen document, so on
- * Firefox there is nothing to choose and the card is not shown.
  */
 
-import {HAS_OFFSCREEN_CAPTURE} from "../../shared/capabilities.js";
 import {Card, Notice, Segmented} from "../components.mjs";
 import {ENGINE_MODE, setEngineMode, useEngine} from "../lib/engine_actions.mjs";
 import {describeProviderError} from "../lib/engine_model.mjs";
@@ -29,9 +25,6 @@ export const ENGINE_OPTIONS = Object.freeze([
 export const EngineCard = () => {
   const engine = useEngine();
   const [problem, setProblem] = useState(null);
-  if (!HAS_OFFSCREEN_CAPTURE) {
-    return null;
-  }
   const choose = async (mode) => {
     setProblem(null);
     try {
