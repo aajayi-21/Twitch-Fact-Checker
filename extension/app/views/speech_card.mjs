@@ -198,8 +198,9 @@ export const SpeechCard = () => {
         ? html`
             ${runtimeMissing
               ? html`<${Notice} tone="error">
-                  The speech runtime is not in this copy of the extension. From the project folder
-                  run <code>python scripts/vendor_stt_runtime.py</code>, then reload the extension.
+                  This copy of the extension is missing the files that run speech recognition, so
+                  it cannot transcribe in the browser. Reinstall the extension, or choose the local
+                  backend for speech instead.
                 <//>`
               : null}
             ${!browserEngine && health && health.accepts_transcripts !== true

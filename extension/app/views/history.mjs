@@ -35,6 +35,7 @@ import {
   labelName,
   platformLabel,
   plural,
+  webLink,
 } from "../lib/format.mjs";
 import {html, useMemo, useState} from "../lib/html.mjs";
 import {
@@ -130,18 +131,20 @@ const VerdictDetail = ({verdict, feedback}) => {
       <p class="result-explanation">${verdict.explanation || "No explanation was recorded."}</p>
       ${verdict.sources.length > 0
         ? html`<ul class="source-list">
-            ${verdict.sources.map(
-              (source) => html`
+            ${verdict.sources.map((source) => {
+              const link = webLink(source.url);
+              const label = source.title ?? source.domain ?? source.url;
+              return html`
                 <li key=${source.url}>
-                  <a href=${source.url} target="_blank" rel="noopener noreferrer">
-                    ${source.title ?? source.domain ?? source.url}
-                  </a>
+                  ${link
+                    ? html`<a href=${link.href} target="_blank" rel="noopener noreferrer">${label}</a>`
+                    : html`<span>${label}</span>`}
                   ${source.title && source.domain
                     ? html`<span class="muted"> · ${source.domain}</span>`
                     : null}
                 </li>
-              `
-            )}
+              `;
+            })}
           </ul>`
         : html`<p class="muted">No sources — which is why a result like this is left Unverified.</p>`}
       </div>

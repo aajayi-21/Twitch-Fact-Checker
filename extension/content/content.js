@@ -668,7 +668,17 @@
       childList: true,
       subtree: true,
     });
-    setInterval(() => {
+    const poll = setInterval(() => {
+      // After the extension is updated or reloaded this copy is orphaned:
+      // it can no longer reach the extension, and the new copy (injected on
+      // the next Start) draws its own overlay. Step aside rather than keep
+      // re-mounting a dead one beside it.
+      if (!chrome.runtime?.id) {
+        clearInterval(poll);
+        observer.disconnect();
+        state.overlay?.unmount();
+        return;
+      }
       syncPlaybackState();
       reportPageIdentity();
       if (location.href === state.lastUrl) {

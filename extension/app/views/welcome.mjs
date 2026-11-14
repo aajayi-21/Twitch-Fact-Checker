@@ -27,6 +27,7 @@ import {
 } from "../lib/engine_actions.mjs";
 import {DEMO_RECORDING, runDemo} from "../lib/demo_run.mjs";
 import {BROWSER_PROVIDERS, describeProviderError} from "../lib/engine_model.mjs";
+import {webLink} from "../lib/format.mjs";
 import {html, useEffect, useState} from "../lib/html.mjs";
 import {PRIVACY_POLICY_URL} from "../lib/links.mjs";
 import {ROUTES} from "../lib/routes.mjs";
@@ -343,11 +344,14 @@ const VerdictPreview = ({verdict}) => html`
     <p class="verdict-text">${verdict.explanation}</p>
     ${verdict.sources?.length
       ? html`<ul class="verdict-sources">
-          ${verdict.sources.slice(0, 3).map(
-            (source) => html`<li key=${source.url}>
-              <${ExternalLink} href=${source.url}>${source.title || new URL(source.url).hostname}<//>
-            </li>`
-          )}
+          ${verdict.sources.slice(0, 3).map((source) => {
+            const link = webLink(source.url);
+            return html`<li key=${source.url}>
+              ${link
+                ? html`<${ExternalLink} href=${link.href}>${source.title || link.host}<//>`
+                : html`<span>${source.title || String(source.url ?? "")}</span>`}
+            </li>`;
+          })}
         </ul>`
       : null}
   </article>

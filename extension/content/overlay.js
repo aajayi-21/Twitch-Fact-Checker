@@ -68,6 +68,7 @@ class FactCheckOverlay {
   static TRANSCRIPT_DURATION_MS = 5000;
   static TOAST_EXIT_MS = 220;
   static MIN_RESUME_MS = 800;
+  static HOST_ID = "stream-fact-checker-overlay";
   static DEFAULT_DURATION_MS = 12000;
   static VALID_LABELS = new Set(["TRUE", "FALSE", "MISLEADING", "UNVERIFIED"]);
   static VALID_POSITIONS = new Set([
@@ -190,8 +191,14 @@ class FactCheckOverlay {
       throw new Error("FactCheckOverlay.mount: parentElement must be an Element");
     }
     if (!this.#host) {
+      // An overlay left by an orphaned copy of this script (the extension
+      // was updated or reloaded since the page loaded) would otherwise sit
+      // beside this one.
+      for (const stale of document.querySelectorAll(`#${FactCheckOverlay.HOST_ID}`)) {
+        stale.remove();
+      }
       this.#host = document.createElement("div");
-      this.#host.id = "stream-fact-checker-overlay";
+      this.#host.id = FactCheckOverlay.HOST_ID;
       this.#shadow = this.#host.attachShadow({mode: "open"});
       this.#injectStyles();
       this.#buildSkeleton();

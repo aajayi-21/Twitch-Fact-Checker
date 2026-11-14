@@ -38,6 +38,27 @@ export const formatUsd = (usd) => {
 };
 
 /**
+ * A source address that is safe to render as a link: http(s) only, the same
+ * rule the overlay applies (content/overlay.js). A `javascript:` or `data:`
+ * address from a model's answer must never become a clickable link.
+ *
+ * @param {unknown} url
+ * @returns {{href: string, host: string}|null} null: show it as text, if at all
+ */
+export const webLink = (url) => {
+  let parsed;
+  try {
+    parsed = new URL(String(url));
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    return null;
+  }
+  return {href: parsed.href, host: parsed.hostname.replace(/^www\./, "")};
+};
+
+/**
  * A cost total, with "≈" whenever any part of it is an estimate, and
  * "+ unpriced" when some calls in it could not be priced (so the figure is
  * a floor, not the whole amount).

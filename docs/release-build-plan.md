@@ -46,7 +46,7 @@ Fixes with one obvious answer were not asked about and are planned directly.
 | 0 | DeepSeek default model ✅ | hours | — |
 | 1 | Local backend security ✅ | 1–2 days | — |
 | 2 | Spending and error reporting (extension) ✅ | 2–3 days | — |
-| 3 | Lifecycle and small fixes (extension) | 1–2 days | — |
+| 3 | Lifecycle and small fixes (extension) ✅ | 1–2 days | — |
 | 4 | Streamer bot safety fix | half a day | — |
 | 5 | Provider live runs: DeepSeek, OpenAI, Gemini | 1 day | 0, 2; **your OpenAI and Gemini keys** |
 | 6 | Backend one-command install | 2 days | 1 |
@@ -289,7 +289,36 @@ session with the right text (using a deliberately bad key, which costs nothing).
 
 ---
 
-## 6. Phase 3 — Lifecycle and small fixes (extension)
+## 6. Phase 3 — Lifecycle and small fixes (extension) ✅
+
+**Built 2026-11-14** on branch `feat/lifecycle-fixes`. Differences from the table below:
+
+- **Injection depends on the toolbar click.** Content-script match patterns give no
+  access to a tab: without a host permission or `activeTab`, a tab's URL is hidden and
+  `executeScript` is refused (checked in Chrome). Start comes from the toolbar popup,
+  whose click grants `activeTab` for that tab, so `scripting` + `activeTab` is enough
+  and no host permission was added. Injection is limited to the four stream sites; a
+  fresh overlay removes any stale one, and an orphaned content script (extension
+  updated or reloaded) now unmounts itself.
+- **Overlay delivery problems** go into a separate `overlayProblem` key in
+  `chrome.storage.session`, because the offscreen document rewrites the whole
+  `captureSession` object. The popup shows it during a session.
+- **Message senders** are checked by URL, not `sender.tab`: the app is an extension
+  page that lives in a tab, and it sends `CAPTURE_START`. Extension-only messages
+  from anything else are refused, in the worker and in the offscreen document.
+- **Speech.** The load gives up after 90 s with no progress (60 s was too tight for a
+  large model initialising after its download). Download failures are retried once,
+  then reported with "check the internet connection", and never block the GPU. Other
+  load failures on the GPU still block it, since a crash cannot be told apart from a
+  GPU fault reliably.
+- **The flaky backend test** was a real bug: the session's end write was cancelled
+  while queued behind other database work when the handler was cancelled, leaving the
+  session unfinished. The write is now shielded (`app/pipeline.py`). Reproduced at 2
+  in 48 under load; 180 runs clean afterwards.
+- **Verified** with a new `scripts/check_lifecycle.mjs`: the clean-up alarm survives
+  a worker restart unmoved (and the check fails on the old code), and a Twitch tab
+  opened before install answers and has one overlay after Start. That run stands in
+  for the toolbar click with a host permission on the copy it loads.
 
 | Fix | Where | Change |
 |---|---|---|

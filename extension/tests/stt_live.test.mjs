@@ -278,6 +278,30 @@ describe("LiveTranscriber", () => {
     assert.deepEqual(info, {loadMs: 1});
   });
 
+  it("gives up on a load that shows no sign of life, and is patient with a slow download", async () => {
+    const stuck = new LiveTranscriber({onTranscript: () => {}}, {loadStallMs: 30});
+    const loading = stuck.load({repo: "x", device: "wasm", dtype: "q8", numThreads: 1});
+    const worker = FakeWorker.instances.at(-1);
+    worker.emit = () => {}; // the worker never answers
+    await assert.rejects(loading, /no progress loading the speech model/);
+    assert.equal(worker.terminated, true);
+
+    const slow = new LiveTranscriber({onTranscript: () => {}}, {loadStallMs: 40});
+    const slowWorker = (() => {
+      const pending = slow.load({repo: "x", device: "wasm", dtype: "q8", numThreads: 1});
+      return {pending, worker: FakeWorker.instances.at(-1)};
+    })();
+    const realEmit = FakeWorker.prototype.emit.bind(slowWorker.worker);
+    slowWorker.worker.emit = () => {}; // swallow the scripted instant "ready"
+    // Progress every 25 ms keeps it alive well past one 40 ms window.
+    for (let step = 0; step < 4; step += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      realEmit({type: "download", progress: {percent: step * 25}});
+    }
+    realEmit({type: "ready", info: {loadMs: 100}});
+    assert.deepEqual(await slowWorker.pending, {loadMs: 100});
+  });
+
   it("rejects load() when the model cannot be loaded", async () => {
     const transcriber = new LiveTranscriber({onTranscript: () => {}});
     const loading = transcriber.load({repo: "x", device: "webgpu", dtype: "fp32", numThreads: 1});

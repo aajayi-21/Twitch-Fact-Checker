@@ -80,6 +80,32 @@ const CAPTURE_SESSION_KEY = "captureSession";
 const SESSION_PROVIDERS_KEY = "sessionProviders";
 const LEDGER_RECORDER_KEY = "ledgerRecorder";
 const RETENTION_ALARM = "ledger-retention";
+// Set while verdicts cannot reach the captured tab's overlay (read by the
+// popup). Kept apart from captureSession, which only the offscreen document
+// writes: a full-object update from it would erase a field set here.
+const OVERLAY_PROBLEM_KEY = "overlayProblem";
+// How long overlay deliveries must keep failing before the popup says so.
+const OVERLAY_PROBLEM_AFTER_MS = 10_000;
+// Every page of this extension (popup, app, offscreen document) lives here.
+const EXTENSION_ORIGIN = chrome.runtime.getURL("");
+// Messages that only the extension's own pages send. A content script runs
+// inside a web page, so one that sends these is refused: it could otherwise
+// forge history records, session state or a capture start.
+const EXTENSION_PAGE_MESSAGES = new Set([
+  MSG.CAPTURE_START,
+  MSG.CAPTURE_STOP,
+  MSG.BACKEND_EVENT,
+  MSG.SESSION_UPDATE,
+  MSG.CAPTURE_ENDED,
+  MSG.SPEECH_GPU_ATTEMPT,
+  MSG.SPEECH_GPU_FAILED,
+]);
+// The stream sites the content scripts run on (manifest content_scripts).
+const CONTENT_SCRIPT = chrome.runtime.getManifest().content_scripts?.[0] ?? {matches: [], js: []};
+const STREAM_PAGE_PATTERNS = CONTENT_SCRIPT.matches.map(
+  (pattern) =>
+    new RegExp(`^${pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`)
+);
 // How long capture start waits for the page to say who owns the stream.
 // Identity is a nicety; a slow page must not delay the capture.
 const PAGE_IDENTITY_TIMEOUT_MS = 400;
@@ -230,6 +256,49 @@ const notifySessionState = async (tabId, running) => {
 };
 
 /**
+ * @param {string|undefined} url
+ * @returns {boolean} whether the content scripts are meant to run on it
+ */
+const isStreamPage = (url) =>
+  typeof url === "string" && STREAM_PAGE_PATTERNS.some((pattern) => pattern.test(url));
+
+/**
+ * Make sure the stream tab has a working content script before a session
+ * starts. A tab opened before the extension was installed, updated or
+ * reloaded has none (or only an orphaned one that can no longer receive
+ * messages): the session would run and spend money with no overlay. Inject
+ * the content scripts then. Start comes from the toolbar popup, so
+ * `activeTab` covers the injection; where it does not (no permission, not a
+ * stream page), the session goes ahead and the popup reports the missing
+ * overlay instead (see relayBackendEvent).
+ *
+ * @param {chrome.tabs.Tab|null} tab
+ * @returns {Promise<"present"|"injected"|"not_a_stream_page"|"failed">}
+ */
+const ensureOverlay = async (tab) => {
+  if (!tab || !isStreamPage(tab.url)) {
+    return "not_a_stream_page";
+  }
+  const answered = await chrome.tabs
+    .sendMessage(tab.id, {type: MSG.GET_PAGE_IDENTITY})
+    .then(
+      () => true,
+      () => false
+    );
+  if (answered) {
+    return "present";
+  }
+  try {
+    await chrome.scripting.executeScript({target: {tabId: tab.id}, files: CONTENT_SCRIPT.js});
+    console.info("[fact-checker] the stream tab predates this version; overlay injected");
+    return "injected";
+  } catch (error) {
+    console.warn("[fact-checker] could not inject the overlay into the stream tab:", error);
+    return "failed";
+  }
+};
+
+/**
  * Ask the tab's content script who owns the stream (the channel link under
  * the player). Null when there is no content script, it predates this
  * message, or it does not answer in time — all normal.
@@ -309,6 +378,8 @@ const handleCaptureStart = async (tabId) => {
   const settings = await loadSettings();
   // Identity is best-effort: a tabs.get failure must not abort the start.
   const tab = await chrome.tabs.get(tabId).catch(() => null);
+  await clearOverlayProblem();
+  await ensureOverlay(tab);
   // Which engine checks claims: the backend, or the offscreen document with
   // the viewer's own provider keys.
   let browserEngine = null;
@@ -463,10 +534,55 @@ const handleCaptureEnded = async (reason) => {
   const capturedTabId = await getCapturedTabId();
   await setCapturedTabId(null);
   await setToolbarIcon(false);
+  await clearOverlayProblem();
   if (capturedTabId !== null) {
     await notifySessionState(capturedTabId, false);
   }
   await closeOffscreenDocument();
+};
+
+/**
+ * Overlay deliveries that have kept failing, for the popup. In memory: a
+ * worker that restarts mid-outage simply starts counting again.
+ * @type {{tabId: number, sinceMs: number, reported: boolean}|null}
+ */
+let overlayOutage = null;
+
+const clearOverlayProblem = async () => {
+  overlayOutage = null;
+  await chrome.storage.session.remove(OVERLAY_PROBLEM_KEY);
+};
+
+/** What the viewer would see in the overlay; other frames do not count. */
+const SHOWN_IN_OVERLAY = new Set(["verdict", "status", "error"]);
+
+const noteOverlayDelivery = async (tabId, event, delivered) => {
+  if (delivered) {
+    if (overlayOutage) {
+      const wasReported = overlayOutage.reported;
+      overlayOutage = null;
+      if (wasReported) {
+        await chrome.storage.session.remove(OVERLAY_PROBLEM_KEY);
+      }
+    }
+    return;
+  }
+  if (!SHOWN_IN_OVERLAY.has(event?.type)) {
+    return;
+  }
+  const nowMs = Date.now();
+  if (!overlayOutage || overlayOutage.tabId !== tabId) {
+    overlayOutage = {tabId, sinceMs: nowMs, reported: false};
+    return;
+  }
+  if (!overlayOutage.reported && nowMs - overlayOutage.sinceMs >= OVERLAY_PROBLEM_AFTER_MS) {
+    overlayOutage.reported = true;
+    await chrome.storage.session.set({
+      [OVERLAY_PROBLEM_KEY]:
+        "Results cannot be shown on this tab. Reload the stream page, then press Start again " +
+        "(they are still saved in History).",
+    });
+  }
 };
 
 const relayBackendEvent = async (payload) => {
@@ -476,16 +592,19 @@ const relayBackendEvent = async (payload) => {
   }
   // Not awaited: the overlay must not wait on a database write.
   recordSafely("engine event", recorder.engineEvent(tabId, payload.event));
+  let delivered = false;
   try {
     await chrome.tabs.sendMessage(tabId, {
       type: MSG.OVERLAY_EVENT,
       payload: {event: payload.event},
     });
+    delivered = true;
   } catch (error) {
-    // Expected when the captured tab has no content script (unsupported
-    // page) or has navigated.
+    // No content script (not a stream page, or one that predates this
+    // version and could not be injected), or the tab navigated.
     console.debug("[fact-checker] OVERLAY_EVENT not delivered:", error);
   }
+  await noteOverlayDelivery(tabId, payload.event, delivered);
 };
 
 /**
@@ -622,8 +741,18 @@ const handleTabRemoved = async (tabId) => {
   await handleCaptureStop("tab_closed");
 };
 
+/** @returns {boolean} whether the message came from one of this extension's pages */
+const fromExtensionPage = (sender) =>
+  sender?.id === chrome.runtime.id &&
+  typeof sender.url === "string" &&
+  sender.url.startsWith(EXTENSION_ORIGIN);
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || message.target !== TARGET.BACKGROUND) {
+    return false;
+  }
+  if (EXTENSION_PAGE_MESSAGES.has(message.type) && !fromExtensionPage(sender)) {
+    console.warn(`[fact-checker] refused ${message.type} from ${sender?.url ?? "an unknown sender"}`);
     return false;
   }
   if (message.type === MSG.SPEECH_GPU_ATTEMPT) {
@@ -706,11 +835,22 @@ chrome.runtime.onInstalled.addListener(({reason}) => {
 
 /**
  * History retention: once a day, delete sessions older than the viewer's
- * setting (0 = keep until deleted by hand). `alarms.create` with the same
- * name replaces the existing alarm, so calling this on every worker start
- * is safe and keeps the alarm alive across updates.
+ * setting (0 = keep until deleted by hand).
+ *
+ * Created only when missing. `alarms.create` REPLACES an alarm of the same
+ * name, so creating it on every worker start re-armed it one minute out;
+ * its firing woke the worker, which re-armed it again: a wake-up every
+ * minute, forever. Checked at every start because Chrome may drop alarms
+ * on an update or a browser restart.
  */
-chrome.alarms?.create(RETENTION_ALARM, {delayInMinutes: 1, periodInMinutes: 24 * 60});
+const ensureRetentionAlarm = async () => {
+  if (!(await chrome.alarms.get(RETENTION_ALARM))) {
+    await chrome.alarms.create(RETENTION_ALARM, {delayInMinutes: 1, periodInMinutes: 24 * 60});
+  }
+};
+ensureRetentionAlarm().catch((error) => {
+  console.error("[fact-checker] scheduling the history clean-up failed:", error);
+});
 chrome.alarms?.onAlarm.addListener((alarm) => {
   if (alarm.name !== RETENTION_ALARM) {
     return;

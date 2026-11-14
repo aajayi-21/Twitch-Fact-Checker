@@ -21,6 +21,7 @@ import {
 } from "../app/lib/backend_api.mjs";
 import {
   formatCost,
+  webLink,
   formatDateTime,
   formatDuration,
   formatHours,
@@ -431,6 +432,18 @@ test("formatUsd sizes the precision to the amount", () => {
   assert.equal(formatUsd(4.5), "$4.50");
   assert.equal(formatUsd(null), "—");
   assert.equal(formatUsd(Number.NaN), "—");
+});
+
+test("webLink: only http(s) addresses become links", () => {
+  assert.deepEqual(webLink("https://www.toureiffel.paris/en/key-figures"), {
+    href: "https://www.toureiffel.paris/en/key-figures",
+    host: "toureiffel.paris",
+  });
+  assert.equal(webLink("http://example.org/x").host, "example.org");
+  assert.equal(webLink("javascript:alert(1)"), null);
+  assert.equal(webLink("data:text/html,<script>alert(1)</script>"), null);
+  assert.equal(webLink("not a url"), null, "a malformed address does not throw");
+  assert.equal(webLink(undefined), null);
 });
 
 test("formatCost marks estimates and never shows an unpriced total as free", () => {

@@ -80,6 +80,7 @@ EXPECTED_PERMISSIONS: dict[str, list[str]] = {
         "activeTab",
         "alarms",
         "offscreen",
+        "scripting",
         "storage",
         "tabCapture",
         "unlimitedStorage",

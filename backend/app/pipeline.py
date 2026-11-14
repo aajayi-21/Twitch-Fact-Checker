@@ -441,8 +441,14 @@ class SessionPipeline:
             # Runs for graceful stop, preemption, disconnect, AND fatal
             # paths; app.db swallows write failures, so this can only lose
             # the row (with a warning), never mask the real outcome.
+            # Shielded: if this handler is being cancelled (server shutdown,
+            # or a test client closing its socket), the write may still be
+            # queued behind other database work, and cancelling a queued
+            # executor job drops it, leaving the session forever unfinished.
             if self._db is not None:
-                await self._db.record_session_end(**self._session_counters())
+                await asyncio.shield(
+                    self._db.record_session_end(**self._session_counters())
+                )
 
     def _session_counters(self) -> dict[str, Any]:
         """The analytics ``sessions`` row's running counters (end + flush)."""

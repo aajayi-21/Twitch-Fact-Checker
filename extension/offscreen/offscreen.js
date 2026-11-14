@@ -42,7 +42,7 @@
 import {BrowserPipeline} from "../engine/pipeline/browser_pipeline.mjs";
 import {getProvider} from "../engine/providers/index.mjs";
 import {LiveTranscriber} from "../engine/stt/live_transcriber.mjs";
-import {SPEECH_STATUS, SessionSpeech} from "../engine/stt/session_speech.mjs";
+import {SPEECH_STATUS, SessionSpeech, isDownloadFailure} from "../engine/stt/session_speech.mjs";
 import {GPU_LOCK_NAME} from "../engine/stt/speech_store.mjs";
 import {priceCall} from "../ledger/pricing.mjs";
 import {AdPauseGate, buildBoundarySilenceFrames} from "../shared/ad_pause.js";
@@ -291,7 +291,10 @@ const startBrowserSpeech = (config) => {
     },
     onFailed: (reason) => {
       console.error(`[fact-checker] in-browser speech failed: ${reason}`);
-      endSessionWithError(ERR.ERR_SPEECH_FAILED, "speech_failed").catch((error) => {
+      // A failed download comes with a sentence that says what to do; for
+      // anything else the popup's own advice (re-run the speech test) is better.
+      const detail = isDownloadFailure(reason) ? reason : null;
+      endSessionWithError(ERR.ERR_SPEECH_FAILED, "speech_failed", detail).catch((error) => {
         console.error("[fact-checker] speech-failure handling failed:", error);
       });
     },
@@ -742,8 +745,17 @@ const handleConfigChange = ({sensitivity, topics} = {}) => {
   );
 };
 
-chrome.runtime.onMessage.addListener((message) => {
+// Only the service worker drives this document. A content script (code
+// running inside a web page) must not be able to start, stop or reconfigure
+// a session.
+const EXTENSION_ORIGIN = chrome.runtime.getURL("");
+
+chrome.runtime.onMessage.addListener((message, sender) => {
   if (!message || message.target !== TARGET.OFFSCREEN) {
+    return false;
+  }
+  if (!sender?.url?.startsWith(EXTENSION_ORIGIN)) {
+    console.warn(`[fact-checker] refused ${message.type} from ${sender?.url ?? "an unknown sender"}`);
     return false;
   }
   switch (message.type) {

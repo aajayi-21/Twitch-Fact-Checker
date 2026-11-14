@@ -24,6 +24,8 @@ import {
 } from "../shared/settings.js";
 
 const CAPTURE_SESSION_KEY = "captureSession";
+// Set by the service worker while results cannot reach the tab's overlay.
+const OVERLAY_PROBLEM_KEY = "overlayProblem";
 const HEALTH_TIMEOUT_MS = 1500;
 const HEALTH_POLL_INTERVAL_MS = 3000;
 const ACTIVE_STATUSES = new Set(["starting", "capturing", "reconnecting"]);
@@ -43,6 +45,7 @@ const ENGINE_STOP_ERRORS = new Set([
   ERR.ERR_KEY_REFUSED,
   ERR.ERR_NO_CREDIT,
   ERR.ERR_MODEL_UNAVAILABLE,
+  ERR.ERR_SPEECH_FAILED,
 ]);
 
 /** One line of copy per error code, each with an action hint. */
@@ -118,6 +121,8 @@ const state = {
   // The backend answered 403: it does not allow this extension's ID
   // (ALLOWED_EXTENSION_IDS, backend/app/origins.py).
   backendRefused: false,
+  // Why results are not reaching the captured tab's overlay, or null.
+  overlayProblem: null,
   // healthz "configured" flag: false while the backend has no API key yet.
   // Defaults to true so the setup card never flashes before the first check.
   backendConfigured: true,
@@ -207,7 +212,7 @@ const render = () => {
   // that has not stopped it (claim detection failing, a limit reached).
   let errorCopy = null;
   if (active) {
-    errorCopy = session.warning ?? null;
+    errorCopy = session.warning ?? state.overlayProblem ?? null;
   } else if (session.lastError) {
     if (session.lastError === ERR.ERR_NOT_CONFIGURED && state.browserEngine) {
       errorCopy = "No API key yet — add one under AI provider.";
@@ -368,11 +373,18 @@ const handleStopClick = async () => {
 };
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
-  if (areaName !== "session" || !changes[CAPTURE_SESSION_KEY]) {
+  if (areaName !== "session") {
     return;
   }
-  state.session = changes[CAPTURE_SESSION_KEY].newValue ?? {...IDLE_SESSION};
-  render();
+  if (changes[CAPTURE_SESSION_KEY]) {
+    state.session = changes[CAPTURE_SESSION_KEY].newValue ?? {...IDLE_SESSION};
+  }
+  if (changes[OVERLAY_PROBLEM_KEY]) {
+    state.overlayProblem = changes[OVERLAY_PROBLEM_KEY].newValue ?? null;
+  }
+  if (changes[CAPTURE_SESSION_KEY] || changes[OVERLAY_PROBLEM_KEY]) {
+    render();
+  }
 });
 
 elements.startButton.addEventListener("click", handleStartClick);
@@ -388,10 +400,11 @@ const init = async () => {
   renderTopicsSummary(settings);
   const [tab] = await chrome.tabs.query({active: true, currentWindow: true});
   state.activeTab = tab ?? null;
-  const stored = await chrome.storage.session.get(CAPTURE_SESSION_KEY);
+  const stored = await chrome.storage.session.get([CAPTURE_SESSION_KEY, OVERLAY_PROBLEM_KEY]);
   if (stored[CAPTURE_SESSION_KEY]) {
     state.session = stored[CAPTURE_SESSION_KEY];
   }
+  state.overlayProblem = stored[OVERLAY_PROBLEM_KEY] ?? null;
   const engine = await loadEngineState();
   state.browserEngine = engine.mode === ENGINE_MODE.BROWSER;
   if (state.browserEngine) {

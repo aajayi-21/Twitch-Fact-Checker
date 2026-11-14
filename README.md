@@ -288,6 +288,7 @@ and — when the hello sends `send_claims: true` — a `claim` frame per claim o
 ```bash
 node --test "extension/tests/*.test.mjs"   # unit tests (no dependencies)
 node scripts/run_app_e2e.mjs               # the app in a real Chrome, against a fake backend
+node scripts/check_lifecycle.mjs           # worker alarm, and the overlay in a tab opened before install
 ```
 
 ## Running it with no backend (browser engine)
