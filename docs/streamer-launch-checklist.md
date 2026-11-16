@@ -11,13 +11,23 @@ this file is just the boxes.
 
 - [ ] `cd backend && uv run pytest -m "not slow"` — fully green.
 - [ ] No outbound message can begin with `/`, `.`, or `!`, or contain CR/LF
-      (`test_chat_format.py::TestCommandInjectionGuard`) — the bot is a
-      moderator, so a leading `/` would EXECUTE as a moderation command.
+      (`test_chat_format.py::TestCommandInjectionGuard`, and the transport's
+      own last-line check in
+      `test_chat_transport.py::TestOutbound::test_a_command_prefix_is_refused…`)
+      — the bot is a moderator, so a leading `/` would EXECUTE as a
+      moderation command.
 - [ ] No user text is ever echoed into an outbound message
       (`test_chat_bot.py::…::test_dispute_note_is_never_echoed`,
       `test_chat_commands.py::TestHandleValidation`).
 - [ ] Each consent proof failing individually blocks posting
       (`test_chat_consent.py`, `test_chat_bot.py::TestConsentGates`).
+- [ ] Approving a queued post re-checks consent, mode, mute and the latch at
+      that moment, and `!fc off`, `!fc mute`, `!fc disable`, the panel's MUTE
+      and OFF, a ban notice and a dispute auto-mute all empty the queue
+      (`test_chat_bot.py::TestApprovalSafety`,
+      `test_streamer_app.py::TestQueueRoutes`).
+- [ ] The panel's MUTE is persisted like `!fc mute`, so a restart cannot undo
+      it (`test_streamer_app.py::TestQueueRoutes::test_the_panel_mute_persists…`).
 - [ ] UNVERIFIED / fallback-parsed / zero-source verdicts can never post and
       config cannot change that (`test_chat_policy.py::TestClamps`).
 - [ ] The PASS line never appears un-redacted in logs

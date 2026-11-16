@@ -307,6 +307,67 @@ def install_bot(client: TestClient):
     return bot
 
 
+def queue_pending(bot) -> str:
+    """Put one item straight into the bot's review queue."""
+    from streamer.chat.bot import PendingPost
+    from tests.test_chat_bot import make_event, make_verdict
+
+    verdict = make_verdict()
+    post_id = "pending-1"
+    bot.review_queue[post_id] = PendingPost(
+        post_id=post_id,
+        verdict=verdict,
+        event=make_event(verdict),
+        message="🤖 FALSE — queued",
+        created_at=bot._now(),
+    )
+    return post_id
+
+
+class TestQueueRoutes:
+    def test_a_refused_approval_is_a_409_with_the_reason(
+        self, streamer_client: TestClient
+    ) -> None:
+        bot = install_bot(streamer_client)  # never armed: consent fails
+        post_id = queue_pending(bot)
+        response = streamer_client.post(f"/bot/queue/{post_id}/post", json={})
+        assert response.status_code == 409
+        assert response.json()["detail"].startswith(
+            "Not posted: the channel no longer allows it"
+        )
+        assert bot.transport.sent == []
+
+    def test_an_unknown_item_is_still_a_404(self, streamer_client: TestClient) -> None:
+        install_bot(streamer_client)
+        assert streamer_client.post("/bot/queue/nope/post", json={}).status_code == 404
+
+    def test_the_panel_mute_persists_and_empties_the_queue(
+        self, streamer_client: TestClient
+    ) -> None:
+        from tests.test_chat_bot import CHANNEL
+
+        bot = install_bot(streamer_client)
+        queue_pending(bot)
+        response = streamer_client.post(
+            "/bot/mute", json={"muted": True, "duration": "15m"}
+        )
+        assert response.status_code == 200
+        assert bot.review_queue == {}
+        row = streamer_client.portal.call(bot._db.fetch_chat_channel, "twitch", CHANNEL)
+        assert row["muted_until"], "a restart must not undo the kill switch"
+
+    def test_the_panel_turning_posting_off_empties_the_queue(
+        self, streamer_client: TestClient
+    ) -> None:
+        bot = install_bot(streamer_client)
+        queue_pending(bot)
+        assert (
+            streamer_client.post("/bot/mode", json={"mode": "off"}).status_code == 200
+        )
+        assert bot.review_queue == {}
+        assert bot.policy.mode == "off"
+
+
 class TestSettingsRoutes:
     def test_get_settings_serves_the_full_policy(
         self, streamer_client: TestClient

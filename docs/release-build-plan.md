@@ -47,7 +47,7 @@ Fixes with one obvious answer were not asked about and are planned directly.
 | 1 | Local backend security ✅ | 1–2 days | — |
 | 2 | Spending and error reporting (extension) ✅ | 2–3 days | — |
 | 3 | Lifecycle and small fixes (extension) ✅ | 1–2 days | — |
-| 4 | Streamer bot safety fix | half a day | — |
+| 4 | Streamer bot safety fix ✅ | half a day | — |
 | 5 | Provider live runs: DeepSeek, OpenAI, Gemini | 1 day | 0, 2; **your OpenAI and Gemini keys** |
 | 6 | Backend one-command install | 2 days | 1 |
 | 7 | Naming, docs, Edge | 1 day | 2, 3 |
@@ -338,7 +338,26 @@ nothing running; a stream tab opened before install shows verdicts after Start.
 
 ---
 
-## 7. Phase 4 — Streamer bot safety fix
+## 7. Phase 4 — Streamer bot safety fix ✅
+
+**Built 2026-11-16** on branch `feat/streamer-approve-safety`. Differences from the plan
+below:
+
+- **One shared gate.** Consent and the operational checks (mode off, muted, join
+  grace, latch) moved out of `decide()` into `policy.operational_block()`, which both
+  `decide()` and `approve()` call, so the two can never drift apart. A refused
+  approval is recorded as `suppressed` with reason `<gate>_at_approval`, and the
+  panel gets a 409 saying why (`approve()` now returns a status and reason).
+- **More things empty the queue** than the three commands planned: the panel's OFF
+  and MUTE, a ban-class notice, and a dispute auto-mute. Each dropped item is recorded
+  as `skipped` with `cleared_by_<what>`.
+- **Found on the way: the panel's MUTE was not persisted.** `!fc mute` saved an
+  absolute deadline; the panel button only set it in memory, so a restart undid the
+  kill switch. Both now go through `ChannelBot.mute()`, which saves it; mode changes
+  likewise go through `set_mode()`.
+- Verified by 20 new tests (approval after each kind of change, queue clearing, the
+  panel routes, and the transport refusing `/`, `.` and `!` behind spaces or invisible
+  characters). The streamer launch checklist lists them as invariants.
 
 Streamer mode isn't part of v1, but this one breaks a stated invariant ("every consent
 proof is checked on every post"), so it is fixed now.

@@ -32,6 +32,7 @@ import asyncio
 import logging
 import re
 import time
+import unicodedata
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Protocol
@@ -293,6 +294,21 @@ class ChatTransport(Protocol):
 # --------------------------------------------------------------------------- #
 
 
+# Characters Twitch treats as a command (or other bots as a trigger) when a
+# message starts with them.
+_COMMAND_PREFIXES = ("/", ".", "!")
+
+
+def _looks_like_a_command(text: str) -> bool:
+    """Whether ``text`` starts, after spaces and invisible characters, with a
+    command prefix. Twitch trims leading whitespace, so it does not hide one."""
+    for char in text:
+        if unicodedata.category(char) in {"Zs", "Cc", "Cf"}:
+            continue
+        return char in _COMMAND_PREFIXES
+    return False
+
+
 class TwitchIRCTransport:
     """One connection, one channel. ``connect()`` either completes the full
     handshake (caps → auth → join) or raises; reconnection policy belongs to
@@ -506,6 +522,13 @@ class TwitchIRCTransport:
             # and text reaching here should already be sanitized — this state
             # is a bug upstream, exactly when sending is most dangerous.
             logger.error("chat send REFUSED (embedded newline): %r", text)
+            return None
+        if _looks_like_a_command(text):
+            # The bot is a moderator: "/ban x" or ".timeout x" would RUN, and
+            # "!x" triggers other bots. sanitize_for_chat already requires a
+            # leading emoji; this is the last line of defence should a caller
+            # ever skip it.
+            logger.error("chat send REFUSED (command prefix): %r", text)
             return None
         wait_s = self._limiter.wait_time(self.channel)
         if wait_s > MAX_SEND_DELAY_S:

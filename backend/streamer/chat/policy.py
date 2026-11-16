@@ -287,6 +287,34 @@ def _drop(reason: str) -> Decision:
     return Decision(action="drop", reason=reason)
 
 
+def operational_block(
+    *, context: PostContext, policy: PostingPolicy, now: float
+) -> str | None:
+    """Gates 1-2 of :func:`decide`: consent and the channel's operational
+    state. Returns the failing gate's reason, or ``None`` when posting is
+    allowed right now.
+
+    Separate because these, unlike everything about the verdict itself, can
+    change while a post waits in the review queue: the broadcaster types
+    ``!fc off``, the bot is demodded, a mute starts. Approving a queued post
+    re-runs exactly these before sending it (``ChannelBot.approve``).
+    """
+    # -- 1. Authorization (consent proofs, pre-computed) ------------------ #
+    if context.consent_failure is not None:
+        return context.consent_failure
+
+    # -- 2. Operational state --------------------------------------------- #
+    if policy.mode == "off":
+        return "mode_off"
+    if context.muted_until is not None and now < context.muted_until:
+        return "muted"
+    if now - context.joined_at < JOIN_GRACE_S:
+        return "grace_period"
+    if context.latched:
+        return "posting_latched"
+    return None
+
+
 def decide(
     *,
     verdict: Verdict,
@@ -300,19 +328,10 @@ def decide(
 ) -> Decision:
     """The full predicate. Returns the FIRST failing gate's reason."""
 
-    # -- 1. Authorization (consent proofs, pre-computed) ------------------ #
-    if context.consent_failure is not None:
-        return _drop(context.consent_failure)
-
-    # -- 2. Operational state --------------------------------------------- #
-    if policy.mode == "off":
-        return _drop("mode_off")
-    if context.muted_until is not None and now < context.muted_until:
-        return _drop("muted")
-    if now - context.joined_at < JOIN_GRACE_S:
-        return _drop("grace_period")
-    if context.latched:
-        return _drop("posting_latched")
+    # -- 1-2. Consent and operational state -------------------------------- #
+    blocked = operational_block(context=context, policy=policy, now=now)
+    if blocked is not None:
+        return _drop(blocked)
 
     # -- 3. Label ---------------------------------------------------------- #
     if verdict.label not in POSTABLE_LABELS:

@@ -368,6 +368,25 @@ class TestOutbound:
             finally:
                 await transport.close()
 
+    @pytest.mark.parametrize(
+        "text",
+        ["/ban someone", ".timeout someone 600", "!fc off", "  /ban x", "\u200b/ban x"],
+    )
+    async def test_a_command_prefix_is_refused_even_without_the_formatter(
+        self, text: str
+    ) -> None:
+        """The bot is a moderator, so a leading / or . would RUN. Leading
+        spaces and invisible characters do not hide the prefix."""
+        async with FakeTwitchIRC() as server:
+            transport = make_transport(server)
+            await transport.connect()
+            try:
+                assert await transport.send(text) is None
+                await asyncio.sleep(0.05)
+                assert not any("PRIVMSG" in line for line in server.received)
+            finally:
+                await transport.close()
+
     async def test_disconnected_send_drops(self) -> None:
         async with FakeTwitchIRC() as server:
             transport = make_transport(server)
