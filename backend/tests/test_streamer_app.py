@@ -173,9 +173,12 @@ class TestEventsSocket:
             ):
                 pass
 
-    def test_local_origin_is_accepted(self, streamer_client: TestClient) -> None:
+    def test_own_page_origin_is_accepted(self, streamer_client: TestClient) -> None:
+        """The overlay and console pages are served by this server, so their
+        socket's Origin matches the Host they were loaded from."""
         with streamer_client.websocket_connect(
-            "/ws/events", headers={"origin": "http://127.0.0.1:8711"}
+            "/ws/events",
+            headers={"origin": "http://127.0.0.1:8711", "host": "127.0.0.1:8711"},
         ) as socket:
             assert socket.receive_json()["type"] == "events_ready"
 
@@ -242,6 +245,44 @@ class TestTwitchSetupRoutes:
             streamer_client.post("/setup/twitch/device/poll", json={}).status_code
             == 409
         )
+
+    @pytest.mark.parametrize(
+        ("failure", "status", "detail"),
+        [
+            (ValueError("refusing to write multi-line value"), 400, "multi-line"),
+            (OSError("disk full"), 500, "could not save the Twitch credentials"),
+        ],
+    )
+    def test_a_credentials_write_failure_is_a_described_error(
+        self,
+        streamer_client: TestClient,
+        monkeypatch: pytest.MonkeyPatch,
+        failure: Exception,
+        status: int,
+        detail: str,
+    ) -> None:
+        import streamer.routes
+        import streamer.twitch_auth
+        from streamer.twitch_auth import TwitchTokenInfo
+
+        async def accept(token: str) -> TwitchTokenInfo:
+            return TwitchTokenInfo(
+                login="factbot",
+                user_id="1",
+                scopes=frozenset({"chat:read", "chat:edit"}),
+                expires_in_s=3600,
+            )
+
+        def fail(**_credentials: object) -> None:
+            raise failure
+
+        monkeypatch.setattr(streamer.routes, "validate_token", accept)
+        monkeypatch.setattr(streamer.twitch_auth, "persist_credentials", fail)
+        response = streamer_client.post(
+            "/setup/twitch", json={"token": "sometoken", "channel": "a\nb"}
+        )
+        assert response.status_code == status
+        assert detail in response.json()["detail"]
 
 
 def install_bot(client: TestClient):

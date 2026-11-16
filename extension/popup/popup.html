@@ -58,6 +58,11 @@
         <code>uvicorn app.main:app --host 127.0.0.1 --port 8710</code> in
         <code>/backend</code>
       </p>
+      <p class="hint-line" id="refused-hint" hidden>
+        The backend does not accept this copy of the extension. Add
+        <code id="refused-extension-id"></code> to <code>ALLOWED_EXTENSION_IDS</code> in
+        <code>backend/.env</code>, then restart the backend.
+      </p>
 
       <section class="setup-card" id="setup-card" hidden>
         <p class="setup-text">Add your API key to start fact-checking</p>

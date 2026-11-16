@@ -1,6 +1,5 @@
 /**
- * Ad-break pause gate, shared by both session owners (the Chrome offscreen
- * document and the Firefox background page).
+ * Ad-break pause gate, used by the session owner (the offscreen document).
  *
  * While the captured tab plays an ad, the tab's audio IS the ad, so feeding
  * it to the backend would transcribe and fact-check advertising copy. The

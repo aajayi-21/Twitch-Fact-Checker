@@ -13,7 +13,7 @@
  */
 
 import {COST_SOURCE} from "./pricing.mjs";
-import {LABELS, channelKey} from "./records.mjs";
+import {ENGINE, LABELS, channelKey} from "./records.mjs";
 
 export const ADJUDICATED_LABELS = Object.freeze(["TRUE", "FALSE", "MISLEADING"]);
 
@@ -505,9 +505,9 @@ export const dailySpend = (usage, {days, now = new Date()}) => {
 };
 
 /**
- * Where the viewer stands against the spending limits right now: provider
- * fact-check calls made today and dollars spent this calendar month, both in
- * the viewer's own time zone.
+ * Where the viewer stands against the spending limits right now: fact-checks
+ * made today and dollars spent this calendar month, both in the viewer's own
+ * time zone (the browser engine resets its counts on the same boundaries).
  *
  * @param {object[]} usage - rows covering at least this month so far
  * @param {Date} [now]
@@ -527,7 +527,10 @@ export const currentSpend = (usage, now = new Date()) => {
       spendThisMonthUsd += row.cost_usd;
     }
     if (ms >= dayStart && row.stage === "verify") {
-      checksToday += row.calls ?? 1;
+      // The daily limit counts fact-checks. The browser engine writes one
+      // verify row per check, however many HTTP calls it took (a Gemini
+      // fallback takes up to three); the backend's rows count calls.
+      checksToday += row.engine === ENGINE.BROWSER ? 1 : (row.calls ?? 1);
     }
   }
   return {checksToday, spendThisMonthUsd};

@@ -68,6 +68,7 @@ class FactCheckOverlay {
   static TRANSCRIPT_DURATION_MS = 5000;
   static TOAST_EXIT_MS = 220;
   static MIN_RESUME_MS = 800;
+  static HOST_ID = "stream-fact-checker-overlay";
   static DEFAULT_DURATION_MS = 12000;
   static VALID_LABELS = new Set(["TRUE", "FALSE", "MISLEADING", "UNVERIFIED"]);
   static VALID_POSITIONS = new Set([
@@ -75,6 +76,19 @@ class FactCheckOverlay {
     "top-right",
     "bottom-left",
     "bottom-right",
+  ]);
+  // Codes whose message is written for the viewer (the reason and what to
+  // do), so it is shown as sent rather than replaced by fixed copy.
+  static MESSAGE_FIRST_CODES = new Set([
+    "quota_cooldown",
+    "key_refused",
+    "no_credit",
+    "model_unavailable",
+    "gate_failing",
+    "budget_warning",
+    "budget_reached",
+    "budget_resumed",
+    "budget_unpriced",
   ]);
   static NOTICE_COPY = Object.freeze({
     quota_cooldown: "Fact-checks paused: API quota is cooling down",
@@ -177,8 +191,14 @@ class FactCheckOverlay {
       throw new Error("FactCheckOverlay.mount: parentElement must be an Element");
     }
     if (!this.#host) {
+      // An overlay left by an orphaned copy of this script (the extension
+      // was updated or reloaded since the page loaded) would otherwise sit
+      // beside this one.
+      for (const stale of document.querySelectorAll(`#${FactCheckOverlay.HOST_ID}`)) {
+        stale.remove();
+      }
       this.#host = document.createElement("div");
-      this.#host.id = "stream-fact-checker-overlay";
+      this.#host.id = FactCheckOverlay.HOST_ID;
       this.#shadow = this.#host.attachShadow({mode: "open"});
       this.#injectStyles();
       this.#buildSkeleton();
@@ -440,7 +460,11 @@ class FactCheckOverlay {
     if (!this.#refs) {
       return;
     }
-    const friendlyCopy = FactCheckOverlay.NOTICE_COPY[errorFrame.code];
+    const messageFirst =
+      FactCheckOverlay.MESSAGE_FIRST_CODES.has(errorFrame.code) && Boolean(errorFrame.message);
+    const friendlyCopy = messageFirst
+      ? errorFrame.message
+      : FactCheckOverlay.NOTICE_COPY[errorFrame.code];
     const fallbackCopy =
       errorFrame.message || errorFrame.code || "backend error";
     const fatal = Boolean(errorFrame.fatal);
@@ -504,12 +528,7 @@ class FactCheckOverlay {
   #injectStyles() {
     const styleElement = document.createElement("style");
     this.#shadow.appendChild(styleElement);
-    // Inline namespace shim: this file is a classic content script sharing
-    // one global scope with the others, so it cannot declare a top-level
-    // `chrome` binding of its own (see shared/capabilities.js).
-    const cssUrl = (globalThis.browser ?? globalThis.chrome).runtime.getURL(
-      "content/overlay.css"
-    );
+    const cssUrl = chrome.runtime.getURL("content/overlay.css");
     fetch(cssUrl)
       .then((response) => {
         if (!response.ok) {

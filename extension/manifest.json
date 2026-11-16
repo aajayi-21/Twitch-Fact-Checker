@@ -5,7 +5,8 @@
   "version": "0.1.0",
   "description": "Fact-checks what is said in a live stream you are watching and shows sourced verdicts over the player.",
   "minimum_chrome_version": "116",
-  "permissions": ["tabCapture", "offscreen", "storage", "activeTab", "alarms", "unlimitedStorage"],
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA4Sd7C45b+b/mvc+28VZAxsenyX30kHgJCsgJjHWUMXMqQlOb1Elvyo0FZg/0Ed7WNArn8A9F2hzYIiqjYLbkNwUuF+3++qiei+dZ8X/gKx8kFBPbu6ZUkgDFMCbMyK9vC5sOegfvxbSI26VMyf25C6vZOpmRCwACsalVzXaYe9jPaF1x8Hujdh4gYhTYb371ji9lBwiu+iIOWRi/6P+zHJ3aPW4zn/tbHHBYaUPtcvYDuxcw5cjX3IrkGVXdA61oLAwHIRa2TCiFihEiqcMLrXRijx3uAY/ijB0CCdt3UDfzIQdeag2TF0Kmtuuktjs55lPJFjho2Ux+GmGNgbvFSQIDAQAB",
+  "permissions": ["tabCapture", "offscreen", "storage", "activeTab", "alarms", "unlimitedStorage", "scripting"],
   "host_permissions": [
     "http://127.0.0.1/*",
     "http://localhost/*",
@@ -17,15 +18,8 @@
     "wss://localhost/*"
   ],
   "optional_host_permissions": ["https://generativelanguage.googleapis.com/*"],
-  "browser_specific_settings": {
-    "gecko": {
-      "id": "live-stream-fact-checker@local",
-      "strict_min_version": "128.0"
-    }
-  },
   "background": {
     "service_worker": "background/service_worker.js",
-    "scripts": ["background/service_worker.js"],
     "type": "module"
   },
   "action": {
@@ -54,13 +48,13 @@
         "https://www.kick.com/*",
         "https://rumble.com/*"
       ],
-      "js": ["content/overlay.js", "content/capture.js", "content/page_identity.js", "content/content.js"],
+      "js": ["content/overlay.js", "content/page_identity.js", "content/content.js"],
       "run_at": "document_idle"
     }
   ],
   "web_accessible_resources": [
     {
-      "resources": ["content/overlay.css", "offscreen/pcm_worklet.js"],
+      "resources": ["content/overlay.css"],
       "matches": [
         "https://www.twitch.tv/*",
         "https://www.youtube.com/*",

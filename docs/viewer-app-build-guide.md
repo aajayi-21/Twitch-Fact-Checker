@@ -101,7 +101,9 @@ keeps this from becoming two products.
 
 Firefox stays companion-only for now: it has neither `tabCapture` nor offscreen documents
 (`extension/shared/capabilities.js`), and the browser engine needs an offscreen document
-to hold the speech model.
+to hold the speech model. *Since 2026-11-13 Firefox is not supported at all: its capture
+path was removed and the extension targets Chromium browsers only
+([release plan](release-build-plan.md) §10).*
 
 The app is designed for the browser engine. The companion appears behind a single
 "I run the local backend" switch in Settings and is never part of the default path.
@@ -225,7 +227,8 @@ the API has moved since — treat them as notes, not code to restore.
   families work through it, at about $0.0075 per fact-check.
 - **The backend's default model there is gone.** `inception/mercury-2.5-preview` was
   withdrawn from OpenRouter; the backend and the extension both need a new default
-  (candidates and timings are in the S2 results).
+  (candidates and timings are in the S2 results). *Resolved 2026-11-13: both now default
+  to `deepseek/deepseek-v4.1-flash-1017` ([release plan](release-build-plan.md)).*
 
 ### 3.6 Credential storage rules
 
@@ -938,6 +941,8 @@ claims and checks them with the viewer's own API key, and there is no backend pr
   follow the engine. The sample check is the "demo mode": one real gate and verify call.
 - **Default OpenRouter model** for this engine is `google/gemini-3.5-flash-lite`; the
   backend's own default is still the withdrawn Mercury model and was not touched.
+  *Since 2026-11-13 both default to `deepseek/deepseek-v4.1-flash-1017`; its e2e run is
+  pending ([release plan](release-build-plan.md), Phase 5).*
 
 *Done means:* a clean Chrome profile with no backend running goes from install to a real
 verdict on a live stream, with each of the four keys.
@@ -957,9 +962,9 @@ Not built, or different from §3 and §9:
 
 | Item | Status |
 |---|---|
-| OpenAI and Gemini list prices | Not in `ledger/pricing.mjs`: their calls show as "not priced" and do not count toward the monthly limit (the daily limit still applies). Add with their first live runs |
+| OpenAI and Gemini list prices | Not in `ledger/pricing.mjs`: their calls show as "not priced" and do not count toward the monthly limit (the daily limit still applies). Add with their first live runs. *Since 2026-11-13 the AI provider screen, Home and the stream say so ([release plan](release-build-plan.md) §5)* |
 | `probeGrounding` as a separate step, `listModels` for a model picker | Not built. The welcome flow's sample check does the grounded test; models are typed, with the default as placeholder |
-| OpenRouter model capability check | Still open (S2 §4.1): a withdrawn or incapable model surfaces as the provider's own error |
+| OpenRouter model capability check | Still open (S2 §4.1). *Since 2026-11-13 a withdrawn or incapable model ends the session with "cannot run the model …" instead of failing silently ([release plan](release-build-plan.md) §5); the check at save time is Phase 5* |
 | Source tiers in the browser engine | Not ported (§9.1 planned an export of `source_quality.py`) |
 | `llm_openai.py`, restored `llm_gemini.py` for the companion | Not started (marked optional) |
 | Hosted speech | Phase 5 |
@@ -1005,7 +1010,7 @@ Open, in the order they matter:
 |---|---|
 | Licence | **Not chosen.** §10.1 blocker 1 stands. The MIT-for-`extension/` plan assumed the extension was useless without the backend; that is no longer true |
 | Submission, privacy-policy hosting, developer account, release tag | On hold; the owner's to do (`docs/store/submission-checklist.md`) |
-| Firefox package | Built and linted, with AMO's data-collection declaration. **Not run in Firefox** since Phase 1 |
+| Firefox package | **Removed 2026-11-13**, with the whole Firefox capture path: the extension now supports Chromium browsers only ([release plan](release-build-plan.md) §10) |
 | Edge | Not loaded in Edge |
 | "What changed" notice on update (§10.4) | Not built; needed before a release that changes data flow |
 | Publishing from CI (§10.5 step 4) | Not built; needs the store item to exist |

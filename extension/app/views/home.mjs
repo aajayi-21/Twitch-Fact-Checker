@@ -18,6 +18,8 @@ import {LABELS} from "../../ledger/records.mjs";
 import {Card, LabelChip, Notice, StatusPill} from "../components.mjs";
 import {refreshBackend, useAppState} from "../lib/app_store.mjs";
 import {ENGINE_MODE, useEngine} from "../lib/engine_actions.mjs";
+import {unpricedWarning} from "../lib/engine_model.mjs";
+import {ERR} from "../../shared/messages.js";
 import {formatCost, formatDateTime, labelName, platformLabel, plural} from "../lib/format.mjs";
 import {html, useMemo} from "../lib/html.mjs";
 import {useLedger} from "../lib/ledger_store.mjs";
@@ -27,6 +29,16 @@ import {describeStages} from "../lib/setup_model.mjs";
 import {ImportHistory} from "./import_history.mjs";
 
 const LATEST_RESULTS = 5;
+
+/**
+ * Stops the viewer has to fix on the AI provider screen, with what to say
+ * when the provider's own sentence is missing.
+ */
+const PROVIDER_STOPS = Object.freeze({
+  [ERR.ERR_KEY_REFUSED]: "your AI provider refused the API key.",
+  [ERR.ERR_NO_CREDIT]: "your AI provider account has no credit.",
+  [ERR.ERR_MODEL_UNAVAILABLE]: "the chosen model is not available.",
+});
 
 /** What a speech status dot means, for readers who cannot see its colour. */
 const SPEECH_STATE_WORDS = Object.freeze({
@@ -134,7 +146,8 @@ const LatestResults = ({verdicts}) => html`
 `;
 
 export const HomeView = ({navigate}) => {
-  const {backendState, backendMessage, health, setup, summary, settings} = useAppState();
+  const {backendState, backendMessage, health, setup, summary, settings, captureSession} =
+    useAppState();
   const ledger = useLedger();
   const browserSpeech = useSpeech();
   const engine = useEngine();
@@ -171,6 +184,9 @@ export const HomeView = ({navigate}) => {
     () => filterVerdicts(ledger.verdicts).slice(0, LATEST_RESULTS),
     [ledger.verdicts]
   );
+  const providerStop =
+    captureSession?.status === "error" ? PROVIDER_STOPS[captureSession.lastError] : undefined;
+  const unpriced = browserEngine ? unpricedWarning(engine.plan, engine.state.budgets) : null;
   // Results from before this app kept its own history are still in the backend.
   const backendSessions = summary?.totals?.sessions ?? 0;
   const canImport = ledger.loaded && ledger.sessions.length === 0 && up && backendSessions > 0;
@@ -201,6 +217,14 @@ export const HomeView = ({navigate}) => {
             </button>
           <//>`
         : null}
+      ${providerStop
+        ? html`<${Notice} tone="warn">
+            The last session stopped: ${captureSession.errorDetail ?? providerStop}${" "}
+            <button type="button" class="link-button" onClick=${() => navigate(ROUTES.PROVIDERS)}>
+              Open AI provider
+            </button>
+          <//>`
+        : null}
 
       ${canImport
         ? html`<${Card} title="Bring your past results across">
@@ -223,6 +247,7 @@ export const HomeView = ({navigate}) => {
           <${Stat} value=${today.sessions} label=${today.sessions === 1 ? "session" : "sessions"} />
           <${Stat} value=${formatCost(today.total.cost)} label="spend" />
         </div>
+        ${unpriced ? html`<p class="setting-help">${unpriced}</p>` : null}
       </section>
 
       <div class="split">

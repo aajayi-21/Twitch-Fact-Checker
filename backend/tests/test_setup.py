@@ -28,6 +28,7 @@ from app.config import (
 )
 from app.llm_provider import LLMRuntime
 from app.main import create_app
+from app.origins import DEV_EXTENSION_ID
 from app.models import TranscriptSegment
 from app.rate_limit import QuotaCooldown
 from app.openrouter_catalogue import ModelCapabilities, OpenRouterCatalogue
@@ -170,8 +171,8 @@ class TestSetupCors:
     def test_preflight_allows_extension_origin_posting_json(
         self, unconfigured_client: TestClient
     ) -> None:
-        """The options page POSTs JSON to /setup/credentials cross-origin."""
-        origin = "chrome-extension://" + "a" * 32
+        """The app POSTs JSON to /setup/credentials cross-origin."""
+        origin = f"chrome-extension://{DEV_EXTENSION_ID}"
         response = unconfigured_client.options(
             "/setup/credentials",
             headers={

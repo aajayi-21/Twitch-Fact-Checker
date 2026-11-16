@@ -68,17 +68,6 @@ class TestGlobalScope:
         assert first.preempted is True
         assert second.preempted is False
 
-    async def test_preempt_on_accept_kills_the_incumbent(self) -> None:
-        """Only the global scope can preempt before the hello parses — this
-        is the §3.2 promptness rule the extension's reconnect relies on."""
-        registry = SessionRegistry(scope="global")
-        live = FakePipeline("a")
-        await registry.register(live)
-
-        await registry.preempt_on_accept()
-
-        assert live.preempted is True
-
 
 class TestChannelScope:
     async def test_same_channel_preempts(self) -> None:
@@ -129,15 +118,6 @@ class TestChannelScope:
         await registry.register(second)
 
         assert first.preempted is True
-
-    async def test_preempt_on_accept_is_a_noop(self) -> None:
-        registry = SessionRegistry(scope="channel")
-        live = FakePipeline("a", "twitch", "alice")
-        await registry.register(live)
-
-        await registry.preempt_on_accept()
-
-        assert live.preempted is False
 
 
 class TestNoneScope:

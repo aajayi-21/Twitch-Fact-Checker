@@ -33,9 +33,6 @@ import {
 } from "../../engine/stt/speech_store.mjs";
 import {useEffect, useState} from "./html.mjs";
 
-// Promise-safe API namespace (see shared/capabilities.js § namespace idiom).
-const chrome = globalThis.browser ?? globalThis.chrome;
-
 const SELF_TEST_CLIP_URL = new URL("../../engine/stt/assets/selftest_16k.wav", import.meta.url);
 // John F. Kennedy's 1961 inaugural address (public domain), eleven seconds.
 const SELF_TEST_REFERENCE =

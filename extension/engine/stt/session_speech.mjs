@@ -9,7 +9,9 @@
  *     noticed at the next start (speech_setup.mjs applyCrashGuard);
  *   - recovery: if the model cannot be loaded on the GPU, or the GPU is lost
  *     mid-session, transcription moves to the model's CPU build and carries
- *     on, and the GPU is reported as failed so it is not tried again.
+ *     on, and the GPU is reported as failed so it is not tried again;
+ *   - a download that fails (or stalls) is not the GPU's fault: it is tried
+ *     once more on the same device, then reported, and the GPU stays usable.
  *
  * Audio may be pushed from the moment `start()` is called: frames that
  * arrive while the model is still loading wait in the worker's queue (and
@@ -36,6 +38,20 @@ export const SPEECH_STATUS = Object.freeze({
  * @property {number|null} downloadPercent - while loading, when known
  * @property {string|null} message - why it is degraded or failed
  */
+
+/**
+ * Load errors that come from fetching the model files rather than from the
+ * device: a dropped connection, a missing file, a stalled download. The
+ * wording comes from the browser's fetch, transformers.js and LiveTranscriber.
+ */
+const DOWNLOAD_FAILURE =
+  /failed to fetch|networkerror|network error|load failed|could not locate file|err_internet|err_network|http(s)? error|status( code)? \d{3}|no progress loading/i;
+
+/** @param {string} reason @returns {boolean} */
+export const isDownloadFailure = (reason) => DOWNLOAD_FAILURE.test(String(reason ?? ""));
+
+/** How many times a failed download is retried before the session gives up. */
+const DOWNLOAD_RETRIES = 1;
 
 export class SessionSpeech {
   /**
@@ -69,6 +85,7 @@ export class SessionSpeech {
     this.onFailed = onFailed;
     this.transcriber = null;
     this.disposed = false;
+    this.downloadRetries = 0;
     this.status = SPEECH_STATUS.LOADING;
     /** Totals across every transcriber this session has used. */
     this.retired = {segmentsDropped: 0, droppedSeconds: 0, segmentsTranscribed: 0};
@@ -208,6 +225,10 @@ export class SessionSpeech {
     if (this.disposed || this.transcriber !== transcriber) {
       return;
     }
+    if (loadError && isDownloadFailure(loadError)) {
+      await this.#downloadFailed(loadError, degradedBecause);
+      return;
+    }
     if (loadError) {
       await this.#recover(`The speech model could not be loaded: ${loadError}`);
       return;
@@ -215,6 +236,21 @@ export class SessionSpeech {
     this.#report(degradedBecause ? SPEECH_STATUS.DEGRADED : SPEECH_STATUS.READY, {
       message: degradedBecause,
     });
+  }
+
+  /** Try the same download again; after that, say so and stop. */
+  async #downloadFailed(loadError, degradedBecause) {
+    this.#retire();
+    if (this.downloadRetries < DOWNLOAD_RETRIES) {
+      this.downloadRetries += 1;
+      await this.#load({degradedBecause});
+      return;
+    }
+    const reason =
+      `The speech model could not be downloaded (${loadError}). ` +
+      "Check the internet connection, then press Start again.";
+    this.#report(SPEECH_STATUS.FAILED, {message: reason});
+    this.onFailed(reason);
   }
 
   async #recover(reason) {

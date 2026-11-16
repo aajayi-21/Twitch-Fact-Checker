@@ -1,11 +1,12 @@
 """``/ws/audio`` endpoint: hello handshake, preemption, session lifecycle.
 
 Sessions live in ``app.state.sessions`` (:class:`app.sessions.SessionRegistry`),
-which also owns the preemption rule. Under the default ``"channel"`` scope a
-new connection preempts only sessions on the same ``(platform, channel)`` — so
-an extension reconnect on one channel still self-heals with zero bookkeeping,
-while two different channels coexist (which the streamer bot needs). See
-``app/sessions.py`` for the scopes and for why capacity stays small.
+which also owns the preemption rule. A new session preempts the ones it
+supersedes (by default every live session; under the ``"channel"`` scope only
+the same ``(platform, channel)``) once its hello has parsed, never on connect,
+so a connection that sends no valid hello cannot end a live session. See
+``app/sessions.py`` for the scopes and for why capacity stays small. Which
+origins may connect at all is decided by :mod:`app.origins`.
 
 The preempted socket receives ``{"type":"error","code":"superseded",
 "fatal":true}`` and a 1000 close, exactly as before.
@@ -138,15 +139,9 @@ def _build_pipeline(websocket: WebSocket, hello: ClientHello) -> SessionPipeline
 
 @router.websocket("/ws/audio")
 async def audio_ws(websocket: WebSocket) -> None:
-    """Accept -> preempt superseded -> hello -> ready -> run the pipeline."""
+    """Accept -> hello -> preempt superseded (in register) -> ready -> run."""
     registry: SessionRegistry = websocket.app.state.sessions
     await websocket.accept()
-
-    # Global scope only: preempt promptly on connect (§3.2) so the old session
-    # dies without waiting up to 5 s for this connection's hello. Under the
-    # default channel scope this is a no-op — the channel is not known until
-    # the hello parses, so the preempt happens inside register() instead.
-    await registry.preempt_on_accept()
 
     hello = await _receive_hello(websocket)
     if hello is None:

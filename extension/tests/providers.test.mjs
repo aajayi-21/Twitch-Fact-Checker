@@ -30,6 +30,7 @@ import {
   ERROR_KIND,
   ProviderError,
   addUsage,
+  attachUsage,
   emptyUsage,
   extractErrorMessage,
   parseModelJson,
@@ -261,7 +262,7 @@ describe("common helpers", () => {
       [402, ERROR_KIND.BILLING],
       [429, ERROR_KIND.RATE_LIMIT],
       [400, ERROR_KIND.BAD_REQUEST],
-      [404, ERROR_KIND.BAD_REQUEST],
+      [404, ERROR_KIND.MODEL_UNAVAILABLE],
       [503, ERROR_KIND.SERVER],
     ];
     for (const [status, kind] of cases) {
@@ -785,5 +786,98 @@ describe("openrouter", () => {
       openrouter.runVerify({apiKey: KEY, claim: "x", fetchImpl}),
       (error) => error.kind === ERROR_KIND.BILLING
     );
+  });
+});
+
+describe("billed failures and missing models", () => {
+  const usageOf = (error) => error.usage;
+
+  it("attachUsage adds to usage already on the error, and wraps a non-provider error", () => {
+    const first = addUsage(emptyUsage(), {inputTokens: 100, calls: 1});
+    const inner = attachUsage(new ProviderError(ERROR_KIND.INVALID_OUTPUT, "x"), first);
+    const outer = attachUsage(inner, addUsage(emptyUsage(), {inputTokens: 50, calls: 1}));
+    assert.equal(outer.usage.inputTokens, 150);
+    assert.equal(outer.usage.calls, 2);
+    const wrapped = attachUsage(new TypeError("cannot read x of undefined"), first);
+    assert.ok(wrapped instanceof ProviderError);
+    assert.equal(wrapped.kind, ERROR_KIND.INVALID_OUTPUT);
+    assert.equal(wrapped.usage.calls, 1);
+    const cancelled = Object.assign(new Error("aborted"), {name: "AbortError"});
+    assert.equal(attachUsage(cancelled, first), cancelled, "a cancellation passes through");
+    assert.equal(attachUsage(new ProviderError(ERROR_KIND.SERVER, "x"), emptyUsage()).usage, null);
+  });
+
+  it("a refused Anthropic answer still reports what it cost", async () => {
+    const {fetchImpl} = fakeFetch({
+      stop_reason: "refusal",
+      usage: {input_tokens: 1200, output_tokens: 10},
+      content: [],
+    });
+    await assert.rejects(
+      anthropic.runGate({apiKey: KEY, context: "", transcript: "x", fetchImpl}),
+      (error) =>
+        error.kind === ERROR_KIND.REFUSED &&
+        usageOf(error)?.inputTokens === 1200 &&
+        usageOf(error)?.calls === 1
+    );
+  });
+
+  it("a resumed Anthropic turn that fails still reports the rounds before it", async () => {
+    const paused = {
+      stop_reason: "pause_turn",
+      usage: {input_tokens: 900, output_tokens: 40, server_tool_use: {web_search_requests: 1}},
+      content: [{type: "server_tool_use", id: "s", name: "web_search", input: {}}],
+    };
+    const {fetchImpl} = fakeFetch(paused, errorResponse(500, {error: {message: "overloaded"}}));
+    await assert.rejects(
+      anthropic.runVerify({apiKey: KEY, claim: "x", fetchImpl}),
+      (error) =>
+        error.kind === ERROR_KIND.SERVER &&
+        usageOf(error)?.webSearches === 1 &&
+        usageOf(error)?.calls === 1
+    );
+  });
+
+  it("an unreadable OpenRouter answer still reports its exact cost", async () => {
+    const {fetchImpl} = fakeFetch({
+      choices: [{finish_reason: "stop", message: {content: "not json at all"}}],
+      usage: {prompt_tokens: 800, completion_tokens: 20, cost: 0.0071},
+    });
+    await assert.rejects(
+      openrouter.runVerify({apiKey: KEY, claim: "x", fetchImpl}),
+      (error) => error.kind === ERROR_KIND.INVALID_OUTPUT && usageOf(error)?.costUsd === 0.0071
+    );
+  });
+
+  it("a Gemini chain that fails part-way reports every call that answered", async () => {
+    const answered = {
+      status: "completed",
+      usage: {total_input_tokens: 2000, total_output_tokens: 100},
+      steps: [{type: "model_output", content: [{type: "text", text: "prose, not JSON"}]}],
+    };
+    // strict (no sources) -> prompted (unparseable) -> repair fails outright
+    const {fetchImpl} = fakeFetch(answered, answered, errorResponse(503, {error: {message: "busy"}}));
+    await assert.rejects(
+      gemini.runVerify({apiKey: KEY, claim: "x", fetchImpl}),
+      (error) => error.kind === ERROR_KIND.SERVER && usageOf(error)?.calls === 2
+    );
+  });
+
+  it("a missing model is its own kind, so the session can stop and say so", async () => {
+    const cases = [
+      [anthropic, errorResponse(404, {type: "error", error: {type: "not_found_error", message: "model: claude-nope"}})],
+      [openrouter, errorResponse(400, {error: {message: "claude-nope is not a valid model ID"}})],
+      [openrouter, errorResponse(404, {error: {message: "No endpoints found that support the requested parameters"}})],
+      [openai, errorResponse(404, {error: {code: "model_not_found", message: "The model `gpt-nope` does not exist"}})],
+      [gemini, errorResponse(404, {error: {message: "models/gemini-nope is not found"}})],
+    ];
+    for (const [provider, response] of cases) {
+      const {fetchImpl} = fakeFetch(response);
+      await assert.rejects(
+        provider.runGate({apiKey: KEY, context: "", transcript: "x", model: "nope", fetchImpl}),
+        (error) => error.kind === ERROR_KIND.MODEL_UNAVAILABLE,
+        `${provider.id}: ${JSON.stringify(response.body)}`
+      );
+    }
   });
 });

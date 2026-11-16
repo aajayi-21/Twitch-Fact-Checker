@@ -14,6 +14,7 @@ export const BACKEND_ERROR = Object.freeze({
   UNREACHABLE: "unreachable", // nothing answered: the backend is not running
   TIMEOUT: "timeout", // it answered too slowly
   KEY_REJECTED: "key_rejected", // 401: the provider refused the key
+  FORBIDDEN: "forbidden", // 403: the backend does not allow this extension's ID
   NOT_READY: "not_ready", // 409: a chosen provider is not connected
   INVALID: "invalid", // 400/404/422: the request was refused; detail says why
   PROVIDER_DOWN: "provider_down", // 502: the backend could not reach the provider
@@ -49,6 +50,7 @@ const TIMEOUTS_MS = Object.freeze({
 const KIND_BY_STATUS = Object.freeze({
   400: BACKEND_ERROR.INVALID,
   401: BACKEND_ERROR.KEY_REJECTED,
+  403: BACKEND_ERROR.FORBIDDEN,
   404: BACKEND_ERROR.INVALID,
   409: BACKEND_ERROR.NOT_READY,
   422: BACKEND_ERROR.INVALID,
@@ -210,7 +212,7 @@ export const createBackendApi = ({getOrigin, fetchImpl = (...args) => fetch(...a
      * @param {string} text
      */
     runTestCheck: (text) =>
-      request("/debug/text", {
+      request("/setup/test-check", {
         method: "POST",
         body: {text, sensitivity: "high"},
         timeoutMs: TIMEOUTS_MS.testCheck,

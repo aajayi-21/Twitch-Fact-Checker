@@ -31,8 +31,10 @@ import {
   ERROR_KIND,
   ProviderError,
   addUsage,
+  attachUsage,
   emptyUsage,
   parseModelJson,
+  readBilled,
   requestJson,
 } from "./common.mjs";
 
@@ -210,10 +212,11 @@ export const runGate = async ({apiKey, context, transcript, model = defaultModel
     },
     options
   );
-  return {
+  const usage = addUsage(emptyUsage(), readUsage(interaction));
+  return readBilled(usage, () => ({
     claims: normalizeGateClaims(parseModelJson(readOutputText(interaction))),
-    usage: addUsage(emptyUsage(), readUsage(interaction)),
-  };
+    usage,
+  }));
 };
 
 /**
@@ -238,20 +241,23 @@ const groundedCall = async ({apiKey, claim, model, strict}, options) => {
     },
     options
   );
-  const text = readOutputText(interaction);
-  let payload = null;
-  try {
-    payload = parseModelJson(text);
-  } catch (error) {
-    if (!(error instanceof ProviderError)) {
-      throw error;
+  const usage = addUsage(emptyUsage(), readUsage(interaction));
+  return readBilled(usage, () => {
+    const text = readOutputText(interaction);
+    let payload = null;
+    try {
+      payload = parseModelJson(text);
+    } catch (error) {
+      if (!(error instanceof ProviderError)) {
+        throw error;
+      }
     }
-  }
-  const sources = selectSources({
-    ...collectSources(interaction),
-    picked: payload?.source_urls ?? [],
+    const sources = selectSources({
+      ...collectSources(interaction),
+      picked: payload?.source_urls ?? [],
+    });
+    return {payload, sources, usage, text};
   });
-  return {payload, sources, usage: readUsage(interaction), text};
 };
 
 /** Reshape a free-text verdict into the schema; no search, so no new facts. */
@@ -269,7 +275,8 @@ const repairCall = async ({apiKey, model, text}, options) => {
     },
     options
   );
-  return {payload: parseModelJson(readOutputText(interaction)), usage: readUsage(interaction)};
+  const usage = addUsage(emptyUsage(), readUsage(interaction));
+  return readBilled(usage, () => ({payload: parseModelJson(readOutputText(interaction)), usage}));
 };
 
 /**
@@ -287,35 +294,40 @@ export const runVerify = async ({
   ...options
 }) => {
   let usage = emptyUsage();
-  if (verifyMode !== "prompted") {
-    const strict = await groundedCall({apiKey, claim, model, strict: true}, options);
-    usage = addUsage(usage, strict.usage);
-    const usable = strict.payload !== null && strict.sources.length > 0;
-    if (usable || verifyMode === "strict") {
-      if (strict.payload === null) {
-        throw new ProviderError(
-          ERROR_KIND.INVALID_OUTPUT,
-          `Gemini returned unusable JSON with search grounding (got: ${strict.text.slice(0, 120)}).`
-        );
+  try {
+    if (verifyMode !== "prompted") {
+      const strict = await groundedCall({apiKey, claim, model, strict: true}, options);
+      usage = addUsage(usage, strict.usage);
+      const usable = strict.payload !== null && strict.sources.length > 0;
+      if (usable || verifyMode === "strict") {
+        if (strict.payload === null) {
+          throw new ProviderError(
+            ERROR_KIND.INVALID_OUTPUT,
+            `Gemini returned unusable JSON with search grounding (got: ${strict.text.slice(0, 120)}).`
+          );
+        }
+        return {verdict: finalizeVerdict(strict.payload, strict.sources), usage, mode: "strict"};
       }
-      return {verdict: finalizeVerdict(strict.payload, strict.sources), usage, mode: "strict"};
     }
-  }
 
-  const prompted = await groundedCall({apiKey, claim, model, strict: false}, options);
-  usage = addUsage(usage, prompted.usage);
-  if (prompted.payload !== null) {
+    const prompted = await groundedCall({apiKey, claim, model, strict: false}, options);
+    usage = addUsage(usage, prompted.usage);
+    if (prompted.payload !== null) {
+      return {
+        verdict: finalizeVerdict(prompted.payload, prompted.sources),
+        usage,
+        mode: verifyMode === "auto" ? "prompted-after-strict" : "prompted",
+      };
+    }
+    const repaired = await repairCall({apiKey, model, text: prompted.text}, options);
+    usage = addUsage(usage, repaired.usage);
     return {
-      verdict: finalizeVerdict(prompted.payload, prompted.sources),
+      verdict: finalizeVerdict(repaired.payload, prompted.sources),
       usage,
-      mode: verifyMode === "auto" ? "prompted-after-strict" : "prompted",
+      mode: verifyMode === "auto" ? "repaired-after-strict" : "repaired",
     };
+  } catch (error) {
+    // The calls that answered before the failure were billed.
+    throw attachUsage(error, usage);
   }
-  const repaired = await repairCall({apiKey, model, text: prompted.text}, options);
-  usage = addUsage(usage, repaired.usage);
-  return {
-    verdict: finalizeVerdict(repaired.payload, prompted.sources),
-    usage,
-    mode: verifyMode === "auto" ? "repaired-after-strict" : "repaired",
-  };
 };

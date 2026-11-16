@@ -1,4 +1,5 @@
-"""Key-only onboarding: GET /setup/status and POST /setup/credentials.
+"""Key-only onboarding: GET /setup/status, POST /setup/credentials, and the
+sample check POST /setup/test-check.
 
 The extension options page drives this flow: the user pastes a provider API
 key, the backend validates it LIVE against the provider (zero-cost probes),
@@ -62,8 +63,10 @@ from app.openrouter_catalogue import (  # noqa: F401 — re-exported for callers
     fetch_openrouter_catalogue,
     prime_openrouter_capabilities,
 )
+from app.models import DebugTextRequest, DebugTextResponse
 from app.rate_limit import QuotaCooldown
 from app.sessions import SessionRegistry
+from app.text_check import check_text
 
 logger = logging.getLogger(__name__)
 
@@ -734,6 +737,18 @@ async def submit_credentials(
     await prime_openrouter_capabilities(new_settings.active_openrouter_chat_models)
     await _swap_runtime(request, new_settings)
     return await _build_status(new_settings)
+
+
+@router.post("/setup/test-check", response_model=DebugTextResponse)
+async def run_test_check(body: DebugTextRequest, request: Request) -> DebugTextResponse:
+    """The app's sample check: one sentence through the real claim gate and
+    verification, with the configured provider. Makes paid provider calls.
+
+    Unlike ``/debug/text`` this is always available and only returns the
+    result: nothing is pushed into live sessions. Responses: 400 empty text,
+    409 no API key yet, 502 LLM failure (:func:`app.text_check.check_text`).
+    """
+    return await check_text(body, request)
 
 
 @router.post("/setup/stages", response_model=SetupStatusResponse)

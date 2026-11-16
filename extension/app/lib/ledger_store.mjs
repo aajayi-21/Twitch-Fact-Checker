@@ -13,9 +13,6 @@ import * as ledger from "../../ledger/ledger.mjs";
 import {buildFeedbackRecord, isoSeconds} from "../../ledger/records.mjs";
 import {useEffect, useState} from "./html.mjs";
 
-// Promise-safe API namespace (see shared/capabilities.js § namespace idiom).
-const chrome = globalThis.browser ?? globalThis.chrome;
-
 const IMPORT_META_KEY = "backendImport";
 // A burst of writes (a verdict, its claim and its usage row arrive together)
 // should cause one reload, not three.

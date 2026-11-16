@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
-"""Build the store packages of the extension.
+"""Build the store package of the extension.
 
-``extension/manifest.json`` is written for development: one manifest that
-both Chrome and Firefox load unpacked, with the local backend's addresses
-granted up front. A store package needs something cleaner, so this script
-derives one manifest per browser from it, copies the files a release needs,
-checks the result, and zips it.
+The extension supports Chrome and other Chromium browsers (Edge takes the same
+package). ``extension/manifest.json`` is written for development, with the
+local backend's addresses granted up front. A store package needs something
+cleaner, so this script derives the store manifest from it, copies the files
+a release needs, checks the result, and zips it.
 
     dist/chrome/     + dist/live-stream-fact-checker-chrome-<version>.zip
-    dist/firefox/    + dist/live-stream-fact-checker-firefox-<version>.zip
 
-What changes for the Chrome package:
+What changes in the store manifest:
 
-- the Firefox-only keys go (``browser_specific_settings``,
-  ``background.scripts``);
+- ``key`` goes. It only pins the development ID (the local backend allows
+  that ID; see backend/app/origins.py), and the store assigns its own;
 - the local backend's addresses move from ``host_permissions`` to
   ``optional_host_permissions`` — the app asks for them when someone chooses
   the backend (extension/app/lib/engine_actions.mjs), so installing asks for
@@ -22,14 +21,7 @@ What changes for the Chrome package:
 - the version is stamped (``--version``, else the latest ``v*`` git tag, else
   the manifest's own).
 
-What changes for the Firefox package (which only ever uses the backend):
-
-- the Chrome-only keys and permissions go (``service_worker``,
-  ``tabCapture``, ``offscreen``, the optional Gemini host);
-- ``data_collection_permissions`` is added, as addons.mozilla.org requires;
-- the in-browser speech runtime (27 MB) is left out — Firefox cannot run it.
-
-Both packages leave out tests, spikes and build tooling.
+The package leaves out tests, spikes and build tooling.
 
 The build FAILS, rather than producing a package a store would reject, when:
 a file the manifest names is missing; the description is over 132 characters;
@@ -40,8 +32,8 @@ extension's own code loads script from a URL, uses ``eval``, or has an inline
 
 Usage (from the repo root)::
 
-    python scripts/build_extension.py                 # both browsers
-    python scripts/build_extension.py --target chrome --version 0.2.0
+    python scripts/build_extension.py
+    python scripts/build_extension.py --version 0.2.0
     python scripts/build_extension.py --check         # lint only, build nothing
 """
 
@@ -60,8 +52,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 EXTENSION_DIR = REPO_ROOT / "extension"
 DEFAULT_OUT_DIR = REPO_ROOT / "dist"
 PACKAGE_STEM = "live-stream-fact-checker"
-
-TARGETS: tuple[str, ...] = ("chrome", "firefox")
+#: The package directory under ``dist/`` and the browser in the zip's name.
+#: One package serves every Chromium browser.
+PACKAGE_TARGET = "chrome"
 
 #: Chrome Web Store limit for the manifest ``description``.
 MAX_DESCRIPTION_CHARS = 132
@@ -71,9 +64,8 @@ MAX_NAME_CHARS = 75
 #: Never shipped: tests, throwaway spikes, build tooling.
 EXCLUDED_DIRS: frozenset[str] = frozenset({"tests", "spike", "__pycache__"})
 EXCLUDED_FILES: frozenset[str] = frozenset({"icons/make_icons.py", ".DS_Store"})
-#: The in-browser speech runtime. Chrome needs it; Firefox cannot use it.
-SPEECH_RUNTIME_DIR = "vendor/transformers"
-SPEECH_RUNTIME_MARKER = f"{SPEECH_RUNTIME_DIR}/transformers.js"
+#: The in-browser speech runtime; the package is incomplete without it.
+SPEECH_RUNTIME_MARKER = "vendor/transformers/transformers.js"
 
 #: Third-party code, vendored with integrity checks by scripts/vendor_*.py.
 #: It is not scanned for the patterns below: the speech runtime carries its
@@ -81,50 +73,27 @@ SPEECH_RUNTIME_MARKER = f"{SPEECH_RUNTIME_DIR}/transformers.js"
 #: (extension/engine/stt/stt_runtime.mjs) and never fetches.
 VENDOR_DIR = "vendor"
 
-#: The permissions each store package must have — no more, no fewer. Each has
+#: The permissions the store package must have — no more, no fewer. Each has
 #: a written justification in docs/store/listing.md; change both together.
-EXPECTED_PERMISSIONS: dict[str, dict[str, list[str]]] = {
-    "chrome": {
-        "permissions": [
-            "activeTab",
-            "alarms",
-            "offscreen",
-            "storage",
-            "tabCapture",
-            "unlimitedStorage",
-        ],
-        "host_permissions": [],
-        "optional_host_permissions": [
-            "http://127.0.0.1/*",
-            "http://localhost/*",
-            "https://127.0.0.1/*",
-            "https://generativelanguage.googleapis.com/*",
-            "https://localhost/*",
-        ],
-    },
-    "firefox": {
-        "permissions": ["activeTab", "alarms", "storage", "unlimitedStorage"],
-        "host_permissions": [
-            "http://127.0.0.1/*",
-            "http://localhost/*",
-            "https://127.0.0.1/*",
-            "https://localhost/*",
-            "ws://127.0.0.1/*",
-            "ws://localhost/*",
-            "wss://127.0.0.1/*",
-            "wss://localhost/*",
-        ],
-        "optional_host_permissions": [],
-    },
+EXPECTED_PERMISSIONS: dict[str, list[str]] = {
+    "permissions": [
+        "activeTab",
+        "alarms",
+        "offscreen",
+        "scripting",
+        "storage",
+        "tabCapture",
+        "unlimitedStorage",
+    ],
+    "host_permissions": [],
+    "optional_host_permissions": [
+        "http://127.0.0.1/*",
+        "http://localhost/*",
+        "https://127.0.0.1/*",
+        "https://generativelanguage.googleapis.com/*",
+        "https://localhost/*",
+    ],
 }
-
-#: What addons.mozilla.org is told the Firefox package transmits. On Firefox
-#: the stream's audio goes to the backend program on the same computer and
-#: nothing else leaves the browser; that is still "website content" leaving
-#: the extension, so it is declared rather than argued away.
-FIREFOX_DATA_COLLECTION: dict[str, list[str]] = {"required": ["websiteContent"]}
-#: ``data_collection_permissions`` needs Firefox 140.
-FIREFOX_MIN_VERSION = "140.0"
 
 _LOCAL_HOST_RE = re.compile(r"^(https?|wss?)://(127\.0\.0\.1|localhost)/\*$")
 _VERSION_RE = re.compile(r"^\d+(\.\d+){0,3}$")
@@ -155,12 +124,11 @@ def _is_local_host(pattern: str) -> bool:
     return bool(_LOCAL_HOST_RE.match(pattern))
 
 
-def chrome_manifest(dev: dict[str, Any], version: str) -> dict[str, Any]:
-    """The Chrome Web Store manifest, derived from the development one."""
+def store_manifest(dev: dict[str, Any], version: str) -> dict[str, Any]:
+    """The store manifest, derived from the development one."""
     manifest = json.loads(json.dumps(dev))
     manifest["version"] = version
-    manifest.pop("browser_specific_settings", None)
-    manifest["background"].pop("scripts", None)
+    manifest.pop("key", None)
 
     host_permissions = manifest.pop("host_permissions", [])
     required = [host for host in host_permissions if not _is_local_host(host)]
@@ -178,40 +146,13 @@ def chrome_manifest(dev: dict[str, Any], version: str) -> dict[str, Any]:
     return manifest
 
 
-def firefox_manifest(dev: dict[str, Any], version: str) -> dict[str, Any]:
-    """The addons.mozilla.org manifest, derived from the development one."""
-    manifest = json.loads(json.dumps(dev))
-    manifest["version"] = version
-    manifest.pop("minimum_chrome_version", None)
-    manifest["background"].pop("service_worker", None)
-    manifest["permissions"] = [
-        permission
-        for permission in manifest["permissions"]
-        if permission not in ("tabCapture", "offscreen")
-    ]
-    # The browser engine (the only user of provider hosts) is Chrome-only.
-    manifest.pop("optional_host_permissions", None)
-    gecko = manifest.setdefault("browser_specific_settings", {}).setdefault("gecko", {})
-    gecko["strict_min_version"] = FIREFOX_MIN_VERSION
-    gecko["data_collection_permissions"] = FIREFOX_DATA_COLLECTION
-    return manifest
-
-
-def build_manifest(target: str, dev: dict[str, Any], version: str) -> dict[str, Any]:
-    if target == "chrome":
-        return chrome_manifest(dev, version)
-    if target == "firefox":
-        return firefox_manifest(dev, version)
-    raise BuildError(f"unknown target {target!r}; expected one of {list(TARGETS)}")
-
-
 # --------------------------------------------------------------------------- #
 # Files
 # --------------------------------------------------------------------------- #
 
 
-def collect_files(extension_dir: Path, target: str) -> list[str]:
-    """Paths (relative, POSIX) of every file the ``target`` package ships."""
+def collect_files(extension_dir: Path) -> list[str]:
+    """Paths (relative, POSIX) of every file the package ships."""
     files: list[str] = []
     for path in sorted(extension_dir.rglob("*")):
         if not path.is_file():
@@ -223,9 +164,7 @@ def collect_files(extension_dir: Path, target: str) -> list[str]:
         if name in EXCLUDED_FILES or relative.name in EXCLUDED_FILES:
             continue
         if name == "manifest.json":
-            continue  # written separately, per target
-        if target == "firefox" and name.startswith(f"{SPEECH_RUNTIME_DIR}/"):
-            continue
+            continue  # the store manifest is written separately
         files.append(name)
     return files
 
@@ -236,7 +175,6 @@ def _referenced_files(manifest: dict[str, Any]) -> list[str]:
     background = manifest.get("background", {})
     if "service_worker" in background:
         named.append(background["service_worker"])
-    named.extend(background.get("scripts", []))
     action = manifest.get("action", {})
     if "default_popup" in action:
         named.append(action["default_popup"])
@@ -257,7 +195,7 @@ def _referenced_files(manifest: dict[str, Any]) -> list[str]:
 # --------------------------------------------------------------------------- #
 
 
-def lint_manifest(target: str, manifest: dict[str, Any], files: list[str]) -> list[str]:
+def lint_manifest(manifest: dict[str, Any], files: list[str]) -> list[str]:
     """Problems that would get the package rejected. Empty means clean."""
     problems: list[str] = []
     if manifest.get("manifest_version") != 3:
@@ -278,9 +216,13 @@ def lint_manifest(target: str, manifest: dict[str, Any], files: list[str]) -> li
     for forbidden in ("key", "update_url"):
         if forbidden in manifest:
             problems.append(f"{forbidden!r} must not be in a store manifest")
+    # Firefox keys: the extension is Chromium-only, and Chrome warns about them.
+    if "browser_specific_settings" in manifest:
+        problems.append("'browser_specific_settings' is Firefox-only; remove it")
+    if "scripts" in manifest.get("background", {}):
+        problems.append("'background.scripts' is Firefox-only; use service_worker")
 
-    expected = EXPECTED_PERMISSIONS[target]
-    for field, wanted in expected.items():
+    for field, wanted in EXPECTED_PERMISSIONS.items():
         actual = sorted(manifest.get(field, []))
         if actual != sorted(wanted):
             problems.append(
@@ -292,7 +234,7 @@ def lint_manifest(target: str, manifest: dict[str, Any], files: list[str]) -> li
     csp = manifest.get("content_security_policy", {}).get("extension_pages", "")
     if "'unsafe-eval'" in csp or "http:" in csp or "https:" in csp:
         problems.append("content_security_policy must not allow eval or remote hosts")
-    if target == "chrome" and "'wasm-unsafe-eval'" not in csp:
+    if "'wasm-unsafe-eval'" not in csp:
         problems.append(
             "content_security_policy needs 'wasm-unsafe-eval' (the speech model "
             "is WebAssembly)"
@@ -305,13 +247,7 @@ def lint_manifest(target: str, manifest: dict[str, Any], files: list[str]) -> li
                 f"the manifest names {named!r}, which is not in the package"
             )
 
-    if target == "firefox":
-        gecko = manifest.get("browser_specific_settings", {}).get("gecko", {})
-        if "data_collection_permissions" not in gecko:
-            problems.append("Firefox needs gecko.data_collection_permissions")
-        if not gecko.get("id"):
-            problems.append("Firefox needs gecko.id")
-    if target == "chrome" and SPEECH_RUNTIME_MARKER not in present:
+    if SPEECH_RUNTIME_MARKER not in present:
         problems.append(
             f"{SPEECH_RUNTIME_MARKER} is missing: run "
             "`python scripts/vendor_stt_runtime.py` before building"
@@ -425,34 +361,33 @@ def write_zip(package_dir: Path, zip_path: Path) -> str:
     return hashlib.sha256(zip_path.read_bytes()).hexdigest()
 
 
-def build_target(
-    target: str,
+def build_package(
     *,
     extension_dir: Path,
     out_dir: Path,
     version: str,
     check_only: bool = False,
 ) -> dict[str, Any]:
-    """Check, and unless ``check_only`` build, one browser's package.
+    """Check, and unless ``check_only`` build, the store package.
 
     Raises:
         BuildError: listing every problem found.
     """
     dev = json.loads((extension_dir / "manifest.json").read_text(encoding="utf-8"))
-    manifest = build_manifest(target, dev, version)
-    files = collect_files(extension_dir, target)
-    problems = lint_manifest(target, manifest, files) + scan_code(extension_dir, files)
+    manifest = store_manifest(dev, version)
+    files = collect_files(extension_dir)
+    problems = lint_manifest(manifest, files) + scan_code(extension_dir, files)
     if problems:
         raise BuildError(
-            f"the {target} package has {len(problems)} problem(s):\n  - "
+            f"the package has {len(problems)} problem(s):\n  - "
             + "\n  - ".join(problems)
         )
-    result: dict[str, Any] = {"target": target, "version": version, "files": len(files)}
+    result: dict[str, Any] = {"version": version, "files": len(files)}
     if check_only:
         return result
-    package_dir = out_dir / target
+    package_dir = out_dir / PACKAGE_TARGET
     write_package(extension_dir, package_dir, manifest, files)
-    zip_path = out_dir / f"{PACKAGE_STEM}-{target}-{version}.zip"
+    zip_path = out_dir / f"{PACKAGE_STEM}-{PACKAGE_TARGET}-{version}.zip"
     result["sha256"] = write_zip(package_dir, zip_path)
     result["zip"] = zip_path
     result["zip_mb"] = zip_path.stat().st_size / 1e6
@@ -461,31 +396,27 @@ def build_target(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--target", choices=[*TARGETS, "all"], default="all")
     parser.add_argument("--version", help="override the version to stamp")
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT_DIR)
     parser.add_argument("--check", action="store_true", help="lint only; write nothing")
     args = parser.parse_args()
-    targets = TARGETS if args.target == "all" else (args.target,)
     try:
         dev = json.loads((EXTENSION_DIR / "manifest.json").read_text(encoding="utf-8"))
         version = resolve_version(args.version, dev, REPO_ROOT)
-        for target in targets:
-            result = build_target(
-                target,
-                extension_dir=EXTENSION_DIR,
-                out_dir=args.out,
-                version=version,
-                check_only=args.check,
+        result = build_package(
+            extension_dir=EXTENSION_DIR,
+            out_dir=args.out,
+            version=version,
+            check_only=args.check,
+        )
+        if args.check:
+            print(f"ok — {result['files']} files, version {version}")
+        else:
+            print(
+                f"{result['zip'].relative_to(REPO_ROOT)} "
+                f"({result['zip_mb']:.1f} MB, {result['files']} files, "
+                f"version {version})\n  sha256 {result['sha256']}"
             )
-            if args.check:
-                print(f"{target}: ok — {result['files']} files, version {version}")
-            else:
-                print(
-                    f"{target}: {result['zip'].relative_to(REPO_ROOT)} "
-                    f"({result['zip_mb']:.1f} MB, {result['files']} files, "
-                    f"version {version})\n         sha256 {result['sha256']}"
-                )
     except BuildError as error:
         print(f"error: {error}", file=sys.stderr)
         return 1

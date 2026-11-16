@@ -253,6 +253,9 @@ export const buildUsageRecord = (frame, session, nowIso) => {
     cost_source: priced.costSource,
     pricing_version: priced.pricingVersion,
     verdict_id: text(frame.verdict_id),
+    // "failed": billed, but the answer could not be used. Absent (null) on
+    // rows from before this field and on the backend's frames.
+    outcome: frame.outcome === "failed" ? "failed" : null,
     platform: session.platform ?? null,
     channel_id: session.channel_id ?? null,
     channel_name: session.channel_name ?? null,

@@ -1,4 +1,4 @@
-"""FastAPI app factory, lifespan wiring, CORS, and GET /healthz.
+"""FastAPI app factory, lifespan wiring, origin checks, CORS, and GET /healthz.
 
 Run from ``backend/`` with::
 
@@ -23,6 +23,7 @@ from app.feedback import router as feedback_router
 from app.llm_provider import LLMRuntime, build_llm_runtime, close_llm_runtime
 from app.logging_setup import banner, configure_logging
 from app.llm_openrouter import verify_mode_snapshot
+from app.origins import CORS_ORIGIN_REGEX, OriginGuardMiddleware
 from app.openrouter_catalogue import (
     lookup_model_capabilities,
     prime_openrouter_capabilities,
@@ -36,11 +37,6 @@ from app.transcriber import create_transcriber
 from app.ws import router as ws_router
 
 logger = logging.getLogger(__name__)
-
-# Extension pages (popup healthz preflight) plus local dev tools.
-_CORS_ORIGIN_REGEX = (
-    r"^(chrome-extension://[a-z]{32}|https?://(localhost|127\.0\.0\.1)(:\d+)?)$"
-)
 
 
 def _active_openrouter_models(settings: Settings) -> set[str]:
@@ -228,15 +224,21 @@ def create_app() -> FastAPI:
         version=SERVER_VERSION,
         lifespan=lifespan,
     )
+    # Middleware runs outermost-last-added: TrustedHost, then the origin
+    # guard, then CORS.
     app.add_middleware(
         CORSMiddleware,
-        allow_origin_regex=_CORS_ORIGIN_REGEX,
+        allow_origin_regex=CORS_ORIGIN_REGEX,
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    # DNS-rebinding hardening: CORS does nothing against a malicious page
-    # whose own domain is re-pointed at 127.0.0.1 (same-origin, arbitrary
-    # Host), so reject any Host that is not localhost with a 400. Starlette
+    # Any page in the browser can reach 127.0.0.1: refuse requests and
+    # WebSocket handshakes from origins other than Doxa's extension and this
+    # backend's own pages (app/origins.py).
+    app.add_middleware(OriginGuardMiddleware)
+    # DNS-rebinding hardening: a malicious page whose own domain is
+    # re-pointed at 127.0.0.1 is same-origin to itself, with an arbitrary
+    # Host, so reject any Host that is not localhost with a 400. Starlette
     # strips the port before matching (":8710" variants are covered), and
     # the check applies to both HTTP and the /ws/audio websocket scope. If
     # the backend is ever served on a LAN hostname, add it here.

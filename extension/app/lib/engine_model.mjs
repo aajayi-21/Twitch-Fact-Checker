@@ -5,6 +5,7 @@
 
 import {ERROR_KIND} from "../../engine/providers/common.mjs";
 import {PROVIDERS} from "../../engine/providers/index.mjs";
+import {canPrice} from "../../ledger/pricing.mjs";
 
 /**
  * The four providers, in the order they are offered.
@@ -99,7 +100,48 @@ export const describeProviderError = (error, providerLabel) => {
       return `${providerLabel}'s model declined to answer.`;
     case ERROR_KIND.INVALID_OUTPUT:
       return `${providerLabel} answered, but not in a usable form: ${error.message}`;
+    case ERROR_KIND.MODEL_UNAVAILABLE:
+      return `${providerLabel} cannot run that model: ${error.message}. Check the model name, or leave it empty for the default.`;
     default:
       return String(error?.message ?? error ?? "Something went wrong.");
   }
+};
+
+/**
+ * The models in a plan whose calls this app cannot price, and which the
+ * monthly spending limit therefore cannot count.
+ *
+ * @param {{gate: {providerId: string, model: string}|null,
+ *   verify: {providerId: string, model: string}|null}} plan
+ * @returns {string[]} each model once, in stage order
+ */
+export const unpricedModels = (plan) => {
+  const models = [];
+  for (const stage of [plan?.gate, plan?.verify]) {
+    if (stage && !canPrice(stage.providerId, stage.model) && !models.includes(stage.model)) {
+      models.push(stage.model);
+    }
+  }
+  return models;
+};
+
+/**
+ * The warning shown wherever the monthly limit is, when it cannot count
+ * every model in use; null when it can (or there is no monthly limit).
+ *
+ * @param {object} plan - see unpricedModels
+ * @param {{dailyChecks: number, monthlyUsd: number}} budgets
+ * @returns {string|null}
+ */
+export const unpricedWarning = (plan, budgets) => {
+  const models = unpricedModels(plan);
+  if (models.length === 0 || !(budgets?.monthlyUsd > 0)) {
+    return null;
+  }
+  const names = models.join(" and ");
+  const daily =
+    budgets.dailyChecks > 0
+      ? ` The daily limit of ${budgets.dailyChecks} fact-checks still applies.`
+      : " With no daily limit either, nothing caps what these calls cost.";
+  return `The monthly limit cannot count ${names}: this app does not know ${models.length === 1 ? "its" : "their"} price.${daily}`;
 };

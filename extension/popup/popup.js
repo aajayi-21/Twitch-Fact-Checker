@@ -23,10 +23,9 @@ import {
   loadSettings,
 } from "../shared/settings.js";
 
-// Promise-safe API namespace (see shared/capabilities.js § namespace idiom).
-const chrome = globalThis.browser ?? globalThis.chrome;
-
 const CAPTURE_SESSION_KEY = "captureSession";
+// Set by the service worker while results cannot reach the tab's overlay.
+const OVERLAY_PROBLEM_KEY = "overlayProblem";
 const HEALTH_TIMEOUT_MS = 1500;
 const HEALTH_POLL_INTERVAL_MS = 3000;
 const ACTIVE_STATUSES = new Set(["starting", "capturing", "reconnecting"]);
@@ -41,6 +40,14 @@ const IDLE_SESSION = Object.freeze({
   adPaused: false,
 });
 
+/** Stops whose session.errorDetail is a sentence written for the viewer. */
+const ENGINE_STOP_ERRORS = new Set([
+  ERR.ERR_KEY_REFUSED,
+  ERR.ERR_NO_CREDIT,
+  ERR.ERR_MODEL_UNAVAILABLE,
+  ERR.ERR_SPEECH_FAILED,
+]);
+
 /** One line of copy per error code, each with an action hint. */
 const ERROR_COPY = {
   [ERR.ERR_BACKEND_DOWN]:
@@ -54,11 +61,21 @@ const ERROR_COPY = {
   [ERR.ERR_NOT_CONFIGURED]: "Backend has no API key — add one in settings.",
   [ERR.ERR_CREDENTIALS_UPDATED]:
     "Session restarted after key update — press Start again.",
-  // Generic backend fatal codes arrive as "backend:<code>" (offscreen.js /
-  // page_session.js); the speech engine's unrecoverable failure gets copy.
+  // Generic backend fatal codes arrive as "backend:<code>" (offscreen.js);
+  // the speech engine's unrecoverable failure gets copy.
   "backend:stt_failure":
     "Transcription engine failed — restart the backend, then click Start.",
   [ERR.ERR_KEY_REMOVED]: "Stopped because the API key in use was removed.",
+  // These three usually arrive with the provider's own sentence in
+  // session.errorDetail, which is shown instead.
+  [ERR.ERR_KEY_REFUSED]:
+    "Your AI provider refused the API key. Check or replace it under AI provider, then press Start.",
+  [ERR.ERR_NO_CREDIT]:
+    "Your AI provider account has no credit. Add some on the provider's site, then press Start.",
+  [ERR.ERR_MODEL_UNAVAILABLE]:
+    "The chosen model is not available. Choose another under AI provider, then press Start.",
+  [ERR.ERR_SPEND_UNKNOWN]:
+    "Could not read your spending so far, so the limits could not be applied. Press Start to try again.",
   [ERR.ERR_SPEECH_NOT_READY]:
     "Speech recognition in this browser is not set up — open the dashboard, Settings → Speech.",
   [ERR.ERR_SPEECH_FAILED]:
@@ -86,6 +103,8 @@ const elements = {
   errorLine: document.getElementById("error-line"),
   hintLine: document.getElementById("hint-line"),
   offlineHint: document.getElementById("offline-hint"),
+  refusedHint: document.getElementById("refused-hint"),
+  refusedExtensionId: document.getElementById("refused-extension-id"),
   startButton: document.getElementById("start-button"),
   stopButton: document.getElementById("stop-button"),
   topicsSummary: document.getElementById("topics-summary"),
@@ -99,6 +118,11 @@ const elements = {
 const state = {
   backendOnline: false,
   backendChecked: false,
+  // The backend answered 403: it does not allow this extension's ID
+  // (ALLOWED_EXTENSION_IDS, backend/app/origins.py).
+  backendRefused: false,
+  // Why results are not reaching the captured tab's overlay, or null.
+  overlayProblem: null,
   // healthz "configured" flag: false while the backend has no API key yet.
   // Defaults to true so the setup card never flashes before the first check.
   backendConfigured: true,
@@ -162,6 +186,9 @@ const render = () => {
   } else if (backendOnline) {
     elements.backendLine.textContent = "Backend online";
     elements.backendLine.dataset.state = "online";
+  } else if (state.backendRefused) {
+    elements.backendLine.textContent = "Backend refused this extension";
+    elements.backendLine.dataset.state = "offline";
   } else {
     elements.backendLine.textContent = "Backend offline";
     elements.backendLine.dataset.state = "offline";
@@ -181,13 +208,20 @@ const render = () => {
   }
   elements.statusText.textContent = statusText;
 
-  // One-line error copy (only when the session is not running).
-  const errorCopy =
-    !active && session.lastError
-      ? session.lastError === ERR.ERR_NOT_CONFIGURED && state.browserEngine
-        ? "No API key yet — add one under AI provider."
-        : (ERROR_COPY[session.lastError] ?? `Stopped: ${session.lastError}`)
-      : null;
+  // One line: why the last session stopped, or, while one runs, a problem
+  // that has not stopped it (claim detection failing, a limit reached).
+  let errorCopy = null;
+  if (active) {
+    errorCopy = session.warning ?? state.overlayProblem ?? null;
+  } else if (session.lastError) {
+    if (session.lastError === ERR.ERR_NOT_CONFIGURED && state.browserEngine) {
+      errorCopy = "No API key yet — add one under AI provider.";
+    } else if (ENGINE_STOP_ERRORS.has(session.lastError) && session.errorDetail) {
+      errorCopy = session.errorDetail;
+    } else {
+      errorCopy = ERROR_COPY[session.lastError] ?? `Stopped: ${session.lastError}`;
+    }
+  }
   elements.errorLine.hidden = !errorCopy;
   if (errorCopy) {
     elements.errorLine.textContent = errorCopy;
@@ -206,7 +240,9 @@ const render = () => {
 
   // Offline hint (with the port the popup actually polls) while stopped and
   // unreachable.
-  elements.offlineHint.hidden = !(backendChecked && !backendOnline && !active);
+  const unreachable = backendChecked && !backendOnline && !active;
+  elements.offlineHint.hidden = !(unreachable && !state.backendRefused);
+  elements.refusedHint.hidden = !(unreachable && state.backendRefused);
 
   // Setup state: backend reachable but no API key configured yet. Shown
   // above the start controls; Start stays disabled until a key is added.
@@ -258,6 +294,7 @@ const checkBackendHealth = async () => {
       cache: "no-store",
     });
     state.backendOnline = response.ok;
+    state.backendRefused = response.status === 403;
     if (response.ok) {
       try {
         const health = await response.json();
@@ -276,6 +313,7 @@ const checkBackendHealth = async () => {
     }
   } catch (error) {
     state.backendOnline = false;
+    state.backendRefused = false;
   }
   state.backendChecked = true;
   render();
@@ -335,11 +373,18 @@ const handleStopClick = async () => {
 };
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
-  if (areaName !== "session" || !changes[CAPTURE_SESSION_KEY]) {
+  if (areaName !== "session") {
     return;
   }
-  state.session = changes[CAPTURE_SESSION_KEY].newValue ?? {...IDLE_SESSION};
-  render();
+  if (changes[CAPTURE_SESSION_KEY]) {
+    state.session = changes[CAPTURE_SESSION_KEY].newValue ?? {...IDLE_SESSION};
+  }
+  if (changes[OVERLAY_PROBLEM_KEY]) {
+    state.overlayProblem = changes[OVERLAY_PROBLEM_KEY].newValue ?? null;
+  }
+  if (changes[CAPTURE_SESSION_KEY] || changes[OVERLAY_PROBLEM_KEY]) {
+    render();
+  }
 });
 
 elements.startButton.addEventListener("click", handleStartClick);
@@ -349,15 +394,17 @@ elements.openSettingsButton.addEventListener("click", () => openApp(APP_ROUTE.PR
 elements.openDashboard.addEventListener("click", () => openApp(APP_ROUTE.HOME));
 
 const init = async () => {
+  elements.refusedExtensionId.textContent = chrome.runtime.id;
   const settings = await loadSettings();
   state.healthUrl = deriveHealthUrl(settings.backendUrl);
   renderTopicsSummary(settings);
   const [tab] = await chrome.tabs.query({active: true, currentWindow: true});
   state.activeTab = tab ?? null;
-  const stored = await chrome.storage.session.get(CAPTURE_SESSION_KEY);
+  const stored = await chrome.storage.session.get([CAPTURE_SESSION_KEY, OVERLAY_PROBLEM_KEY]);
   if (stored[CAPTURE_SESSION_KEY]) {
     state.session = stored[CAPTURE_SESSION_KEY];
   }
+  state.overlayProblem = stored[OVERLAY_PROBLEM_KEY] ?? null;
   const engine = await loadEngineState();
   state.browserEngine = engine.mode === ENGINE_MODE.BROWSER;
   if (state.browserEngine) {

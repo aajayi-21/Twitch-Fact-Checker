@@ -17,6 +17,8 @@ import {
   BROWSER_PROVIDERS,
   PermissionDeclined,
   describeProviderError,
+  unpricedModels,
+  unpricedWarning,
 } from "../app/lib/engine_model.mjs";
 import {
   ENGINE_MODE,
@@ -216,6 +218,7 @@ test("describeProviderError: each kind of failure gets its own plain sentence", 
   assert.match(say(ERROR_KIND.TIMEOUT), /took too long/);
   assert.equal(say(ERROR_KIND.BAD_REQUEST, "unknown model"), "Anthropic rejected the request: unknown model");
   assert.match(say(ERROR_KIND.SERVER), /having problems/);
+  assert.match(say(ERROR_KIND.MODEL_UNAVAILABLE, "model: claude-nope"), /cannot run that model: model: claude-nope/);
   assert.match(
     describeProviderError(new PermissionDeclined("Gemini"), "Gemini"),
     /allow the extension to reach it/
@@ -297,4 +300,27 @@ test("the history records which engine ran a session, and keeps it across a chan
   await recorder.captureStarting(1, {platform: "twitch", channelId: "alpha"});
   await recorder.engineEvent(1, {type: "ready", session_id: "b-1"});
   assert.equal(sessions.get("s3").engine, "companion");
+});
+
+test("unpricedWarning: names the models the monthly limit cannot count", () => {
+  const plan = (gate, verify) => ({gate, verify});
+  const haiku = {providerId: "anthropic", model: "claude-haiku-5-5"};
+  const routed = {providerId: "openrouter", model: "deepseek/deepseek-v4.1-flash-1017"};
+  const luna = {providerId: "openai", model: "gpt-6-luna"};
+  const flash = {providerId: "gemini", model: "gemini-3.5-flash-lite"};
+  const budgets = {dailyChecks: 150, monthlyUsd: 10};
+
+  assert.deepEqual(unpricedModels(plan(haiku, routed)), []);
+  assert.equal(unpricedWarning(plan(haiku, routed), budgets), null);
+  assert.deepEqual(unpricedModels(plan(luna, luna)), ["gpt-6-luna"], "each model once");
+  assert.equal(
+    unpricedWarning(plan(luna, luna), budgets),
+    "The monthly limit cannot count gpt-6-luna: this app does not know its price. The daily limit of 150 fact-checks still applies."
+  );
+  assert.match(
+    unpricedWarning(plan(luna, flash), {dailyChecks: 0, monthlyUsd: 10}),
+    /cannot count gpt-6-luna and gemini-3.5-flash-lite: .* their price\. With no daily limit either, nothing caps/
+  );
+  assert.equal(unpricedWarning(plan(luna, luna), {dailyChecks: 150, monthlyUsd: 0}), null, "no monthly limit, nothing to warn about");
+  assert.deepEqual(unpricedModels(plan(null, null)), []);
 });

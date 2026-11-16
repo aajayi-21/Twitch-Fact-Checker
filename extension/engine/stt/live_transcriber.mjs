@@ -24,6 +24,13 @@ const INT16_SCALE = 32768;
 // in flight; beyond this the session is not keeping up.
 const DEFAULT_MAX_BACKLOG_S = 20;
 
+// Loading gives up after this long without a sign of life: no download
+// progress and no "ready". Each progress message restarts the clock, so a
+// slow connection is fine; a stalled one fails instead of leaving the
+// session on "loading" forever. Generous, because once the files are in the
+// model is initialised (seconds to tens of seconds) without messages.
+export const LOAD_STALL_TIMEOUT_MS = 90_000;
+
 /**
  * @typedef {object} LiveTranscript
  * @property {string} text
@@ -44,13 +51,18 @@ export class LiveTranscriber {
    *   or lost its GPU; the session must be restarted (on another rung)
    * @param {object} [options]
    * @param {number} [options.maxBacklogS]
+   * @param {number} [options.loadStallMs] - see LOAD_STALL_TIMEOUT_MS
    * @param {object} [options.segmenter] - StreamSegmenter options
    */
-  constructor({onTranscript, onDownload, onFatal}, {maxBacklogS = DEFAULT_MAX_BACKLOG_S, segmenter} = {}) {
+  constructor(
+    {onTranscript, onDownload, onFatal},
+    {maxBacklogS = DEFAULT_MAX_BACKLOG_S, loadStallMs = LOAD_STALL_TIMEOUT_MS, segmenter} = {}
+  ) {
     this.onTranscript = onTranscript;
     this.onDownload = onDownload ?? (() => {});
     this.onFatal = onFatal ?? (() => {});
     this.maxBacklogS = maxBacklogS;
+    this.loadStallMs = loadStallMs;
     this.segmenter = new StreamSegmenter(segmenter);
     this.worker = null;
     /** Utterances waiting for the model, oldest first. */
@@ -82,12 +94,43 @@ export class LiveTranscriber {
    * @throws {Error} when the model cannot be loaded in this configuration
    */
   load(config) {
-    return new Promise((resolve, reject) => {
-      this.worker = new Worker(WORKER_URL, {type: "module"});
+    return new Promise((resolveLoad, rejectLoad) => {
+      const worker = new Worker(WORKER_URL, {type: "module"});
+      this.worker = worker;
       let loaded = false;
-      this.worker.addEventListener("message", (event) => {
+      let stallTimer = null;
+      const settle = () => {
+        clearTimeout(stallTimer);
+        stallTimer = null;
+      };
+      const resolve = (info) => {
+        settle();
+        resolveLoad(info);
+      };
+      const reject = (error) => {
+        settle();
+        rejectLoad(error);
+      };
+      const armStallTimer = () => {
+        clearTimeout(stallTimer);
+        stallTimer = setTimeout(() => {
+          if (loaded || this.worker !== worker) {
+            return;
+          }
+          worker.terminate();
+          reject(
+            new Error(
+              `no progress loading the speech model for ${Math.round(this.loadStallMs / 1000)} s`
+            )
+          );
+        }, this.loadStallMs);
+      };
+      worker.addEventListener("message", (event) => {
         const message = event.data;
         if (message.type === "download") {
+          if (!loaded) {
+            armStallTimer();
+          }
           this.onDownload(message.progress);
         } else if (message.type === "ready") {
           loaded = true;
@@ -98,7 +141,7 @@ export class LiveTranscriber {
           this.#handleWorkerError(message, loaded, reject);
         }
       });
-      this.worker.addEventListener("error", (event) => {
+      worker.addEventListener("error", (event) => {
         const text = `speech worker error: ${event.message || "failed to start"}`;
         if (loaded) {
           this.onFatal(text);
@@ -106,7 +149,8 @@ export class LiveTranscriber {
           reject(new Error(text));
         }
       });
-      this.worker.postMessage({type: "load", config});
+      armStallTimer();
+      worker.postMessage({type: "load", config});
     });
   }
 

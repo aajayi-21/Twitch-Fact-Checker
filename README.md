@@ -28,18 +28,10 @@ needed.
    The server starts key-less in a "needs setup" state — the extension will walk you
    through adding a key.
 
-2. **Load the extension** — the same `extension/` folder works in both browsers:
-
-   - **Chrome 116+**: open `chrome://extensions/`, enable **Developer mode**
-     (top right), click **Load unpacked**, select `extension/`.
-   - **Firefox 128+**: open `about:debugging#/runtime/this-firefox`, click
-     **Load Temporary Add-on…**, and select `extension/manifest.json`.
-     (Temporary add-ons are cleared when Firefox restarts.)
-
-   Each browser warns about the other's manifest keys — Chrome about
-   `background.scripts` and `browser_specific_settings`, Firefox about the
-   `tabCapture`/`offscreen` permissions. Both are expected: the manifest
-   deliberately carries both browsers' keys so there is no build step.
+2. **Load the extension** in Chrome 116+ or another Chromium browser (Edge, Brave):
+   open `chrome://extensions/`, enable **Developer mode** (top right), click
+   **Load unpacked**, and select `extension/`. Firefox is not supported: it has
+   neither `tabCapture` nor offscreen documents.
 
 3. **Connect your AI provider**: the extension opens a welcome tab the first time
    it is installed and walks you through it. To get back to it later, click the
@@ -75,58 +67,23 @@ Chrome (extension)                              Local backend (127.0.0.1:8710)
 │   → Int16 PCM ─────────────────────WebSocket──→ claim gate (LLM, ungrounded)│
 │   ← JSON verdict frames ────────────────────←─ grounded verify (LLM + web  │
 │   │                             │           │     search) → verdict        │
-│ content script (supported sites)│           │  POST /debug/text (test path)│
+│ content script (supported sites)│           │  POST /setup/test-check      │
 │   Shadow-DOM toast + history    │           │  GET  /healthz               │
 └─────────────────────────────────┘           └───────────────────────────────┘
 ```
 
-No build step, no auth — everything runs locally, single user. Analytics live in
+No build step, no login: everything runs locally, single user. Analytics live in
 one SQLite file (`backend/fact_checker.db`; delete it to reset).
 
-**Firefox uses a different front half.** Firefox implements neither
-`chrome.tabCapture` nor the offscreen-document API, so there is no way to
-capture a tab's audio and nowhere Chrome-shaped to put the session. The
-extension detects this at load (`extension/shared/capabilities.js`) and swaps
-in a second capture path; the backend never notices the difference.
-
-```
-Firefox (extension)                             Local backend (127.0.0.1:8710)
-┌─────────────────────────────────┐
-│ popup ── Start/Stop (gesture)   │
-│   │                             │
-│ content script                  │
-│   page's own <video>            │
-│   → AudioContext (+ loopback)   │           ┌───────────────────────────────┐
-│   → lowpass ×2 → worklet        │           │ FastAPI  /ws/audio            │
-│   → Int16 PCM → base64          │  16 kHz   │  ring buffer → faster-whisper │
-│   │ runtime messages            │  PCM over │                               │
-│ background EVENT PAGE (has DOM) │  WebSocket│                               │
-│   WebSocket ───────────────────────────────→│  (identical protocol)         │
-│   ← JSON verdict frames ────────────────────←─                              │
-│   │ relayed to the same overlay │           └───────────────────────────────┘
-└─────────────────────────────────┘
-```
-
-Why it is shaped that way: a content script's network requests run in the
-*page's* context under MV3, and Twitch/YouTube ship a `connect-src` CSP that
-would block `ws://127.0.0.1` — so the WebSocket has to live in an extension
-page. Firefox's MV3 background is an event page with a real DOM (not a service
-worker), so it can hold the socket and reuse the same `BackendSocket` client.
-PCM crosses as base64 because runtime messaging is JSON-serialized in both
-browsers (an `ArrayBuffer` would arrive as `{}`).
-
-Firefox-specific caveats:
-
-- Audio is tapped from the page's `<video>` via `createMediaElementSource`,
-  which **reroutes** that element's audio through the extension's
-  AudioContext. The graph therefore keeps a permanent loopback to the
-  speakers and never closes the context — and capture refuses to start if the
-  context cannot leave the `suspended` state, rather than risk muting the
-  stream.
-- It follows that capture only works on pages with a real media element (all
-  four supported sites) and not on DRM-protected video.
-- A full page navigation ends the session (the content script owns the tap);
-  in-page SPA route changes are handled by re-attaching to the new player.
+**Who may talk to the backend.** It listens only on `127.0.0.1`, and since any page
+in your browser can reach that address, it refuses requests and WebSocket handshakes
+from every origin except Doxa's extension and its own pages (the dashboard, the
+streamer console and overlay). Requests with no `Origin` (curl, the ingest CLI,
+scripts) are allowed. The extension is recognised by its ID: `extension/manifest.json`
+carries a public `key`, so the unpacked extension always gets the ID
+`hbgnggamecjggjhmlnpfkcpocopcbokm`, which is the default for `ALLOWED_EXTENSION_IDS`.
+Loading another copy (such as the store build in `dist/chrome`, whose `key` is
+removed) gives a different ID: add it to `ALLOWED_EXTENSION_IDS` in `backend/.env`.
 
 ## Backend details (advanced)
 
@@ -331,6 +288,7 @@ and — when the hello sends `send_claims: true` — a `claim` frame per claim o
 ```bash
 node --test "extension/tests/*.test.mjs"   # unit tests (no dependencies)
 node scripts/run_app_e2e.mjs               # the app in a real Chrome, against a fake backend
+node scripts/check_lifecycle.mjs           # worker alarm, and the overlay in a tab opened before install
 ```
 
 ## Running it with no backend (browser engine)
@@ -353,9 +311,19 @@ Keys are checked with the provider before they are stored, kept in this browser 
 (`chrome.storage.local`, out of reach of web pages), and shown afterwards only by their
 last four characters. **AI provider** also holds the spending limits — on by default at
 150 fact-checks a day and $10 a month — and the switch back to the local backend.
+Changing a limit applies to a running session at once, and the counts start again at
+local midnight and on the first of the month. Calls that were billed but whose answer
+could not be used (a refusal, a cut-off answer) still count. The monthly limit can only
+count what the app can price (OpenRouter's reported costs, Anthropic's list prices);
+the AI provider screen and Home say when a chosen model falls outside it.
+
+A session ends by itself, with the provider's reason on the stream, in the popup and on
+Home, when nothing more can succeed: the key is refused, the account has no credit, or
+the model does not exist. If claim detection fails three times in a row the stream and
+the popup say so, rather than looking like a quiet stream.
 
 What the backend still does that this engine does not: the Jev pre-screen,
-contradiction alerts, on-screen (vision) claims, Ollama, and Firefox.
+contradiction alerts, on-screen (vision) claims, and Ollama.
 
 ```bash
 # Real, paid calls (about five cents): install -> key -> speech -> verdicts, no backend.
@@ -369,12 +337,13 @@ Not published anywhere; this only produces the files.
 
 ```bash
 python scripts/vendor_stt_runtime.py     # once: the pinned speech runtime
-python scripts/build_extension.py        # -> dist/chrome/, dist/firefox/ and a zip of each
+python scripts/build_extension.py        # -> dist/chrome/ and its zip
 python scripts/build_extension.py --check   # lint only
 ```
 
-The build derives a clean manifest per browser from `extension/manifest.json`, leaves
-out tests and tooling, and fails on anything a store would reject that it can detect.
+The build derives a clean store manifest from `extension/manifest.json` (one package
+serves Chrome and Edge), leaves out tests and tooling, and fails on anything a store
+would reject that it can detect.
 `dist/chrome` can be loaded unpacked to try exactly what would be uploaded:
 
 ```bash
@@ -408,8 +377,7 @@ With speech in the browser the backend no longer needs its own model. `STT_BACKE
 in `backend/.env` starts it without one — it comes up in a few seconds and uses far less
 memory, and it then accepts only sessions that send text.
 
-Chrome only (Firefox has no offscreen document, so there the backend always
-transcribes). Detection of music and noise is still basic; see the build guide.
+Detection of music and noise is still basic; see the build guide.
 
 ```bash
 node scripts/run_browser_speech_e2e.mjs    # real model, real capture, model-less fake backend
@@ -570,10 +538,11 @@ Messages API (`backend/app/llm_anthropic.py`):
   $0.75–1.50 per hour.
 
 **Alternative provider: OpenRouter.** With `LLM_PROVIDER=openrouter`, both stages
-default to `inception/mercury-2.5-preview`: cheap ($0.04/M input tokens) and fast
-enough for the ~300 gate calls an hour, its endpoint publishes `temperature`,
-`structured_outputs` and `reasoning` support (so strict JSON works on the first
-call), and it produced zero fallback verdicts in production. Change models via
+default to `deepseek/deepseek-v4.1-flash-1017`, the newest DeepSeek: cheap ($0.038/M
+input, $0.50/M output at list price), and nearly all of its endpoints publish
+`temperature`, `structured_outputs` and `reasoning` support, so strict JSON works on
+the first call. The gate runs it with reasoning off. It replaces
+`inception/mercury-2.5-preview`, which OpenRouter withdrew. Change models via
 `OPENROUTER_GATE_MODEL` / `OPENROUTER_VERIFY_MODEL` in `.env` or the app (AI provider → Advanced).
 
 **Optional Jev pre-screen (`JEV_MODE=off|shadow|screen`).** [Jev](https://openrouter.ai/blog/insights/what-is-jev/)
@@ -681,8 +650,8 @@ gate pass times out.
 
 - Web search is billed to your credit balance — $0.007 per fact-check on Exa — **even
   on `:free` models**. A $0-credit account gets 402 errors on verification, so hold a
-  small credit balance. With the mercury default, tokens add roughly $0.03 per
-  streaming hour on top.
+  small credit balance. With the DeepSeek default, tokens add roughly $0.05–0.10 per
+  streaming hour on top (estimated from list prices, not yet measured).
 - Free-variant rate limits: **20 requests/min**, and **50 requests/day** with under $10
   in lifetime credit purchases vs **1,000/day** once you have bought $10+. The gate
   alone makes ~5 calls/min while a stream runs, so a `:free` gate model dies within
@@ -694,7 +663,8 @@ gate pass times out.
 stored in `fact_checker.db` through the configured verifier (or `--provider
 anthropic|openrouter`, `--model ...`) and prints label, evidence and fallback
 histograms plus latency — it spends credits, so it insists on `--yes-spend-credits`.
-`POST /debug/text` runs the gate → verify path on raw text.
+`POST /debug/text` runs the gate → verify path on raw text (needs
+`DEBUG_ENDPOINTS=true`).
 
 **On the transcription model.** `openai/whisper-small.en` stays the torch default on
 an integrated Intel GPU: after the startup warm-up it runs ~0.9 s per 4 s window, and
@@ -710,8 +680,7 @@ the hosted tier, not a replacement for local Whisper today.
 ## Usage
 
 Installed via the [Quickstart](#quickstart) above. After code changes to the
-extension, reload it: the refresh icon on its card in `chrome://extensions/`, or
-**Reload** on `about:debugging#/runtime/this-firefox` in Firefox.
+extension, reload it: the refresh icon on its card in `chrome://extensions/`.
 
 1. Start the backend, then open a stream on a supported site: Twitch
    (`https://www.twitch.tv/...`), YouTube (`/watch?v=` or `/live/...`), Kick
@@ -765,7 +734,8 @@ pytest -m "not slow"
 ```
 
 **No-audio end-to-end** — exercise gate → dedupe → grounded verify; if a WS session is
-open, the verdict also pops on the captured tab:
+open, the verdict also pops on the captured tab. Needs `DEBUG_ENDPOINTS=true` in
+`backend/.env` (off by default, since these calls spend API credit):
 
 ```bash
 curl -X POST http://127.0.0.1:8710/debug/text \
@@ -811,3 +781,6 @@ python scripts/stream_wav.py tests/fixtures/claims_16k.wav --speed 3   # backpre
 - **Slow first start / startup hang** — the ~170 MB Whisper model is downloading;
   watch the backend log. Model, device, and compute type are configurable in `.env`.
 - **`/debug/text` returns 404** — set `DEBUG_ENDPOINTS=true` in `.env`.
+- **The extension says the backend refused it (403)** — the backend only accepts
+  extension IDs in `ALLOWED_EXTENSION_IDS`. Copy the ID from `chrome://extensions`
+  into that setting in `backend/.env` and restart the backend.

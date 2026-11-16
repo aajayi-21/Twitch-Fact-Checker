@@ -34,7 +34,7 @@ const VERIFY_PROVIDERS = Object.freeze(["anthropic", "openrouter"]);
 
 const MODEL_PLACEHOLDERS = Object.freeze({
   anthropic: "e.g. claude-haiku-5-5",
-  openrouter: "e.g. google/gemini-3.5-flash-lite",
+  openrouter: "e.g. deepseek/deepseek-v4.1-flash-1017",
 });
 
 const JEV_MODES = Object.freeze([

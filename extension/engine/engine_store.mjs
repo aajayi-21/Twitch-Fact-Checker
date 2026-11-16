@@ -17,21 +17,16 @@ import {
   normalizeKeys,
 } from "./engine_setup.mjs";
 
-// Promise-safe API namespace (see shared/capabilities.js § namespace idiom).
-const chrome = globalThis.browser ?? globalThis.chrome;
-
 /**
  * Keep content scripts out of storage.local. By default they can read it;
  * a compromised page must not be one step from the viewer's API keys. The
  * content script's own settings live in storage.sync and are unaffected.
  *
- * Call at service-worker start. A browser without the API (Firefox) keeps
- * its default, which is why keys are only ever stored by the Chrome-only
- * browser engine.
+ * Call at service-worker start (Chrome 102+; the manifest asks for 116).
  */
 export const protectStorage = async () => {
   try {
-    await chrome.storage.local.setAccessLevel?.({accessLevel: "TRUSTED_CONTEXTS"});
+    await chrome.storage.local.setAccessLevel({accessLevel: "TRUSTED_CONTEXTS"});
   } catch (error) {
     console.warn("[fact-checker] could not restrict storage.local:", error);
   }

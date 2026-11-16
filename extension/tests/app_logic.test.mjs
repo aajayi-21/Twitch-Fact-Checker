@@ -21,6 +21,7 @@ import {
 } from "../app/lib/backend_api.mjs";
 import {
   formatCost,
+  webLink,
   formatDateTime,
   formatDuration,
   formatHours,
@@ -113,7 +114,7 @@ describe("backend client", () => {
     await api.runTestCheck("The Eiffel Tower is 450 meters tall.");
     assert.deepEqual(
       fake.calls.map((call) => `${call.method} ${call.url.replace(ORIGIN, "")}`),
-      ["GET /healthz", "GET /setup/status", "POST /setup/credentials", "POST /setup/stages", "POST /debug/text"]
+      ["GET /healthz", "GET /setup/status", "POST /setup/credentials", "POST /setup/stages", "POST /setup/test-check"]
     );
     assert.deepEqual(fake.calls[2].body, {provider: "openrouter", api_key: "sk-or-test"});
     assert.deepEqual(fake.calls[3].body, {
@@ -152,6 +153,7 @@ describe("backend client", () => {
   it("maps each HTTP status to something the screen can act on", async () => {
     const cases = [
       [401, BACKEND_ERROR.KEY_REJECTED],
+      [403, BACKEND_ERROR.FORBIDDEN],
       [409, BACKEND_ERROR.NOT_READY],
       [400, BACKEND_ERROR.INVALID],
       [422, BACKEND_ERROR.INVALID],
@@ -432,10 +434,23 @@ test("formatUsd sizes the precision to the amount", () => {
   assert.equal(formatUsd(Number.NaN), "—");
 });
 
+test("webLink: only http(s) addresses become links", () => {
+  assert.deepEqual(webLink("https://www.toureiffel.paris/en/key-figures"), {
+    href: "https://www.toureiffel.paris/en/key-figures",
+    host: "toureiffel.paris",
+  });
+  assert.equal(webLink("http://example.org/x").host, "example.org");
+  assert.equal(webLink("javascript:alert(1)"), null);
+  assert.equal(webLink("data:text/html,<script>alert(1)</script>"), null);
+  assert.equal(webLink("not a url"), null, "a malformed address does not throw");
+  assert.equal(webLink(undefined), null);
+});
+
 test("formatCost marks estimates and never shows an unpriced total as free", () => {
   assert.equal(formatCost({usd: 0.0188, estimated: true, unpricedCalls: 0}), "≈ $0.019");
   assert.equal(formatCost({usd: 0.0078, estimated: false, unpricedCalls: 0}), "$0.0078");
   assert.equal(formatCost({usd: 0, estimated: false, unpricedCalls: 3}), "not priced");
+  assert.equal(formatCost({usd: 0.0188, estimated: true, unpricedCalls: 2}), "≈ $0.019 + unpriced");
   assert.equal(formatCost({usd: 0, estimated: false, unpricedCalls: 0}), "$0.00");
   assert.equal(formatCost(null), "—");
 });

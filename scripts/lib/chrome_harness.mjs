@@ -12,7 +12,7 @@
 
 import {spawn} from "node:child_process";
 import {createHash} from "node:crypto";
-import {createReadStream} from "node:fs";
+import {createReadStream, readFileSync} from "node:fs";
 import {stat} from "node:fs/promises";
 import {createServer} from "node:http";
 import path from "node:path";
@@ -148,18 +148,27 @@ export const startStaticServer = ({isolated, port}) =>
     server.listen(port, "127.0.0.1", onListening);
   });
 
+/** The first 32 hex digits of SHA-256(input), with 0-f mapped to a-p. */
+const extensionIdFrom = (input) =>
+  [...createHash("sha256").update(input).digest("hex").slice(0, 32)]
+    .map((digit) => String.fromCharCode(97 + parseInt(digit, 16)))
+    .join("");
+
 /**
- * The id Chrome assigns an unpacked extension is derived from its absolute
- * path: the first 32 hex digits of SHA-256(path), with 0-f mapped to a-p.
- * Needed before launch, for `--allowlisted-extension-id`.
+ * The id Chrome assigns an unpacked extension. With a manifest `key` (the
+ * development manifest has one, so the local backend can allow its id) it
+ * comes from the public key; without one (the store build in dist/) from the
+ * absolute path. Needed before launch, for `--allowlisted-extension-id`.
  *
  * @param {string} extensionPath - absolute path of the unpacked extension
  * @returns {string}
  */
-export const unpackedExtensionId = (extensionPath) =>
-  [...createHash("sha256").update(extensionPath).digest("hex").slice(0, 32)]
-    .map((digit) => String.fromCharCode(97 + parseInt(digit, 16)))
-    .join("");
+export const unpackedExtensionId = (extensionPath) => {
+  const manifest = JSON.parse(readFileSync(path.join(extensionPath, "manifest.json"), "utf8"));
+  return manifest.key
+    ? extensionIdFrom(Buffer.from(manifest.key, "base64"))
+    : extensionIdFrom(extensionPath);
+};
 
 /**
  * @typedef {object} DevToolsSession

@@ -191,7 +191,7 @@ const createFakeBackend = () => {
       }
       return [200, setupStatus()];
     },
-    "POST /debug/text": (body) => [
+    "POST /setup/test-check": (body) => [
       200,
       {
         claims: [{id: "c1", claim_text: body.text, check_worthiness: 0.9, topic: "other"}],

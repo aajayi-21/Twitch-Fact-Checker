@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import {test} from "node:test";
 
 import {SPEECH_TIERS, getSttModel} from "../engine/stt/models.mjs";
-import {SPEECH_STATUS, SessionSpeech} from "../engine/stt/session_speech.mjs";
+import {SPEECH_STATUS, SessionSpeech, isDownloadFailure} from "../engine/stt/session_speech.mjs";
 import {
   DEFAULT_SPEECH_SETTINGS,
   NOT_READY,
@@ -501,6 +501,41 @@ test("session: a CPU-only model that fails has nowhere to fall", async () => {
   assert.equal(session.status, SPEECH_STATUS.FAILED);
   assert.ok(!log.some((entry) => entry[0] === "gpu-failed"), "the GPU was never involved");
   assert.equal(log.at(-1)[0], "failed");
+});
+
+test("session: a failed download is retried, and does not block the GPU", async () => {
+  const {session, log, transcribers} = makeSession(GPU_CONFIG, ["TypeError: Failed to fetch", "ok"]);
+  await session.start();
+  assert.equal(session.status, SPEECH_STATUS.READY);
+  assert.equal(transcribers.length, 2);
+  assert.equal(transcribers[1].loadedWith.device, "webgpu", "the same device, tried again");
+  assert.ok(!log.some((entry) => entry[0] === "gpu-failed"), "a network error is not the GPU's fault");
+});
+
+test("session: a download that keeps failing is reported with what to do", async () => {
+  const stalled = "no progress loading the speech model for 90 s";
+  const {session, log, transcribers} = makeSession(GPU_CONFIG, [stalled, stalled]);
+  await session.start();
+  assert.equal(session.status, SPEECH_STATUS.FAILED);
+  assert.equal(transcribers.length, 2, "one retry, then give up");
+  assert.ok(!log.some((entry) => entry[0] === "gpu-failed"));
+  const [, reason] = log.find((entry) => entry[0] === "failed");
+  assert.match(reason, /could not be downloaded \(no progress .*\)\. Check the internet connection, then press Start again\./);
+});
+
+test("isDownloadFailure tells fetching problems from device problems", () => {
+  for (const message of [
+    "TypeError: Failed to fetch",
+    "NetworkError when attempting to fetch resource.",
+    "Could not locate file: \"https://huggingface.co/x/resolve/abc/onnx/model.onnx\".",
+    "no progress loading the speech model for 90 s",
+    "HTTP error! status code 503",
+  ]) {
+    assert.equal(isDownloadFailure(message), true, message);
+  }
+  for (const message of ["out of memory", "GPU device lost (destroyed)", "no gpu", "corrupt download"]) {
+    assert.equal(isDownloadFailure(message), false, message);
+  }
 });
 
 test("session: frames pushed while loading reach the transcriber", async () => {

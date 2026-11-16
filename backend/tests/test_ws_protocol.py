@@ -20,6 +20,7 @@ from starlette.websockets import WebSocketDisconnect
 from app import ws as ws_module
 from app.llm_provider import create_claim_gate, create_fact_checker
 from app.models import ClientHello, StatusFrame, TranscriptSegment
+from app.origins import DEV_EXTENSION_ID
 from app.pipeline import SessionPipeline
 from app.rate_limit import QuotaCooldown, TokenBucket
 from app.sessions import SessionRegistry
@@ -132,7 +133,7 @@ class TestHealthz:
 
 class TestCors:
     def test_preflight_allows_extension_origin(self, client) -> None:
-        origin = "chrome-extension://" + "a" * 32
+        origin = f"chrome-extension://{DEV_EXTENSION_ID}"
         response = client.options(
             "/debug/text",
             headers={
@@ -151,6 +152,7 @@ class TestCors:
                 "Access-Control-Request-Method": "POST",
             },
         )
+        assert response.status_code == 403
         assert "access-control-allow-origin" not in response.headers
 
 
@@ -411,11 +413,12 @@ class TestHandshake:
 
 
 class TestPreemption:
-    def test_new_connection_preempts_old(self, client) -> None:
+    def test_new_session_preempts_old_once_its_hello_arrives(self, client) -> None:
         with client.websocket_connect("/ws/audio") as first:
             first.send_json(make_hello())
             assert first.receive_json()["type"] == "ready"
             with client.websocket_connect("/ws/audio") as second:
+                second.send_json(make_hello())
                 superseded = first.receive_json()
                 assert superseded["type"] == "error"
                 assert superseded["code"] == "superseded"
@@ -424,11 +427,39 @@ class TestPreemption:
                     first.receive_json()
                 assert disconnect.value.code == 1000
 
-                second.send_json(make_hello())
                 assert second.receive_json()["type"] == "ready"
                 second.send_json({"type": "stop"})
                 _frames, close_code = collect_frames_until_close(second)
                 assert close_code == 1000
+
+    def test_a_bad_hello_does_not_end_the_live_session(self, client) -> None:
+        with client.websocket_connect("/ws/audio") as live:
+            live.send_json(make_hello())
+            assert live.receive_json()["type"] == "ready"
+            with client.websocket_connect("/ws/audio") as intruder:
+                intruder.send_json(make_hello(version=2))
+                assert intruder.receive_json()["code"] == "bad_hello"
+                with pytest.raises(WebSocketDisconnect) as disconnect:
+                    intruder.receive_json()
+                assert disconnect.value.code == 1008
+            live.send_json({"type": "stop"})
+            frames, close_code = collect_frames_until_close(live)
+        assert close_code == 1000
+        assert not [frame for frame in frames if frame.get("code") == "superseded"]
+
+    def test_a_silent_connection_does_not_end_the_live_session(
+        self, client, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(ws_module, "HELLO_TIMEOUT_S", 0.2)
+        with client.websocket_connect("/ws/audio") as live:
+            live.send_json(make_hello())
+            assert live.receive_json()["type"] == "ready"
+            with client.websocket_connect("/ws/audio") as silent:
+                assert silent.receive_json()["code"] == "bad_hello"
+            live.send_json({"type": "stop"})
+            frames, close_code = collect_frames_until_close(live)
+        assert close_code == 1000
+        assert not [frame for frame in frames if frame.get("code") == "superseded"]
 
 
 class RaceWebSocket:

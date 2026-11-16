@@ -26,7 +26,12 @@ import {
   setStageModel,
   useEngine,
 } from "../lib/engine_actions.mjs";
-import {BROWSER_PROVIDERS, browserProvider, describeProviderError} from "../lib/engine_model.mjs";
+import {
+  BROWSER_PROVIDERS,
+  browserProvider,
+  describeProviderError,
+  unpricedWarning,
+} from "../lib/engine_model.mjs";
 import {html, useEffect, useState} from "../lib/html.mjs";
 import {EngineCard} from "./engine_card.mjs";
 import {KeyForm} from "./key_form.mjs";
@@ -212,6 +217,7 @@ const LimitField = ({id, value, step, onCommit}) => {
 
 export const BudgetCard = ({engine}) => {
   const {budgets} = engine.state;
+  const unpriced = unpricedWarning(engine.plan, budgets);
   return html`
     <${Card} title="Spending limits">
       <p class="setting-help">
@@ -243,6 +249,7 @@ export const BudgetCard = ({engine}) => {
           onCommit=${(monthlyUsd) => setBudgets({monthlyUsd})}
         />
       <//>
+      ${unpriced ? html`<${Notice} tone="warn">${unpriced}<//>` : null}
     <//>
   `;
 };

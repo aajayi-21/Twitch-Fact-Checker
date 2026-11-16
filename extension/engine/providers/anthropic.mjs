@@ -28,8 +28,10 @@ import {
   ERROR_KIND,
   ProviderError,
   addUsage,
+  attachUsage,
   emptyUsage,
   parseModelJson,
+  readBilled,
   requestJson,
 } from "./common.mjs";
 
@@ -176,16 +178,16 @@ export const runGate = async ({apiKey, context, transcript, model = defaultModel
     },
     options
   );
-  if (response.stop_reason === "refusal") {
-    throw new ProviderError(ERROR_KIND.REFUSED, "The model declined to process this transcript.");
-  }
-  if (response.stop_reason === "max_tokens") {
-    throw new ProviderError(ERROR_KIND.INVALID_OUTPUT, "The claim list was cut off (max_tokens).");
-  }
-  return {
-    claims: normalizeGateClaims(parseModelJson(finalText(response.content))),
-    usage: addUsage(emptyUsage(), readUsage(response.usage)),
-  };
+  const usage = addUsage(emptyUsage(), readUsage(response.usage));
+  return readBilled(usage, () => {
+    if (response.stop_reason === "refusal") {
+      throw new ProviderError(ERROR_KIND.REFUSED, "The model declined to process this transcript.");
+    }
+    if (response.stop_reason === "max_tokens") {
+      throw new ProviderError(ERROR_KIND.INVALID_OUTPUT, "The claim list was cut off (max_tokens).");
+    }
+    return {claims: normalizeGateClaims(parseModelJson(finalText(response.content))), usage};
+  });
 };
 
 /**
@@ -213,45 +215,52 @@ export const runVerify = async ({
   let usage = emptyUsage();
   const content = [];
   let stopReason = null;
-  for (let attempt = 0; attempt <= MAX_PAUSE_CONTINUATIONS; attempt += 1) {
-    const messages = [{role: "user", content: claim}];
-    if (content.length > 0) {
-      // Resume a paused search turn by sending back what it produced so far.
-      messages.push({role: "assistant", content: [...content]});
-    }
-    const response = await createMessage(
-      apiKey,
-      {
-        model,
-        max_tokens: VERIFY_MAX_TOKENS,
-        system,
-        messages,
-        tools: [{type: WEB_SEARCH_TOOL_TYPE, name: "web_search", max_uses: maxSearches}],
-        thinking: {type: "adaptive"},
-        output_config: {
-          effort: "low",
-          format: {type: "json_schema", schema: VERDICT_SELF_SEARCH_SCHEMA},
+  try {
+    for (let attempt = 0; attempt <= MAX_PAUSE_CONTINUATIONS; attempt += 1) {
+      const messages = [{role: "user", content: claim}];
+      if (content.length > 0) {
+        // Resume a paused search turn by sending back what it produced so far.
+        messages.push({role: "assistant", content: [...content]});
+      }
+      const response = await createMessage(
+        apiKey,
+        {
+          model,
+          max_tokens: VERIFY_MAX_TOKENS,
+          system,
+          messages,
+          tools: [{type: WEB_SEARCH_TOOL_TYPE, name: "web_search", max_uses: maxSearches}],
+          thinking: {type: "adaptive"},
+          output_config: {
+            effort: "low",
+            format: {type: "json_schema", schema: VERDICT_SELF_SEARCH_SCHEMA},
+          },
         },
-      },
-      options
-    );
-    usage = addUsage(usage, readUsage(response.usage));
-    content.push(...response.content);
-    stopReason = response.stop_reason;
-    if (stopReason !== "pause_turn") {
-      break;
+        options
+      );
+      usage = addUsage(usage, readUsage(response.usage));
+      content.push(...response.content);
+      stopReason = response.stop_reason;
+      if (stopReason !== "pause_turn") {
+        break;
+      }
     }
+  } catch (error) {
+    // A resumed turn failed: the rounds before it were still billed.
+    throw attachUsage(error, usage);
   }
-  if (stopReason === "refusal") {
-    throw new ProviderError(ERROR_KIND.REFUSED, "The model declined to check this claim.");
-  }
-  if (stopReason === "pause_turn") {
-    throw new ProviderError(ERROR_KIND.SERVER, "The search turn did not finish.");
-  }
-  if (stopReason === "max_tokens") {
-    throw new ProviderError(ERROR_KIND.INVALID_OUTPUT, "The verdict was cut off (max_tokens).");
-  }
-  const payload = parseModelJson(finalText(content));
-  const sources = selectSources({...collectSources(content), picked: payload.source_urls ?? []});
-  return {verdict: finalizeVerdict(payload, sources), usage, mode: "single"};
+  return readBilled(usage, () => {
+    if (stopReason === "refusal") {
+      throw new ProviderError(ERROR_KIND.REFUSED, "The model declined to check this claim.");
+    }
+    if (stopReason === "pause_turn") {
+      throw new ProviderError(ERROR_KIND.SERVER, "The search turn did not finish.");
+    }
+    if (stopReason === "max_tokens") {
+      throw new ProviderError(ERROR_KIND.INVALID_OUTPUT, "The verdict was cut off (max_tokens).");
+    }
+    const payload = parseModelJson(finalText(content));
+    const sources = selectSources({...collectSources(content), picked: payload.source_urls ?? []});
+    return {verdict: finalizeVerdict(payload, sources), usage, mode: "single"};
+  });
 };

@@ -14,8 +14,10 @@ import re
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from app.origins import DEFAULT_ALLOWED_EXTENSION_IDS, parse_extension_ids
 
 SERVER_VERSION: str = "0.1.0"
 
@@ -26,14 +28,18 @@ SENSITIVITY_THRESHOLDS: dict[str, float] = {"low": 0.75, "medium": 0.55, "high":
 
 _DEFAULT_ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 
-# OpenRouter is the primary provider; these are the shipped model slugs.
-# inception/mercury-2.5-preview: cheap ($0.04/M input) and fast enough for the
-# ~300 gate calls an hour, lists temperature + structured_outputs + reasoning
-# on its endpoint (so strict JSON mode works first time), and produced zero
-# fallback verdicts in production. Override per stage in .env or the options
-# page; slugs are validated against the live catalogue on Apply.
-DEFAULT_OPENROUTER_GATE_MODEL = "inception/mercury-2.5-preview"
-DEFAULT_OPENROUTER_VERIFY_MODEL = "inception/mercury-2.5-preview"
+# OpenRouter model slugs shipped as defaults for both stages.
+# deepseek/deepseek-v4.1-flash-1017 (released 2026-10-17): the newest DeepSeek,
+# $0.038/M input and $0.50/M output at list price, and 43 of its 49 endpoints
+# list temperature + structured_outputs + reasoning (checked 2026-11-13), so
+# strict JSON routes first time under require_parameters. Its family is the
+# one the gate's reasoning-off setting was measured on (see
+# openrouter_gate_reasoning_effort). It replaces inception/mercury-2.5-preview,
+# which OpenRouter withdrew (404). A dated snapshot can be withdrawn too:
+# override per stage in .env or the app; slugs are validated against the live
+# catalogue on Apply.
+DEFAULT_OPENROUTER_GATE_MODEL = "deepseek/deepseek-v4.1-flash-1017"
+DEFAULT_OPENROUTER_VERIFY_MODEL = "deepseek/deepseek-v4.1-flash-1017"
 
 # Anthropic (direct Messages API) is the default provider. Claude Haiku 5.5:
 # fast, $0.10/$0.50 per million tokens, strict JSON output, and Anthropic's
@@ -260,7 +266,7 @@ class Settings(BaseSettings):
     #   exa    (default) — OpenRouter's Exa search, works for EVERY model and
     #          returns uniform url_citation annotations; $0.007/request.
     #   native — the model provider's own search (OpenAI/Google/...); higher
-    #          per-call price, fails on models without one (e.g. mercury).
+    #          per-call price, fails on models without one.
     #   auto   — native when the model has it, Exa otherwise.
     openrouter_web_engine: Literal["exa", "native", "auto"] = "exa"
     # Reasoning-effort cap for the VERIFY call (bounds latency on
@@ -467,23 +473,41 @@ class Settings(BaseSettings):
     verify_timeout_s: float = 45.0
 
     send_transcripts: bool = True
-    debug_endpoints: bool = True
+    # /debug/text (injects verdicts into live sessions) and /debug/stt/fail.
+    # Off by default: they exist for development and tests, and /debug/text
+    # spends API credit. The app's sample check uses /setup/test-check.
+    debug_endpoints: bool = False
+    # Chrome extension IDs allowed to use this backend, comma-separated
+    # (app/origins.py). The default is the development extension's fixed ID;
+    # add the ID shown on chrome://extensions for any other copy you load,
+    # such as the store build in dist/chrome.
+    allowed_extension_ids: str = ",".join(DEFAULT_ALLOWED_EXTENSION_IDS)
+
+    @field_validator("allowed_extension_ids")
+    @classmethod
+    def validate_allowed_extension_ids(cls, value: str) -> str:
+        """Fail at startup on an entry that is not an extension ID."""
+        return ",".join(sorted(parse_extension_ids(value)))
+
+    @property
+    def allowed_extension_id_set(self) -> frozenset[str]:
+        """``ALLOWED_EXTENSION_IDS`` as a set (already validated)."""
+        return parse_extension_ids(self.allowed_extension_ids)
+
     # Attach a captured stream frame to verification when the claim contains
     # a visual cue ("this chart", "on screen", ...). Frames only exist when
     # the extension's opt-in capture toggle is on; they are never persisted.
     vision_enabled: bool = True
 
-    # Which live sessions a new /ws/audio connection preempts (app/sessions.py):
-    #   global  - any existing session (DEFAULT — today's behaviour, unchanged).
+    # Which live sessions a new /ws/audio session preempts once its hello has
+    # parsed (app/sessions.py):
+    #   global  - any existing session (DEFAULT).
     #   channel - same (platform, channel) only, so two channels coexist.
     #   none    - never preempt (load tests, deliberate multi-tab).
     #
-    # Default stays "global" deliberately. Only the global scope can preempt on
-    # CONNECT; the channel scope cannot know the channel until the hello parses,
-    # so it leaves the old session alive for up to HELLO_TIMEOUT_S — losing the
-    # §3.2 promptness rule the extension's reconnect relies on. And it buys
-    # little: the STT executor has ONE worker, so concurrent sessions serialize
-    # on a single Whisper model rather than adding throughput. The deployment
+    # Default stays "global" deliberately: other scopes buy little, because
+    # the STT executor has ONE worker, so concurrent sessions serialize on a
+    # single Whisper model rather than adding throughput. The deployment
     # unit for multiple channels is one backend PROCESS per channel (which is
     # also what the business analysis's "one VPS, <=5 channels" describes).
     session_preempt_scope: Literal["global", "channel", "none"] = "global"

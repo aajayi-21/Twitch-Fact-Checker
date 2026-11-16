@@ -1,13 +1,13 @@
-# Checks every push and pull request, and builds the store packages.
+# Checks every push and pull request, and builds the store package.
 #
 #   backend    the Python test suite (which also covers the store build
 #              script), and that the prompts exported to the extension are
 #              not stale
 #   extension  the extension's unit tests (plain Node, no dependencies)
-#   package    builds and checks the Chrome and Firefox store packages. The
-#              zips are NOT attached to the run: on a public repository an
-#              artifact is a public download, and the app is not being
-#              distributed yet. Add an upload step when it is.
+#   package    builds and checks the store package (Chrome and other
+#              Chromium browsers). The zip is NOT attached to the run: on a
+#              public repository an artifact is a public download, and the
+#              app is not being distributed yet. Add an upload step when it is.
 #
 # Nothing here calls an AI provider or needs a secret. The browser end-to-end
 # scripts (scripts/run_*_e2e.mjs) are run by hand: they need a real Chrome
@@ -59,13 +59,13 @@ jobs:
         run: node --test "extension/tests/*.test.mjs"
 
   package:
-    name: Store packages
+    name: Store package
     runs-on: ubuntu-latest
     needs: [backend, extension]
     steps:
       - uses: actions/checkout@v4
         with:
-          # Tags decide the version stamped into the packages.
+          # Tags decide the version stamped into the package.
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:

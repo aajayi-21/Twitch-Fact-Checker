@@ -18,10 +18,15 @@
  *   - verdict invariants (no sources -> UNVERIFIED, …)   applied inside every
  *     provider module by verdict_rules.mjs
  *   - a bounded verify queue that drops the OLDEST claim, a verify rate
- *     limit, one retry on a timeout, and a cooldown after a rate-limit or
- *     billing error                            here
+ *     limit, one retry on a timeout, and a cooldown after a rate limit
+ *                                              here
  *
- * Added here because the viewer pays per call: spending limits (budget.mjs).
+ * Added here because the viewer pays per call: spending limits (budget.mjs),
+ * applied live and reset at local midnight and month-end; a usage frame for
+ * every billed call, including ones whose answer could not be used; and a
+ * hard stop, with the provider's reason, when nothing more can succeed (a
+ * refused key, no credit, a model that does not exist). That stop is a fatal
+ * error frame; the offscreen document ends the session on it.
  *
  * Not ported (companion-only, build guide §9.1): the Jev pre-screen,
  * contradiction alerts, on-screen (vision) claims.
@@ -44,11 +49,45 @@ export const PIPELINE_DEFAULTS = Object.freeze({
   verifyBurst: 2,
   verifyQueueMax: 3, // backend VERIFY_QUEUE_MAXSIZE
   rateLimitCooldownS: 60, // when the provider does not say how long
-  blockedCooldownS: 300, // out of credit, or the key was refused
   flushTimeoutMs: 20_000, // on Stop: how long to finish what was heard
+  gateFailuresBeforeNotice: 3, // consecutive failed claim-detection passes
+});
+
+/**
+ * Errors after which no further call can succeed, so the session ends. Each
+ * maps to the error frame code and the sentence that says what to fix.
+ */
+const FATAL_FAILURES = Object.freeze({
+  [ERROR_KIND.AUTH]: {
+    code: "key_refused",
+    message: ({provider, detail}) =>
+      `${provider} refused the API key: ${detail}. Check or replace it under AI provider.`,
+  },
+  [ERROR_KIND.BILLING]: {
+    code: "no_credit",
+    message: ({provider, detail}) =>
+      `${provider} reports no credit or billing: ${detail}. Add credit on ${provider}'s site, then start again.`,
+  },
+  [ERROR_KIND.MODEL_UNAVAILABLE]: {
+    code: "model_unavailable",
+    message: ({provider, model, detail}) =>
+      `${provider} cannot run the model "${model}": ${detail}. Choose another model under AI provider.`,
+  },
 });
 
 const isoSeconds = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
+
+/** The local calendar day of a time: the daily limit resets when it changes. */
+export const localDayKey = (ms) => {
+  const date = new Date(ms);
+  return `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`;
+};
+
+/** The local calendar month of a time: the monthly limit resets when it changes. */
+export const localMonthKey = (ms) => {
+  const date = new Date(ms);
+  return `${date.getFullYear()}-${date.getMonth() + 1}`;
+};
 
 /**
  * Whether a call failed by running out of time: either the provider helper
@@ -68,9 +107,11 @@ const isTimeout = (error) =>
  * @param {string} model
  * @param {import("../providers/common.mjs").Usage} usage
  * @param {string|null} [verdictId]
+ * @param {"failed"|null} [outcome] - "failed": billed, but the answer could
+ *   not be used (a refusal, a cut-off or unreadable answer)
  * @returns {object}
  */
-export const usageFrame = (stage, providerId, model, usage, verdictId = null) => {
+export const usageFrame = (stage, providerId, model, usage, verdictId = null, outcome = null) => {
   const frame = {
     type: "usage",
     stage,
@@ -88,6 +129,9 @@ export const usageFrame = (stage, providerId, model, usage, verdictId = null) =>
   }
   if (verdictId) {
     frame.verdict_id = verdictId;
+  }
+  if (outcome) {
+    frame.outcome = outcome;
   }
   return frame;
 };
@@ -143,13 +187,16 @@ export class BrowserPipeline {
     this.gate = gate;
     this.verify = verify;
     this.emit = emit;
-    this.budgets = budgets;
+    this.budgets = {...budgets};
     this.spent = {...spent};
     this.priceUsage = priceUsage;
     this.now = now;
     this.sleep = sleep;
     this.newId = newId;
     this.tuning = {...PIPELINE_DEFAULTS, ...tuning};
+    /** The day and month `spent` counts; a change resets that count. */
+    this.spentDay = localDayKey(this.now());
+    this.spentMonth = localMonthKey(this.now());
 
     this.buffer = new ClaimBuffer();
     this.memory = new ClaimMemory();
@@ -170,6 +217,10 @@ export class BrowserPipeline {
     this.tokensAtMs = this.now();
     /** The budget state last announced, so each change is said once. */
     this.announcedBudget = BUDGET_STATE.OK;
+    /** Consecutive failed claim-detection passes. */
+    this.gateFailures = 0;
+    /** Models whose calls could not be priced, so the monthly limit misses them. */
+    this.unpricedModels = new Set();
     this.idleWaiters = [];
 
     this.counts = {gateCalls: 0, verifyCalls: 0, claims: 0, verdicts: 0};
@@ -200,6 +251,17 @@ export class BrowserPipeline {
       // "other" is the catch-all and can never be switched off.
       this.enabledTopics = Array.isArray(topics) ? new Set([...topics, "other"]) : new Set(TOPICS);
     }
+  }
+
+  /**
+   * The viewer changed a spending limit mid-session. It applies at once: a
+   * lower limit can pause checking, a higher one lets it resume.
+   *
+   * @param {{dailyChecks: number, monthlyUsd: number}} budgets
+   */
+  setBudgets(budgets) {
+    this.budgets = {...budgets};
+    this.#announceBudget();
   }
 
   /** Run the gate if it is due. Called by the timer; tests call it directly. */
@@ -278,12 +340,18 @@ export class BrowserPipeline {
         signal: this.#signal(this.tuning.gateTimeoutMs),
       });
     } catch (error) {
+      this.#emitFailedUsage("gate", this.gate, error);
       this.#handleFailure(error, "gate");
       return;
     }
     if (this.disposed) {
       return;
     }
+    if (this.gateFailures >= this.tuning.gateFailuresBeforeNotice) {
+      // Lets the offscreen document clear the warning it is showing.
+      this.emit({type: "status", stage: "gate_recovered"});
+    }
+    this.gateFailures = 0;
     this.#emitUsage("gate", this.gate, result.usage);
     for (const claim of result.claims) {
       this.#route({id: this.newId(), ...claim});
@@ -378,6 +446,7 @@ export class BrowserPipeline {
     } catch (error) {
       if (!this.disposed) {
         this.#emitClaim(claim, "verify_failed");
+        this.#emitFailedUsage("verify", this.verify, error);
         this.#handleFailure(error, "verify");
       }
       return;
@@ -472,6 +541,19 @@ export class BrowserPipeline {
       ? "the provider took too long to answer"
       : String(error?.message ?? error);
     const provider = this[stage].provider.label;
+    const fatal = FATAL_FAILURES[kind];
+    if (fatal) {
+      // Every further call would fail the same way: say what to fix and
+      // stop. The offscreen document ends the session on a fatal frame.
+      this.emit({
+        type: "error",
+        code: fatal.code,
+        message: fatal.message({provider, model: this[stage].model, detail}),
+        fatal: true,
+      });
+      this.dispose();
+      return;
+    }
     if (kind === ERROR_KIND.RATE_LIMIT) {
       const seconds = error.retryAfterS ?? this.tuning.rateLimitCooldownS;
       this.#cooldown(seconds, `${provider} rate limit reached.`);
@@ -483,17 +565,6 @@ export class BrowserPipeline {
       });
       return;
     }
-    if (kind === ERROR_KIND.BILLING || kind === ERROR_KIND.AUTH) {
-      // Every further call would fail the same way; stop spending attempts
-      // and say what to fix.
-      const reason =
-        kind === ERROR_KIND.BILLING
-          ? `${provider} reports no credit or billing: ${detail}`
-          : `${provider} refused the API key: ${detail}`;
-      this.#cooldown(this.tuning.blockedCooldownS, reason);
-      this.emit({type: "error", code: "quota_cooldown", message: reason, fatal: false});
-      return;
-    }
     if (stage === "verify") {
       this.emit({
         type: "error",
@@ -502,9 +573,20 @@ export class BrowserPipeline {
         fatal: false,
       });
     } else {
-      // A missed gate pass costs one batch of transcript, silently — the
-      // same trade the backend makes.
+      // One missed pass costs one batch of transcript, quietly, as on the
+      // backend. A run of them means nothing is being checked at all, which
+      // the viewer must hear about (a typo in the model name looks exactly
+      // like a quiet stream otherwise).
       console.warn("[fact-checker] claim detection failed (batch dropped):", detail);
+      this.gateFailures += 1;
+      if (this.gateFailures === this.tuning.gateFailuresBeforeNotice) {
+        this.emit({
+          type: "error",
+          code: "gate_failing",
+          message: `Claim detection is failing, so nothing is being checked: ${detail}`,
+          fatal: false,
+        });
+      }
     }
   }
 
@@ -513,21 +595,55 @@ export class BrowserPipeline {
     return this.#announceBudget() === BUDGET_STATE.STOP;
   }
 
-  /** Tell the viewer when a limit is near or reached — once per change. */
+  /**
+   * Tell the viewer when a limit is near or reached, and when checking
+   * resumes after one was reached (a new day or month, or a higher limit) —
+   * once per change.
+   */
   #announceBudget() {
+    this.#rollOver();
     const status = budgetStatus(this.budgets, this.spent);
-    if (status.state !== this.announcedBudget) {
-      this.announcedBudget = status.state;
-      if (status.state !== BUDGET_STATE.OK) {
-        this.emit({
-          type: "error",
-          code: status.state === BUDGET_STATE.STOP ? "budget_reached" : "budget_warning",
-          message: status.message,
-          fatal: false,
-        });
+    if (status.state === this.announcedBudget) {
+      return status.state;
+    }
+    const wasStopped = this.announcedBudget === BUDGET_STATE.STOP;
+    this.announcedBudget = status.state;
+    if (wasStopped) {
+      this.emit({
+        type: "error",
+        code: "budget_resumed",
+        message: "Spending is within your limits again; fact-checking has resumed.",
+        fatal: false,
+      });
+    }
+    if (status.state !== BUDGET_STATE.OK) {
+      let message = status.message;
+      if (status.limit === "monthly" && this.unpricedModels.size > 0) {
+        message += ` Not counted: ${[...this.unpricedModels].join(", ")}, whose price is unknown.`;
       }
+      this.emit({
+        type: "error",
+        code: status.state === BUDGET_STATE.STOP ? "budget_reached" : "budget_warning",
+        message,
+        fatal: false,
+      });
     }
     return status.state;
+  }
+
+  /** Start a new count when the local day or month has changed. */
+  #rollOver() {
+    const nowMs = this.now();
+    const day = localDayKey(nowMs);
+    const month = localMonthKey(nowMs);
+    if (day !== this.spentDay) {
+      this.spentDay = day;
+      this.spent.checksToday = 0;
+    }
+    if (month !== this.spentMonth) {
+      this.spentMonth = month;
+      this.spent.spendThisMonthUsd = 0;
+    }
   }
 
   /* ---------------------------------------------------------------- */
@@ -549,11 +665,35 @@ export class BrowserPipeline {
     });
   }
 
-  #emitUsage(stage, config, usage, verdictId = null) {
-    const frame = usageFrame(stage, config.provider.id, config.model, usage, verdictId);
+  /**
+   * A failed call whose answer arrived was billed: record what it cost, and
+   * say so at once if that reached a limit.
+   */
+  #emitFailedUsage(stage, config, error) {
+    if (error instanceof ProviderError && error.usage && !this.disposed) {
+      this.#emitUsage(stage, config, error.usage, null, "failed");
+      this.#announceBudget();
+    }
+  }
+
+  #emitUsage(stage, config, usage, verdictId = null, outcome = null) {
+    this.#rollOver();
+    const frame = usageFrame(stage, config.provider.id, config.model, usage, verdictId, outcome);
     const cost = this.priceUsage(frame);
     if (typeof cost === "number" && Number.isFinite(cost)) {
       this.spent.spendThisMonthUsd += cost;
+    } else if (!this.unpricedModels.has(config.model)) {
+      this.unpricedModels.add(config.model);
+      if (this.budgets.monthlyUsd > 0) {
+        this.emit({
+          type: "error",
+          code: "budget_unpriced",
+          message:
+            `The monthly spending limit cannot count ${config.model}: its price is unknown. ` +
+            "The daily fact-check limit still applies.",
+          fatal: false,
+        });
+      }
     }
     this.emit(frame);
   }

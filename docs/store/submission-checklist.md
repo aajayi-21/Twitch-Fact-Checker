@@ -75,10 +75,9 @@ is in [`listing.md`](listing.md).
 
 - **Microsoft Edge Add-ons:** the Chrome zip is expected to work unchanged, but it has
   not been loaded in Edge.
-- **Firefox (addons.mozilla.org):** `dist/live-stream-fact-checker-firefox-<version>.zip`
-  is built and passes the same checks, with the data-collection declaration AMO requires.
-  It has **not been run in Firefox** since the app was rebuilt; treat it as untested. On
-  Firefox the extension only works with the local backend.
+- **Firefox is not supported.** It has neither `tabCapture` nor offscreen documents;
+  the Firefox capture path and package were removed on 2026-11-13 so the extension
+  supports Chromium browsers only.
 
 ## Known gaps a reviewer or user may notice
 

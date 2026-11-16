@@ -18,13 +18,14 @@ import vm from "node:vm";
 
 import {importFromBackend} from "../ledger/backend_import.mjs";
 import {csvCell, exportFileName, ledgerToJson, verdictsToCsv} from "../ledger/export.mjs";
-import {COST_SOURCE, PRICING_VERSION, findPrice, priceCall} from "../ledger/pricing.mjs";
+import {COST_SOURCE, PRICING_VERSION, canPrice, findPrice, priceCall} from "../ledger/pricing.mjs";
 import {
   MIN_ADJUDICATED_SAMPLE,
   PERIODS,
   adjudicatedShares,
   channelOptions,
   countLabels,
+  currentSpend,
   dailySpend,
   filterVerdicts,
   periodRange,
@@ -494,6 +495,47 @@ test("buildUsageRecord keeps an exact cost and ignores junk", () => {
   );
   assert.equal(junk.input_tokens, 0);
   assert.equal(junk.output_tokens, 0);
+});
+
+test("buildUsageRecord marks a billed call whose answer could not be used", () => {
+  const failed = buildUsageRecord(
+    {stage: "verify", provider: "anthropic", model: "claude-haiku-5-5", input_tokens: 10, outcome: "failed"},
+    SESSION,
+    "t"
+  );
+  assert.equal(failed.outcome, "failed");
+  assert.equal(failed.verdict_id, null);
+  const ordinary = buildUsageRecord({stage: "gate", provider: "anthropic", model: "m"}, SESSION, "t");
+  assert.equal(ordinary.outcome, null);
+});
+
+test("canPrice: reported costs, free local models and the price table", () => {
+  assert.equal(canPrice("openrouter", "any/model"), true);
+  assert.equal(canPrice("ollama", "llama3"), true);
+  assert.equal(canPrice("anthropic", "claude-haiku-5-5"), true);
+  assert.equal(canPrice("anthropic", "claude-unreleased-9"), false);
+  assert.equal(canPrice("openai", "gpt-6-luna"), false);
+  assert.equal(canPrice("gemini", "gemini-3.5-flash-lite"), false);
+});
+
+test("currentSpend counts fact-checks, not HTTP calls, for the browser engine", () => {
+  const now = new Date(2026, 10, 13, 15, 0);
+  const at = (hour) => new Date(2026, 10, 13, hour, 0).toISOString();
+  const usage = [
+    // A Gemini fallback chain: one check, three calls.
+    {ts: at(10), stage: "verify", engine: "browser", calls: 3, cost_usd: 0.03},
+    {ts: at(11), stage: "verify", engine: "browser", calls: 1, cost_usd: 0.01, outcome: "failed"},
+    {ts: at(11), stage: "gate", engine: "browser", calls: 1, cost_usd: 0.001},
+    // The backend's rows count calls, as before.
+    {ts: at(12), stage: "verify", engine: "companion", calls: 2, cost_usd: null},
+    // Yesterday: this month's spend, not today's checks.
+    {ts: new Date(2026, 10, 12, 20, 0).toISOString(), stage: "verify", engine: "browser", calls: 1, cost_usd: 0.02},
+    // Last month: neither.
+    {ts: new Date(2026, 9, 31, 20, 0).toISOString(), stage: "verify", engine: "browser", calls: 1, cost_usd: 5},
+  ];
+  const spent = currentSpend(usage, now);
+  assert.equal(spent.checksToday, 1 + 1 + 2);
+  approx(spent.spendThisMonthUsd, 0.03 + 0.01 + 0.001 + 0.02);
 });
 
 /* ------------------------------------------------------------------ */
