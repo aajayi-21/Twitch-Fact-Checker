@@ -951,6 +951,7 @@ verdict on a live stream, with each of the four keys.
 |---|---|
 | Anthropic (Claude Haiku 5.5) | **Passed.** All four checkable claims in the recorded stream found and judged correctly (2 TRUE, 2 FALSE), nothing checked that should not be; $0.045 for the session |
 | OpenRouter (Gemini 3.5 Flash-Lite) | **Passed** twice: 3 of 4 claims, then 4 of 4, all judged correctly; $0.027–0.044 |
+| OpenRouter (DeepSeek v4.1 Flash 1017, the default since 2026-11-13) | **Passed** 2026-11-16: 3 of 4 claims, all judged correctly; $0.031 ([release plan](release-build-plan.md) §8) |
 | OpenAI | **Not run** — no key. Offered in the app with a "not yet tested live" note |
 | Gemini | **Not run** — no key. Same note; it is the one provider that asks for a site permission |
 

@@ -17,6 +17,7 @@ import {
   BROWSER_PROVIDERS,
   PermissionDeclined,
   describeProviderError,
+  judgeModelCheck,
   unpricedModels,
   unpricedWarning,
 } from "../app/lib/engine_model.mjs";
@@ -323,4 +324,22 @@ test("unpricedWarning: names the models the monthly limit cannot count", () => {
   );
   assert.equal(unpricedWarning(plan(luna, luna), {dailyChecks: 150, monthlyUsd: 0}), null, "no monthly limit, nothing to warn about");
   assert.deepEqual(unpricedModels(plan(null, null)), []);
+});
+
+test("judgeModelCheck: a missing model is refused, a weak one saved with a warning", () => {
+  assert.deepEqual(judgeModelCheck("deepseek/deepseek-v4.1-flash-1017", {exists: true, strictJson: true}), {
+    save: true,
+    tone: null,
+    message: null,
+  });
+  const missing = judgeModelCheck("deepseek/typo", {exists: false, strictJson: false});
+  assert.equal(missing.save, false);
+  assert.equal(missing.tone, "error");
+  assert.match(missing.message, /no model called "deepseek\/typo".*Nothing was changed/);
+  const weak = judgeModelCheck("some/model", {exists: true, strictJson: false});
+  assert.equal(weak.save, true);
+  assert.match(weak.message, /does not offer strict JSON output/);
+  const unknown = judgeModelCheck("some/model", null);
+  assert.equal(unknown.save, true);
+  assert.match(unknown.message, /saved unchecked/);
 });

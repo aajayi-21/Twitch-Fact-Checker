@@ -48,7 +48,7 @@ Fixes with one obvious answer were not asked about and are planned directly.
 | 2 | Spending and error reporting (extension) ✅ | 2–3 days | — |
 | 3 | Lifecycle and small fixes (extension) ✅ | 1–2 days | — |
 | 4 | Streamer bot safety fix ✅ | half a day | — |
-| 5 | Provider live runs: DeepSeek, OpenAI, Gemini | 1 day | 0, 2; **your OpenAI and Gemini keys** |
+| 5 | Provider live runs: DeepSeek, OpenAI, Gemini ◐ | 1 day | 0, 2; **your OpenAI and Gemini keys** |
 | 6 | Backend one-command install | 2 days | 1 |
 | 7 | Naming, docs, Edge | 1 day | 2, 3 |
 | 8 | Real-stream validation week | 1 week (calendar) | 1–7 |
@@ -375,7 +375,19 @@ proof is checked on every post"), so it is fixed now.
 
 ---
 
-## 8. Phase 5 — Provider live runs
+## 8. Phase 5 — Provider live runs ◐
+
+**Progress 2026-11-16** (branch `feat/provider-live-runs`). About $0.10 spent so far.
+
+| Run | Result |
+|---|---|
+| DeepSeek v4.1 Flash 1017, browser engine | **Passed, 31/31.** 3 of the 4 claims in the recorded stream found, all judged correctly (Eiffel Tower FALSE, speed of light TRUE, Great Wall FALSE); nothing that should not be checked was; 9 calls, $0.031. Gemini 3.5 Flash-Lite's first run also found 3 of 4 |
+| DeepSeek v4.1 Flash 1017, backend | `eval_verify.py --limit 10` on recorded claims: 10/10 strict JSON, 0 fallbacks, p50 3.6 s, p95 7.1 s, ~$0.07. Three labels moved from UNVERIFIED to a firm answer. Two are well sourced ("Alex Karp is Jewish", his own words); one is weaker: "Karp has said his number one fear is being killed by Christians" came back FALSE because he is quoted saying his biggest fear is fascism, which does not rule the other quote out. Worth watching in the Phase 8 review (absence of evidence should stay UNVERIFIED) |
+| OpenRouter model check at save time | **Built.** The AI provider screen asks OpenRouter's public `/api/v1/models/<id>/endpoints` (keyless, cross-origin): an unknown model is not saved; one with no strict-JSON endpoint is saved with a warning; if OpenRouter cannot be reached it is saved unchecked and the screen says so |
+| OpenAI | **Waiting for a key** (`OPENAI_API_KEY` in `.env.spike` is empty) |
+| Gemini | **Waiting for a key** (`GEMINI_API_KEY` is empty) |
+
+The plan as written:
 
 Every run here is a paid call on a real key, so each is run by hand. About 5 cents each.
 
