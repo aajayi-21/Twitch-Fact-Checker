@@ -384,8 +384,8 @@ proof is checked on every post"), so it is fixed now.
 | DeepSeek v4.1 Flash 1017, browser engine | **Passed, 31/31.** 3 of the 4 claims in the recorded stream found, all judged correctly (Eiffel Tower FALSE, speed of light TRUE, Great Wall FALSE); nothing that should not be checked was; 9 calls, $0.031. Gemini 3.5 Flash-Lite's first run also found 3 of 4 |
 | DeepSeek v4.1 Flash 1017, backend | `eval_verify.py --limit 10` on recorded claims: 10/10 strict JSON, 0 fallbacks, p50 3.6 s, p95 7.1 s, ~$0.07. Three labels moved from UNVERIFIED to a firm answer. Two are well sourced ("Alex Karp is Jewish", his own words); one is weaker: "Karp has said his number one fear is being killed by Christians" came back FALSE because he is quoted saying his biggest fear is fascism, which does not rule the other quote out. Worth watching in the Phase 8 review (absence of evidence should stay UNVERIFIED) |
 | OpenRouter model check at save time | **Built.** The AI provider screen asks OpenRouter's public `/api/v1/models/<id>/endpoints` (keyless, cross-origin): an unknown model is not saved; one with no strict-JSON endpoint is saved with a warning; if OpenRouter cannot be reached it is saved unchecked and the screen says so |
-| OpenAI | **Waiting for a key** (`OPENAI_API_KEY` in `.env.spike` is empty) |
-| Gemini | **Waiting for a key** (`GEMINI_API_KEY` is empty) |
+| OpenAI | **Deferred by the owner (2026-11-16).** Run it, and add list prices, when a key is available; until then the app keeps its "not yet tested live" note |
+| Gemini | **Deferred by the owner (2026-11-16)**, as for OpenAI |
 
 The plan as written:
 
