@@ -158,6 +158,9 @@ class ClientConfig(BaseModel):
     type: Literal["config"]
     sensitivity: Sensitivity | None = None
     enabled_topics: list[str] | None = None
+    # The live caption, switched on or off mid-session. It can only narrow
+    # the server's own SEND_TRANSCRIPTS switch (apply_live_config).
+    send_transcripts: bool | None = None
 
 
 class ClientTranscript(BaseModel):

@@ -400,6 +400,13 @@ With speech in the browser the backend no longer needs its own model. `STT_BACKE
 in `backend/.env` starts it without one — it comes up in a few seconds and uses far less
 memory, and it then accepts only sessions that send text.
 
+The model is loaded once: after Stop it stays in memory for 10 minutes, so starting
+again (on the same stream or another) is immediate, and it is released after that. A
+different model or device loads at the next Start. Settings changed during a session
+apply to it straight away where they can (sensitivity, topics, the live caption,
+spending limits, the AI provider, model and key); the ones that need a restart say so.
+See [`docs/live-settings-and-model-lifecycle.md`](docs/live-settings-and-model-lifecycle.md).
+
 Detection of music and noise is still basic; see the build guide.
 
 ```bash

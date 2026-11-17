@@ -307,7 +307,7 @@ export const SettingsView = () => {
         <${SettingRow}
           label="Show a live transcript"
           htmlFor="show-transcript"
-          help="A subtle caption of what the fact-checker hears. Applies the next time you press Start."
+          help="A subtle caption of what the fact-checker hears. Applies to a running session straight away."
         >
           <${Toggle}
             id="show-transcript"

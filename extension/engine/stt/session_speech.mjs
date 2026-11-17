@@ -13,6 +13,10 @@
  *   - a download that fails (or stalls) is not the GPU's fault: it is tried
  *     once more on the same device, then reported, and the GPU stays usable.
  *
+ * A loaded model outlives its session: `park()` keeps it in memory between
+ * sessions and `adopt()` hands it to the next one, so stopping and starting
+ * again does not rebuild it (docs/live-settings-and-model-lifecycle.md §1).
+ *
  * Audio may be pushed from the moment `start()` is called: frames that
  * arrive while the model is still loading wait in the worker's queue (and
  * the oldest are dropped if the wait grows too long — see LiveTranscriber).
@@ -37,6 +41,8 @@ export const SPEECH_STATUS = Object.freeze({
  * @property {"webgpu"|"wasm"} device
  * @property {number|null} downloadPercent - while loading, when known
  * @property {string|null} message - why it is degraded or failed
+ * @property {boolean} reused - this session took over a model loaded by an
+ *   earlier one, so nothing was loaded for it
  */
 
 /**
@@ -52,6 +58,26 @@ export const isDownloadFailure = (reason) => DOWNLOAD_FAILURE.test(String(reason
 
 /** How many times a failed download is retried before the session gives up. */
 const DOWNLOAD_RETRIES = 1;
+
+/**
+ * What identifies a loaded model: two configurations with the same key run
+ * the same model in the same way, so a loaded one can be reused.
+ *
+ * @param {object} config - from speech_setup.mjs planBrowserSpeech
+ * @returns {string}
+ */
+export const speechConfigKey = (config) =>
+  JSON.stringify([
+    config?.repo,
+    config?.revision,
+    config?.device,
+    config?.dtype,
+    config?.numThreads,
+    config?.powerPreference,
+    config?.maxSegmentS,
+  ]);
+
+const ignore = () => {};
 
 export class SessionSpeech {
   /**
@@ -87,6 +113,10 @@ export class SessionSpeech {
     this.disposed = false;
     this.downloadRetries = 0;
     this.status = SPEECH_STATUS.LOADING;
+    /** The message of the last status report (why it is degraded). */
+    this.statusMessage = null;
+    /** Whether the current session adopted an already-loaded model. */
+    this.reused = false;
     /** Totals across every transcriber this session has used. */
     this.retired = {segmentsDropped: 0, droppedSeconds: 0, segmentsTranscribed: 0};
   }
@@ -133,6 +163,50 @@ export class SessionSpeech {
     clearTimeout(timer);
   }
 
+  /** Whether the loaded model can be parked and handed to another session. */
+  get reusable() {
+    return (
+      !this.disposed &&
+      this.transcriber !== null &&
+      (this.status === SPEECH_STATUS.READY || this.status === SPEECH_STATUS.DEGRADED)
+    );
+  }
+
+  /** @returns {string} see speechConfigKey; the configuration now loaded */
+  get configKey() {
+    return speechConfigKey(this.config);
+  }
+
+  /**
+   * The session ended: keep the model loaded, but stop reporting to it and
+   * forget whatever it was in the middle of hearing.
+   */
+  park() {
+    this.onTranscript = ignore;
+    this.onStatus = ignore;
+    this.onFailed = ignore;
+    this.transcriber?.resetStream();
+    this.retired = {segmentsDropped: 0, droppedSeconds: 0, segmentsTranscribed: 0};
+  }
+
+  /**
+   * A new session takes over the parked model: its callbacks, a fresh
+   * stream, and an immediate status report (no load).
+   *
+   * @param {object} callbacks - as for the constructor
+   */
+  adopt({onTranscript, onStatus = ignore, onGpuAttempt = ignore, onGpuFailed = ignore, onFailed = ignore}) {
+    this.onTranscript = onTranscript;
+    this.onStatus = onStatus;
+    this.onGpuAttempt = onGpuAttempt;
+    this.onGpuFailed = onGpuFailed;
+    this.onFailed = onFailed;
+    this.downloadRetries = 0;
+    this.reused = true;
+    this.transcriber.resetStream();
+    this.#report(this.status, {message: this.statusMessage});
+  }
+
   /** Release the model and the worker. Safe to call more than once. */
   dispose() {
     this.disposed = true;
@@ -161,12 +235,14 @@ export class SessionSpeech {
 
   #report(status, {downloadPercent = null, message = null} = {}) {
     this.status = status;
+    this.statusMessage = message;
     this.onStatus({
       status,
       modelLabel: this.config.modelLabel,
       device: this.config.device,
       downloadPercent,
       message,
+      reused: this.reused,
     });
   }
 

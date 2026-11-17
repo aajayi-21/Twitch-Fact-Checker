@@ -31,6 +31,10 @@ export const MSG = Object.freeze({
   // The viewer changed a spending limit ({budgets}); a running browser-engine
   // session applies it at once.
   OFFSCREEN_BUDGETS: "OFFSCREEN_BUDGETS",
+  // The provider, model or key of a step changed ({gate, verify}: stage plans
+  // with their keys); a running browser-engine session uses them from its
+  // next call.
+  OFFSCREEN_ENGINE: "OFFSCREEN_ENGINE",
   // offscreen -> service worker
   BACKEND_EVENT: "BACKEND_EVENT",
   // In-browser speech crash guard ({phase: "begin"|"end", variantId}): sent
@@ -41,6 +45,9 @@ export const MSG = Object.freeze({
   // The GPU failed during a session ({reason}); do not use it again until
   // the viewer re-runs the speech test.
   SPEECH_GPU_FAILED: "SPEECH_GPU_FAILED",
+  // app -> service worker: a speech self-test is starting; close an idle
+  // offscreen document so a parked model does not compete for GPU memory.
+  RELEASE_WARM_SPEECH: "RELEASE_WARM_SPEECH",
   CAPTURE_ENDED: "CAPTURE_ENDED",
   SESSION_UPDATE: "SESSION_UPDATE",
   // service worker -> content script (via chrome.tabs.sendMessage)

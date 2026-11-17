@@ -12,7 +12,12 @@ import assert from "node:assert/strict";
 import {test} from "node:test";
 
 import {SPEECH_TIERS, getSttModel} from "../engine/stt/models.mjs";
-import {SPEECH_STATUS, SessionSpeech, isDownloadFailure} from "../engine/stt/session_speech.mjs";
+import {
+  SPEECH_STATUS,
+  SessionSpeech,
+  isDownloadFailure,
+  speechConfigKey,
+} from "../engine/stt/session_speech.mjs";
 import {
   DEFAULT_SPEECH_SETTINGS,
   NOT_READY,
@@ -394,6 +399,10 @@ const makeSession = (config, loadOutcomes = ["ok"]) => {
         pushPcm16: () => {
           transcriber.frames += 1;
         },
+        resets: 0,
+        resetStream: () => {
+          transcriber.resets += 1;
+        },
         finish: async () => {},
         dispose: () => {
           transcriber.disposed = true;
@@ -536,6 +545,54 @@ test("isDownloadFailure tells fetching problems from device problems", () => {
   for (const message of ["out of memory", "GPU device lost (destroyed)", "no gpu", "corrupt download"]) {
     assert.equal(isDownloadFailure(message), false, message);
   }
+});
+
+test("session: a loaded model is parked and handed to the next session without a load", async () => {
+  const {session, transcribers} = makeSession(GPU_CONFIG);
+  await session.start();
+  assert.equal(session.reusable, true);
+  session.park();
+  assert.equal(transcribers[0].resets, 1, "the old stream is forgotten");
+
+  const next = [];
+  session.adopt({
+    onTranscript: (transcript) => next.push(["transcript", transcript.text]),
+    onStatus: (status) => next.push(["status", status.status, status.device]),
+  });
+  assert.equal(transcribers.length, 1, "no second transcriber, so no second load");
+  assert.equal(transcribers[0].resets, 2, "and a fresh stream for the new session");
+  assert.deepEqual(next, [["status", "ready", "webgpu"]], "ready at once");
+  assert.equal(session.reused, true);
+  transcribers[0].callbacks.onTranscript({text: "for the new session"});
+  assert.deepEqual(next.at(-1), ["transcript", "for the new session"]);
+});
+
+test("session: a parked model reports nothing to the session that ended", async () => {
+  const {session, log, transcribers} = makeSession(CPU_CONFIG);
+  await session.start();
+  const before = log.length;
+  session.park();
+  transcribers[0].callbacks.onTranscript({text: "late"});
+  assert.equal(log.length, before);
+});
+
+test("session: a model that failed, or never loaded, is not reusable", async () => {
+  const failed = makeSession(CPU_CONFIG, ["corrupt download"]);
+  await failed.session.start();
+  assert.equal(failed.session.reusable, false);
+  const disposed = makeSession(CPU_CONFIG);
+  await disposed.session.start();
+  disposed.session.dispose();
+  assert.equal(disposed.session.reusable, false);
+});
+
+test("speechConfigKey: the same model on the same device matches; anything else does not", () => {
+  assert.equal(speechConfigKey(GPU_CONFIG), speechConfigKey({...GPU_CONFIG}));
+  assert.notEqual(speechConfigKey(GPU_CONFIG), speechConfigKey(CPU_CONFIG));
+  assert.notEqual(
+    speechConfigKey(GPU_CONFIG),
+    speechConfigKey({...GPU_CONFIG, powerPreference: "low-power"})
+  );
 });
 
 test("session: frames pushed while loading reach the transcriber", async () => {

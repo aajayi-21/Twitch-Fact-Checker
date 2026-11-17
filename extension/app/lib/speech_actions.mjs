@@ -31,6 +31,7 @@ import {
   updateSpeechState,
   withGpuSpeechLock,
 } from "../../engine/stt/speech_store.mjs";
+import {MSG, TARGET, makeMsg} from "../../shared/messages.js";
 import {useEffect, useState} from "./html.mjs";
 
 const SELF_TEST_CLIP_URL = new URL("../../engine/stt/assets/selftest_16k.wav", import.meta.url);
@@ -163,6 +164,13 @@ export const runSpeechTest = async ({withoutGpu = false} = {}) => {
     if (withoutGpu) {
       await updateSpeechSettings({devicePreference: "cpu"});
     }
+    // A model kept warm from the last session would compete with the test
+    // for GPU memory; the service worker releases it if no session is running.
+    await chrome.runtime
+      .sendMessage(makeMsg(TARGET.BACKGROUND, MSG.RELEASE_WARM_SPEECH, {}))
+      .catch((error) => {
+        console.debug("[fact-checker] releasing the warm speech model failed:", error);
+      });
     const {settings} = view.state;
     const model = getSttModel(settings.modelId);
     await store((state) => clearForRetest(state, model.id));

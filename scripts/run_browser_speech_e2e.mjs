@@ -12,6 +12,12 @@
  *      that records what arrives. The test passes if the words are right
  *      and not one audio frame was sent.
  *
+ * Then the lifecycle (docs/live-settings-and-model-lifecycle.md): after Stop
+ * the model is kept warm, a second session reuses it without loading it
+ * again, the live caption and sensitivity changed mid-session reach the
+ * running session at once, and the model is released when the warm period
+ * ends.
+ *
  * It also checks the guard rails: a session refuses to start when the
  * chosen model was never tested, and the crash guard blocks the GPU when a
  * previous GPU attempt was left unfinished.
@@ -81,7 +87,7 @@ const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * polls, and records what a session sends over /ws/audio.
  */
 const createFakeBackend = () => {
-  const state = {hellos: [], transcripts: [], audioFrames: 0, stops: 0};
+  const state = {hellos: [], transcripts: [], configs: [], audioFrames: 0, stops: 0};
   const routes = {
     "/healthz": {
       status: "ok",
@@ -120,6 +126,7 @@ const createFakeBackend = () => {
         const frame = JSON.parse(text);
         if (frame.type === "hello") {
           state.hellos.push(frame);
+          state.lastConnection = connection;
           connection.sendJson({
             type: "ready",
             server_version: "speech-e2e-fake",
@@ -128,6 +135,8 @@ const createFakeBackend = () => {
           });
         } else if (frame.type === "transcript") {
           state.transcripts.push(frame);
+        } else if (frame.type === "config") {
+          state.configs.push(frame);
         } else if (frame.type === "stop") {
           state.stops += 1;
           connection.close(1000);
@@ -394,6 +403,125 @@ const main = async () => {
     );
     check("no audio was sent to the backend, only text", fake.state.audioFrames === 0, `${fake.state.audioFrames} audio frames`);
     check("the backend was asked to finish the session", fake.state.stops === 1);
+
+    console.log("\nThe model loads once; settings apply to a running session");
+    const offscreenDocuments = () =>
+      run(`chrome.runtime.getContexts({contextTypes: ["OFFSCREEN_DOCUMENT"]}).then((list) => list.length)`);
+    const syncSettings = (patch) =>
+      run(`chrome.storage.sync.get("settings")
+        .then(({settings}) => chrome.storage.sync.set({settings: {...(settings ?? {}), ...${JSON.stringify(patch)}}}))
+        .then(() => true)`);
+    check("after Stop the model is kept warm: the offscreen document stays open", (await offscreenDocuments()) === 1);
+    const warmForMs = await run(
+      `chrome.alarms.get("warm-speech-idle").then((alarm) => (alarm ? alarm.scheduledTime - Date.now() : null))`
+    );
+    check(
+      "…for about ten minutes",
+      warmForMs !== null && warmForMs > 9 * 60_000 && warmForMs <= 10 * 60_000,
+      String(warmForMs)
+    );
+    await syncSettings({showTranscript: false, sensitivity: "medium"});
+    const transcriptsBefore = fake.state.transcripts.length;
+    const secondStartAt = Date.now();
+    await startCapture();
+    session = await waitForSession(
+      (current) => current.status === "error" || (current.status === "capturing" && current.speech?.status === "ready"),
+      60_000
+    );
+    console.log(`        ready ${Date.now() - secondStartAt} ms after Start`);
+    check(
+      "a second session reuses the loaded model instead of loading it again",
+      session?.status === "capturing" && session.speech?.reused === true,
+      JSON.stringify(session?.speech)
+    );
+    check(
+      "it starts with the live caption off, as set",
+      fake.state.hellos.at(-1)?.send_transcripts === false,
+      JSON.stringify(fake.state.hellos.at(-1))
+    );
+    await player.send("Runtime.evaluate", {
+      expression: 'const clip = document.getElementById("player"); clip.currentTime = 0; clip.play()',
+      userGesture: true,
+      awaitPromise: true,
+    });
+    await pause(3000);
+    await syncSettings({showTranscript: true, sensitivity: "high"});
+    for (let waited = 0; waited < 5000 && fake.state.configs.length === 0; waited += 250) {
+      await pause(250);
+    }
+    check(
+      "turning the live caption on reaches the running session at once",
+      fake.state.configs.some((frame) => frame.send_transcripts === true),
+      JSON.stringify(fake.state.configs)
+    );
+    check(
+      "so does a sensitivity change",
+      fake.state.configs.some((frame) => frame.sensitivity === "high"),
+      JSON.stringify(fake.state.configs)
+    );
+    await pause(12_000);
+    check(
+      "the reused model transcribes the new session",
+      fake.state.transcripts.length > transcriptsBefore,
+      `${fake.state.transcripts.length - transcriptsBefore} new utterances`
+    );
+    await run(`chrome.runtime.sendMessage({target: "background", type: "CAPTURE_STOP", payload: {}})`);
+    session = await waitForSession((current) => current.status === "idle" || current.status === "error", 20_000);
+    check("the second session stops cleanly", session?.status === "idle" && !session.lastError, JSON.stringify(session));
+    // The warm period, shortened to Chrome's minimum alarm delay. First wait
+    // for the service worker to set this session's own 10-minute alarm, which
+    // would otherwise replace the short one.
+    for (let waited = 0; waited < 10_000; waited += 250) {
+      const remaining = await run(
+        `chrome.alarms.get("warm-speech-idle").then((alarm) => (alarm ? alarm.scheduledTime - Date.now() : 0))`
+      );
+      if (remaining > 9 * 60_000) {
+        break;
+      }
+      await pause(250);
+    }
+    await run(`chrome.alarms.create("warm-speech-idle", {delayInMinutes: 0.5}).then(() => true)`);
+    let released = false;
+    for (let waited = 0; waited < 75_000 && !released; waited += 1000) {
+      await pause(1000);
+      released = (await offscreenDocuments()) === 0;
+    }
+    check("when the warm period ends the model is released (offscreen document closed)", released);
+
+    console.log("\nThe local backend's settings change: the session starts again by itself");
+    await startCapture();
+    session = await waitForSession(
+      (current) => current.status === "error" || (current.status === "capturing" && current.speech?.status === "ready"),
+      120_000
+    );
+    const hellosBefore = fake.state.hellos.length;
+    // What the real backend sends to every live session after a key or a
+    // model is saved (app/setup.py _swap_runtime).
+    fake.state.lastConnection.sendJson({
+      type: "error",
+      code: "credentials_updated",
+      message: "Provider settings changed; restart capture to use them.",
+      fatal: true,
+    });
+    for (let waited = 0; waited < 15_000 && fake.state.hellos.length === hellosBefore; waited += 250) {
+      await pause(250);
+    }
+    session = await waitForSession(
+      (current) => current.status === "error" || (current.status === "capturing" && current.speech?.status === "ready"),
+      30_000
+    );
+    check(
+      "it reconnects with a new handshake, without Start being pressed",
+      fake.state.hellos.length === hellosBefore + 1,
+      `${fake.state.hellos.length - hellosBefore} new hello(s)`
+    );
+    check(
+      "…and is capturing again on the warm model",
+      session?.status === "capturing" && session.speech?.reused === true,
+      JSON.stringify({status: session?.status, lastError: session?.lastError, speech: session?.speech})
+    );
+    await run(`chrome.runtime.sendMessage({target: "background", type: "CAPTURE_STOP", payload: {}})`);
+    await waitForSession((current) => current.status === "idle" || current.status === "error", 20_000);
 
     console.log("\nGuard rail: an unfinished GPU attempt");
     await run(`chrome.storage.local.get("speech").then(({speech}) =>
