@@ -50,7 +50,7 @@ Fixes with one obvious answer were not asked about and are planned directly.
 | 4 | Streamer bot safety fix ✅ | half a day | — |
 | 5 | Provider live runs: DeepSeek, OpenAI, Gemini ◐ | 1 day | 0, 2; **your OpenAI and Gemini keys** |
 | 6 | Backend one-command install ✅ | 2 days | 1 |
-| 7 | Naming, docs, Edge | 1 day | 2, 3 |
+| 7 | Naming, docs, Edge ◐ | 1 day | 2, 3 |
 | 8 | Real-stream validation week | 1 week (calendar) | 1–7 |
 | 9 | Owner steps and submission | yours | 8; **licence** |
 
@@ -409,7 +409,7 @@ name, already measured at the gate) and record why here.
 
 ---
 
-## 9. Phase 6 — Backend one-command install
+## 9. Phase 6 — Backend one-command install ✅
 
 **Built 2026-11-16** on branch `feat/one-command-install`. Differences from the plan
 below:
@@ -471,7 +471,31 @@ verdict, and a restart keeps the key.
 
 ---
 
-## 10. Phase 7 — Naming, docs, Edge
+## 10. Phase 7 — Naming, docs, Edge ◐
+
+**Built 2026-11-16** on branch `feat/doxa-naming`, except the Edge run:
+
+- **Renamed to Doxa:** README (title, and an intro and quickstart that now start with
+  the extension alone, the backend as an option), privacy policy, store listing and
+  checklist, the backend's API and console titles and start-up banner, the analytics,
+  streamer console and OBS overlay pages, the OpenRouter app title the backend sends,
+  the overlay's error prefix, the welcome flow's provider step and the history export
+  filename (`doxa-history-….json`).
+- **Kept on purpose:** the export file's `format` field
+  (`live-stream-fact-checker-export`, so files exported earlier stay recognisable), the
+  overlay's DOM id, the `[fact-checker]` console prefixes, the `fact-checker-ingest`
+  command, the streamer bot's chat wording ("Automated fact-checker"), and the
+  repository name.
+- **Package:** `dist/doxa-chrome-<version>.zip`.
+- **Listing:** the name matches the manifest; OpenAI and Gemini are described as a
+  preview, since their live runs were deferred; the `alarms` justification now covers
+  releasing the speech model ten minutes after the last session. "Open source" is
+  still left out.
+- **Store images** regenerated from the current extension; the promo tile carries the
+  mark and the "doxa" wordmark on graphite, purple only as the accent. Two missing
+  spaces in the welcome flow showed up in the screenshots and were fixed.
+- **Edge: not yet run.** Microsoft Edge is not installed on the build machine.
+- **Trademark search:** still the owner's call.
 
 - **Doxa everywhere user-facing.** The manifest says "Doxa: Live Stream Fact-Checker", but
   `docs/store/listing.md`, `docs/privacy-policy.md`, `README.md`, the backend page titles

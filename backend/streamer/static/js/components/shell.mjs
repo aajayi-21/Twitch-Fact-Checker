@@ -65,7 +65,7 @@ export function Shell({ children }) {
   return html`
     <div class="shell">
       <aside class="sidebar">
-        <span class="brand"><span class="brand-mark">✓</span>Fact-Checker</span>
+        <span class="brand"><span class="brand-mark">✓</span>Doxa</span>
         <nav class="sidenav">
           ${NAV.map(
             ([view, label]) =>

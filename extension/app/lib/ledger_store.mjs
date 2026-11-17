@@ -189,7 +189,7 @@ export const exportVerdictsCsv = (verdicts, stem = "fact-checks") => {
  * @param {object} [part] - defaults to the whole history
  * @param {string} [stem]
  */
-export const exportJson = (part = null, stem = "fact-checker-history") => {
+export const exportJson = (part = null, stem = "doxa-history") => {
   const everything = part ?? {
     sessions: state.sessions,
     claims: state.claims,

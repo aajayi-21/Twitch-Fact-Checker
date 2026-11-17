@@ -176,7 +176,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     ]
     logger.info(
         "\n%s",
-        banner(rows, f"Live Stream Fact-Checker backend {SERVER_VERSION}"),
+        banner(rows, f"Doxa backend {SERVER_VERSION}"),
     )
     if not configured:
         logger.warning(
@@ -220,7 +220,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 def create_app() -> FastAPI:
     """Assemble the FastAPI application (factory keeps tests self-contained)."""
     app = FastAPI(
-        title="Twitch Live Fact-Checker",
+        title="Doxa backend",
         version=SERVER_VERSION,
         lifespan=lifespan,
     )

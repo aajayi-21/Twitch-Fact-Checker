@@ -68,7 +68,7 @@ export async function refreshBot() {
       selectedIdx.value,
       Math.max(0, queueLength - 1)
     );
-    document.title = queueLength ? `(${queueLength}) Fact-Checker` : "Fact-Checker";
+    document.title = queueLength ? `(${queueLength}) Doxa` : "Doxa";
   } else {
     health.value = null; // backend unreachable: kill the dot
   }

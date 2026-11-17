@@ -470,7 +470,7 @@ class FactCheckOverlay {
     const fatal = Boolean(errorFrame.fatal);
     const text = fatal
       ? `Fact-checking stopped: ${friendlyCopy ?? fallbackCopy}`
-      : friendlyCopy ?? `Fact-checker: ${fallbackCopy}`;
+      : friendlyCopy ?? `Doxa: ${fallbackCopy}`;
     const notice = this.#refs.notice;
     notice.textContent = text;
     if (fatal) {

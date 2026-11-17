@@ -1,6 +1,7 @@
-# Privacy policy — Live Stream Fact-Checker
+# Privacy policy — Doxa
 
-*Effective 13 November 2026. Applies to the Live Stream Fact-Checker browser extension.*
+*Effective 13 November 2026. Applies to Doxa, the live-stream fact-checker browser
+extension.*
 
 ## The short version
 

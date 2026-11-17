@@ -61,8 +61,8 @@ const HowItWorksStep = ({onNext, alreadyAgreed}) => html`
         browser, or by the backend program if you choose to run one.
       </li>
       <li>
-        <strong>The words go to the AI provider whose key you add; the audio does not.</strong>
-        The text of what is said is sent in short batches so the provider can pick out factual
+        <strong>The words go to the AI provider whose key you add; the audio does not.</strong> The
+        text of what is said is sent in short batches so the provider can pick out factual
         claims, and each claim is sent again to be checked against the web. You pay that
         provider directly for what you use.
       </li>
@@ -144,7 +144,7 @@ const BrowserProviderStep = ({onNext, onBack}) => {
   return html`
     <${Card} title="Add an API key">
       <p class="lede">
-        The fact-checker needs an AI provider to find claims and check them against the web. You
+        Doxa needs an AI provider to find claims and check them against the web. You
         pay the provider directly; a typical check costs about a cent.
       </p>
       ${engine.plan.ready && !replacing
@@ -252,8 +252,8 @@ const BackendStep = ({onNext, onBack}) => {
         : html`
             <ol class="steps-list">
               <li>
-                Install <a href="https://docs.astral.sh/uv/" target="_blank" rel="noopener noreferrer">uv</a>
-                if you do not have it, then open a terminal.
+                Install <a href="https://docs.astral.sh/uv/" target="_blank" rel="noopener noreferrer">uv</a> if
+                you do not have it, then open a terminal.
               </li>
               <li>
                 Run <code>uvx --from 'git+https://github.com/aajayi-21/Twitch-Fact-Checker#subdirectory=backend' doxa</code> (or <code>./backend/run.sh</code> in a copy of the
@@ -286,7 +286,7 @@ const ProviderStep = ({onNext, onBack}) => {
   return html`
     <${Card} title="Add an API key">
       <p class="lede">
-        The fact-checker needs an AI provider to find claims and check them against the web.
+        Doxa needs an AI provider to find claims and check them against the web.
         A typical check costs about a cent.
       </p>
       ${setup?.configured && !replacing

@@ -103,7 +103,7 @@ OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 # client instead of per-call extra_headers.
 ATTRIBUTION_HEADERS: dict[str, str] = {
     "HTTP-Referer": "https://github.com/local/twitch-fact-checker",
-    "X-OpenRouter-Title": "Twitch Fact-Checker",
+    "X-OpenRouter-Title": "Doxa",
 }
 
 CONNECT_TIMEOUT_S = 3.0

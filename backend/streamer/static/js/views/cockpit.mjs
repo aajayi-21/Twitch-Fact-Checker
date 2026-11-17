@@ -35,7 +35,7 @@ function IdentityBar() {
   return html`
     <div class="identity">
       <span class="brand"
-        ><span class="brand-mark">✓</span>Fact-Checker
+        ><span class="brand-mark">✓</span>Doxa
         <span class="text-muted" style="font-size:13px">streamer console</span>
       </span>
       <span class="who">
