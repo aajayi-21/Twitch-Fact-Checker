@@ -19,11 +19,9 @@ fi
 echo "Syncing Python environment with uv…"
 uv sync --inexact
 
-echo "Starting Live Stream Fact-Checker backend on http://127.0.0.1:8710 …"
 echo "No API key yet? That's fine — add one in the extension's app (AI provider)."
 # --no-sync: the sync above already ran. Without it `uv run` re-syncs and
 # would replace a hand-picked +rocm/+xpu torch wheel with the locked one.
-# --no-access-log: the extension polls /healthz every 3 s, which would
-# otherwise bury the session log in ~20 access lines a minute.
-exec uv run --no-sync uvicorn app.main:app \
-    --host 127.0.0.1 --port 8710 --no-access-log
+# `doxa` (app/cli.py) binds 127.0.0.1:8710 without an access log: the
+# extension polls /healthz every few seconds.
+exec uv run --no-sync doxa "$@"

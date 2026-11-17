@@ -204,7 +204,7 @@ export const HomeView = ({navigate}) => {
             ${backendState === "checking"
               ? "Looking for the local backend…"
               : html`${backendMessage ?? "The local backend is not running."} Start it with${" "}
-                  <code>./backend/run.sh</code> in the project folder.${" "}
+                  <code>doxa</code>, or <code>./backend/run.sh</code> in the project folder.${" "}
                   <button type="button" class="link-button" onClick=${() => refreshBackend()}>
                     Check again
                   </button>`}

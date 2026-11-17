@@ -251,13 +251,19 @@ const BackendStep = ({onNext, onBack}) => {
           <//>`
         : html`
             <ol class="steps-list">
-              <li>Open a terminal in the project folder.</li>
-              <li>Run <code>./backend/run.sh</code></li>
+              <li>
+                Install <a href="https://docs.astral.sh/uv/" target="_blank" rel="noopener noreferrer">uv</a>
+                if you do not have it, then open a terminal.
+              </li>
+              <li>
+                Run <code>uvx --from 'git+https://github.com/aajayi-21/Twitch-Fact-Checker#subdirectory=backend' doxa</code> (or <code>./backend/run.sh</code> in a copy of the
+                project).
+              </li>
               <li>Leave it running. This page notices by itself.</li>
             </ol>
             <p class="field-help">
-              Looking for it at <code>${settings?.backendUrl}</code>. The first start downloads a
-              speech model (about 170 MB), so it can take a minute.
+              Looking for it at <code>${settings?.backendUrl}</code>. It keeps its settings and
+              history in your user folder, and it prints where when it starts.
             </p>
           `}
       <div class="form-actions">

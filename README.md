@@ -18,15 +18,38 @@ needed.
 
 ## Quickstart
 
-1. **Start the backend** (needs Python 3.11+; first run downloads a ~170 MB speech
-   model):
+1. **Start the backend.** Only needed for the extension's "local backend" mode; with
+   "This browser" (the default for a new install) there is nothing to start.
+
+   Without cloning anything, with [uv](https://docs.astral.sh/uv/) installed:
+
+   ```bash
+   uvx --from 'git+https://github.com/aajayi-21/Twitch-Fact-Checker#subdirectory=backend' doxa
+   ```
+
+   This installs no speech engine, so the extension transcribes in the browser and sends
+   the backend text. To transcribe on this computer instead, install the `stt` extra
+   (adds about 200 MB; the first start then downloads a ~170 MB speech model):
+
+   ```bash
+   uvx --from 'doxa-backend[stt] @ git+https://github.com/aajayi-21/Twitch-Fact-Checker#subdirectory=backend' doxa
+   ```
+
+   An installed backend keeps its settings and history in your user data folder
+   (`~/.local/share/doxa` on Linux, `~/Library/Application Support/doxa` on macOS,
+   `%LOCALAPPDATA%\doxa` on Windows; `DOXA_DATA_DIR` overrides it) and prints the
+   path when it starts. Add `--refresh` to pick up a newer version. `doxa-streamer`
+   starts the streamer backend the same way.
+
+   From a copy of the project (needs Python 3.11+; installs the speech engine and
+   keeps settings in `backend/.env`):
 
    ```bash
    ./backend/run.sh
    ```
 
-   The server starts key-less in a "needs setup" state — the extension will walk you
-   through adding a key.
+   Either way the server starts key-less in a "needs setup" state — the extension will
+   walk you through adding a key.
 
 2. **Load the extension** in Chrome 116+ or another Chromium browser (Edge, Brave):
    open `chrome://extensions/`, enable **Developer mode** (top right), click

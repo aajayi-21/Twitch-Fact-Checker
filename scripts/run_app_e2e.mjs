@@ -778,7 +778,7 @@ const main = async () => {
     console.log("\nWelcome: backend");
     if (usingFake) {
       await app.waitForText("Not running");
-      check("says the backend is not running, with how to start it", (await app.text()).includes("./backend/run.sh"));
+      check("says the backend is not running, with how to start it", (await app.text()).includes("uvx --from"));
       check("Continue is blocked until the backend is found", (await app.isDisabled("Continue")) === true);
       await screenshot(page, "welcome-backend-down");
       await fake.start();

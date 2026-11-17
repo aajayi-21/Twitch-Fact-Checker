@@ -512,6 +512,86 @@ wheels = [
 ]
 
 [[package]]
+name = "doxa-backend"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "anthropic" },
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "openai" },
+    { name = "platformdirs" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "rapidfuzz" },
+    { name = "uvicorn", extra = ["standard"] },
+    { name = "websockets" },
+]
+
+[package.optional-dependencies]
+device = [
+    { name = "sounddevice" },
+]
+gpu = [
+    { name = "accelerate" },
+    { name = "faster-whisper" },
+    { name = "librosa", version = "0.11.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "librosa", version = "1.0.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "torch" },
+    { name = "transformers" },
+]
+ingest = [
+    { name = "streamlink" },
+]
+stt = [
+    { name = "faster-whisper" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "black" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+]
+speech = [
+    { name = "faster-whisper" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "accelerate", marker = "extra == 'gpu'", specifier = ">=1.0" },
+    { name = "anthropic", specifier = ">=2.8" },
+    { name = "fastapi", specifier = ">=0.141" },
+    { name = "faster-whisper", marker = "extra == 'gpu'", specifier = ">=1.2" },
+    { name = "faster-whisper", marker = "extra == 'stt'", specifier = ">=1.2" },
+    { name = "httpx", specifier = ">=0.28" },
+    { name = "librosa", marker = "extra == 'gpu'", specifier = ">=0.10,<2" },
+    { name = "numpy", specifier = ">=1.26" },
+    { name = "openai", specifier = ">=2.53" },
+    { name = "platformdirs", specifier = ">=4.11" },
+    { name = "pydantic", specifier = ">=2.13" },
+    { name = "pydantic-settings", specifier = ">=2.15" },
+    { name = "rapidfuzz", specifier = ">=3.14" },
+    { name = "sounddevice", marker = "extra == 'device'", specifier = ">=0.4" },
+    { name = "streamlink", marker = "extra == 'ingest'", specifier = ">=6.0" },
+    { name = "torch", marker = "extra == 'gpu'", specifier = ">=2.13,<2.14" },
+    { name = "transformers", marker = "extra == 'gpu'", specifier = ">=5.15,<6" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.52" },
+    { name = "websockets", specifier = ">=16.1" },
+]
+provides-extras = ["stt", "gpu", "ingest", "device"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "black", specifier = ">=24.4" },
+    { name = "pytest", specifier = ">=8.2" },
+    { name = "pytest-asyncio", specifier = ">=0.23" },
+]
+speech = [{ name = "faster-whisper", specifier = ">=1.2" }]
+
+[[package]]
 name = "fastapi"
 version = "0.141.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2682,76 +2762,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/b5/b4/205b0d5241d934e8add0c38aa924c4f9fb7330834ff11e5444db964ec3f9/starlette-1.6.0.tar.gz", hash = "sha256:d4e3ac5e546444960c710297a3c9fc3f7ebae1b7e963f3d36173b49da535be9b", size = 2716969, upload-time = "2026-08-08T18:27:57.512Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c8/cb/6a6a47d5b464bd08695d254f3da6e7986cc70c9fa5d778eda57538edfe56/starlette-1.6.0-py3-none-any.whl", hash = "sha256:a86dd39d14bb45f85a3d18525215a9ef0cfd1f192ac793220e72598c90335f0c", size = 75969, upload-time = "2026-08-08T18:27:56.196Z" },
-]
-
-[[package]]
-name = "stream-fact-checker-backend"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "anthropic" },
-    { name = "fastapi" },
-    { name = "faster-whisper" },
-    { name = "httpx" },
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "openai" },
-    { name = "pydantic" },
-    { name = "pydantic-settings" },
-    { name = "rapidfuzz" },
-    { name = "uvicorn", extra = ["standard"] },
-    { name = "websockets" },
-]
-
-[package.optional-dependencies]
-device = [
-    { name = "sounddevice" },
-]
-gpu = [
-    { name = "accelerate" },
-    { name = "librosa", version = "0.11.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "librosa", version = "1.0.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "torch" },
-    { name = "transformers" },
-]
-ingest = [
-    { name = "streamlink" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "black" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "accelerate", marker = "extra == 'gpu'", specifier = ">=1.0" },
-    { name = "anthropic", specifier = ">=1.1" },
-    { name = "fastapi", specifier = ">=0.115" },
-    { name = "faster-whisper", specifier = ">=1.0" },
-    { name = "httpx", specifier = ">=0.27" },
-    { name = "librosa", marker = "extra == 'gpu'", specifier = ">=0.10,<2" },
-    { name = "numpy", specifier = ">=1.26" },
-    { name = "openai", specifier = ">=1.90" },
-    { name = "pydantic", specifier = ">=2.8" },
-    { name = "pydantic-settings", specifier = ">=2.4" },
-    { name = "rapidfuzz", specifier = ">=3.9" },
-    { name = "sounddevice", marker = "extra == 'device'", specifier = ">=0.4" },
-    { name = "streamlink", marker = "extra == 'ingest'", specifier = ">=6.0" },
-    { name = "torch", marker = "extra == 'gpu'", specifier = ">=2.13,<2.14" },
-    { name = "transformers", marker = "extra == 'gpu'", specifier = ">=5.15,<6" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
-    { name = "websockets", specifier = ">=12.0" },
-]
-provides-extras = ["gpu", "ingest", "device"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "black", specifier = ">=24.4" },
-    { name = "pytest", specifier = ">=8.2" },
-    { name = "pytest-asyncio", specifier = ">=0.23" },
 ]
 
 [[package]]

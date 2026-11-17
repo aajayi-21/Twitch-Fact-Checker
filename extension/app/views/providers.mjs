@@ -271,7 +271,8 @@ const BackendProvidersView = () => {
           ${backendState === "checking"
             ? "Looking for the local backend…"
             : html`Keys are stored by the local backend, which is not running. Start it with${" "}
-                <code>./backend/run.sh</code> and this page will update.`}
+                <code>doxa</code> (or <code>./backend/run.sh</code> in the project folder) and
+                this page will update.`}
         <//>
         <${EngineCard} />
       </div>

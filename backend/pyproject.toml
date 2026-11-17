@@ -1,31 +1,34 @@
 [project]
-name = "stream-fact-checker-backend"
+# Not "doxa": that name may belong to someone else on PyPI, and `uvx doxa`
+# without --from would fetch it. The commands are still `doxa` and
+# `doxa-streamer` (see [project.scripts]).
+name = "doxa-backend"
 version = "0.1.0"
-description = "Local FastAPI backend for the Live Stream Fact-Checker extension"
+description = "Local backend for the Doxa live-stream fact-checker extension"
 requires-python = ">=3.11"
 
-# Runtime dependencies. Bare lower bounds (no upper caps): this is an
-# application pinned by uv.lock, so the lock file — not this list — is what
-# reproduces an install.
+# Runtime dependencies, floored at the versions uv.lock pins and the test
+# suite runs against. A checkout installs exactly the lock; `uvx` and `pip`
+# ignore the lock, so these floors are what keep such an install from
+# resolving to anything older than what was tested. No upper caps.
 dependencies = [
-    "fastapi>=0.115",
-    "uvicorn[standard]>=0.30",
-    "pydantic>=2.8",
-    "pydantic-settings>=2.4",
-    # Speech-to-text, default backend (ctranslate2: CPU + CUDA only).
-    # Its bundled Silero VAD is also reused by the torch backend.
-    "faster-whisper>=1.0",
+    "fastapi>=0.141",
+    "uvicorn[standard]>=0.52",
+    "pydantic>=2.13",
+    "pydantic-settings>=2.15",
     # llm_openrouter.py and llm_local.py talk to OpenRouter / any
     # OpenAI-compatible local server through the OpenAI SDK.
-    "openai>=1.90",
+    "openai>=2.53",
     "numpy>=1.26",
-    "rapidfuzz>=3.9",
-    "httpx>=0.27",
+    "rapidfuzz>=3.14",
+    "httpx>=0.28",
     # streamer/chat/transport.py (Twitch IRC) and streamer/ingest (the WS
     # client) are product surfaces, so this cannot live in the dev group —
     # it would only be installed transitively there, which is a latent break.
-    "websockets>=12.0",
-    "anthropic>=1.1",
+    "websockets>=16.1",
+    "anthropic>=2.8",
+    # The per-user data folder (.env, databases) outside a checkout.
+    "platformdirs>=4.11",
 ]
 
 # GPU speech-to-text backend (STT_BACKEND=torch), needed for Intel XPU and
@@ -42,6 +45,16 @@ dependencies = [
 # detection (`--torch-backend=auto`) to pick the right wheel index — a lock
 # file cannot encode "whatever accelerator this machine has".
 [project.optional-dependencies]
+# Speech-to-text on this machine. Not needed when the extension transcribes
+# in the browser and sends text (STT_BACKEND=none, the default without it):
+# ctranslate2, onnxruntime and av are a large download for nothing then.
+#   uvx --from 'doxa-backend[stt] @ git+https://…#subdirectory=backend' doxa
+# A checkout gets it anyway through the "speech" dependency group below.
+stt = [
+    # faster-whisper (ctranslate2: CPU + CUDA). Its bundled Silero VAD is
+    # also what the torch and Parakeet engines and VAD segmentation use.
+    "faster-whisper>=1.2",
+]
 #
 # Upper bounds, unlike the base list: install_stt_gpu.sh installs this extra
 # OUTSIDE the lock (uv pip, accelerator index), so the lock cannot pin it and
@@ -49,6 +62,8 @@ dependencies = [
 # on the one code path (app/stt_torch.py) that tracks their generate()
 # internals. Bump deliberately after validating on real hardware.
 gpu = [
+    # The torch and Parakeet engines reuse faster-whisper's Silero VAD.
+    "faster-whisper>=1.2",
     "torch>=2.13,<2.14",
     "transformers>=5.15,<6",
     "accelerate>=1.0",
@@ -69,6 +84,8 @@ device = [
 ]
 
 [project.scripts]
+doxa = "app.cli:main"
+doxa-streamer = "app.cli:streamer_main"
 fact-checker-ingest = "streamer.ingest.cli:main"
 
 [dependency-groups]
@@ -76,6 +93,11 @@ dev = [
     "pytest>=8.2",
     "pytest-asyncio>=0.23",
     "black>=24.4",
+]
+# The same as the `stt` extra, as a default group: a checkout's plain
+# `uv sync` keeps installing the speech engine, as it always has.
+speech = [
+    "faster-whisper>=1.2",
 ]
 
 [tool.pytest.ini_options]
@@ -90,9 +112,9 @@ markers = [
 ]
 
 [tool.uv]
-# Keep the default group installed by `uv sync` so contributors get pytest
-# without extra flags.
-default-groups = ["dev"]
+# Installed by `uv sync` without flags: pytest for contributors, and the
+# speech engine (see the `speech` group).
+default-groups = ["dev", "speech"]
 
 [build-system]
 requires = ["hatchling"]

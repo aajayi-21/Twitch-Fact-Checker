@@ -49,7 +49,7 @@ Fixes with one obvious answer were not asked about and are planned directly.
 | 3 | Lifecycle and small fixes (extension) ✅ | 1–2 days | — |
 | 4 | Streamer bot safety fix ✅ | half a day | — |
 | 5 | Provider live runs: DeepSeek, OpenAI, Gemini ◐ | 1 day | 0, 2; **your OpenAI and Gemini keys** |
-| 6 | Backend one-command install | 2 days | 1 |
+| 6 | Backend one-command install ✅ | 2 days | 1 |
 | 7 | Naming, docs, Edge | 1 day | 2, 3 |
 | 8 | Real-stream validation week | 1 week (calendar) | 1–7 |
 | 9 | Owner steps and submission | yours | 8; **licence** |
@@ -410,6 +410,34 @@ name, already measured at the gate) and record why here.
 ---
 
 ## 9. Phase 6 — Backend one-command install
+
+**Built 2026-11-16** on branch `feat/one-command-install`. Differences from the plan
+below:
+
+- **The package is `doxa-backend`, the commands are `doxa` and `doxa-streamer`.** A
+  distribution named `doxa` could collide with someone else's on PyPI, and `uvx doxa`
+  without `--from` would fetch it. Both commands refuse a non-loopback `--host`.
+- **The speech engine is declared twice:** as the `stt` extra (for uvx and pip), and as
+  a default dependency group, so a checkout's plain `uv sync` still installs it and
+  CI, `run.sh` and `install_stt_gpu.sh` are unchanged. The `gpu` extra includes it
+  too, since the torch and Parakeet engines use its Silero VAD.
+- **Data folder:** `backend/` in a checkout (unchanged), else the per-user folder
+  from `platformdirs`; `DOXA_DATA_DIR` overrides both. The streamer database follows.
+- **Floors** are the versions in `uv.lock` (fastapi ≥ 0.141, anthropic ≥ 2.8, …). The
+  lock itself did not change apart from the project's name.
+- **A flaky test fixed on the way:** `test_origins.py::…::test_the_extension_gets_a_session`
+  left its session running, and the test client's cancellation sometimes escaped as a
+  `CancelledError` (about 1 in 10 under load, with or without the session-end shield).
+  It now stops the session like every other test; 80 runs clean.
+- **Verified** by installing from a local build with uvx into an empty cache and a
+  scratch user folder: 36 packages and no speech engine; the extension's origin
+  accepted; a transcript session returned FALSE with 4 sources for the Eiffel Tower
+  claim (one check on the Anthropic sign-in); the settings file landed in the data
+  folder (mode 0600) and nothing in uv's cache; after deleting the whole cache and
+  reinstalling, the settings and history were still there. With `[stt]`: 49 packages,
+  faster-whisper detected, and it became the default engine. Not tried: the GitHub URL
+  itself (it serves this branch only once merged) and a container.
+
 
 The target is a stranger with `uv` installed running the companion with one command and
 no clone:
