@@ -17,8 +17,6 @@ fi
 echo "Syncing Python environment with uv…"
 uv sync --inexact
 
-echo "Starting Live Stream Fact-Checker STREAMER backend on http://127.0.0.1:8711 …"
 echo "Control panel: http://127.0.0.1:8711/control"
 echo "OBS overlay:   http://127.0.0.1:8711/overlay"
-exec uv run --no-sync uvicorn streamer.main:app \
-    --host 127.0.0.1 --port 8711 --no-access-log
+exec uv run --no-sync doxa-streamer "$@"

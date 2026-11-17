@@ -631,14 +631,22 @@ const dataSettingsChecks = async ({app, page, screenshot}) => {
     "a daily sweep is scheduled to apply it",
     (await app.eval(`chrome.alarms.get("ledger-retention").then((alarm) => alarm?.periodInMinutes ?? null)`)) === 1440
   );
-  const removed = await app.eval(
-    `import("../ledger/ledger.mjs").then((ledger) => ledger.deleteOlderThan(new Date(Date.now() - 365 * 86400000).toISOString()))`
-  );
+  // Changing the setting runs the clean-up at once (the service worker), not
+  // only at the next daily alarm.
   let ledger = await ledgerSnapshot(app);
+  for (let attempt = 0; attempt < 20 && ledger.sessions.some((session) => session.id === "s-old"); attempt += 1) {
+    await pause(250);
+    ledger = await ledgerSnapshot(app);
+  }
   check(
-    "the sweep removes sessions older than that, with their results",
-    removed === 1 && !ledger.sessions.some((session) => session.id === "s-old") && !ledger.verdicts.some((verdict) => verdict.session_id === "s-old"),
-    `removed ${removed}`
+    "choosing a period removes older sessions straight away, with their results",
+    !ledger.sessions.some((session) => session.id === "s-old") && !ledger.verdicts.some((verdict) => verdict.session_id === "s-old"),
+    JSON.stringify(ledger.sessions.map((session) => session.id))
+  );
+  check(
+    "…and keeps the newer ones",
+    ledger.sessions.some((session) => session.id !== "s-old"),
+    JSON.stringify(ledger.sessions.map((session) => session.id))
   );
   await app.click("Import past results from the backend");
   await app.waitForText("Imported 2 sessions with 3 results.");
@@ -778,7 +786,7 @@ const main = async () => {
     console.log("\nWelcome: backend");
     if (usingFake) {
       await app.waitForText("Not running");
-      check("says the backend is not running, with how to start it", (await app.text()).includes("./backend/run.sh"));
+      check("says the backend is not running, with how to start it", (await app.text()).includes("uvx --from"));
       check("Continue is blocked until the backend is found", (await app.isDisabled("Continue")) === true);
       await screenshot(page, "welcome-backend-down");
       await fake.start();

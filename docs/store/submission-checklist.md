@@ -10,7 +10,7 @@ is in [`listing.md`](listing.md).
 
 ## Ready in the repository
 
-- [x] Store package: `python scripts/build_extension.py` → `dist/live-stream-fact-checker-chrome-<version>.zip`
+- [x] Store package: `python scripts/build_extension.py` → `dist/doxa-chrome-<version>.zip`
       (8.6 MB). The build fails on anything a store would reject that it can detect:
       description length, an unlisted permission, a missing file, remote or inline code.
 - [x] The package was installed from `dist/chrome` into a clean Chrome profile and run

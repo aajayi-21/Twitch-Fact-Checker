@@ -61,8 +61,8 @@ const HowItWorksStep = ({onNext, alreadyAgreed}) => html`
         browser, or by the backend program if you choose to run one.
       </li>
       <li>
-        <strong>The words go to the AI provider whose key you add; the audio does not.</strong>
-        The text of what is said is sent in short batches so the provider can pick out factual
+        <strong>The words go to the AI provider whose key you add; the audio does not.</strong> The
+        text of what is said is sent in short batches so the provider can pick out factual
         claims, and each claim is sent again to be checked against the web. You pay that
         provider directly for what you use.
       </li>
@@ -144,7 +144,7 @@ const BrowserProviderStep = ({onNext, onBack}) => {
   return html`
     <${Card} title="Add an API key">
       <p class="lede">
-        The fact-checker needs an AI provider to find claims and check them against the web. You
+        Doxa needs an AI provider to find claims and check them against the web. You
         pay the provider directly; a typical check costs about a cent.
       </p>
       ${engine.plan.ready && !replacing
@@ -251,13 +251,19 @@ const BackendStep = ({onNext, onBack}) => {
           <//>`
         : html`
             <ol class="steps-list">
-              <li>Open a terminal in the project folder.</li>
-              <li>Run <code>./backend/run.sh</code></li>
+              <li>
+                Install <a href="https://docs.astral.sh/uv/" target="_blank" rel="noopener noreferrer">uv</a> if
+                you do not have it, then open a terminal.
+              </li>
+              <li>
+                Run <code>uvx --from 'git+https://github.com/aajayi-21/Twitch-Fact-Checker#subdirectory=backend' doxa</code> (or <code>./backend/run.sh</code> in a copy of the
+                project).
+              </li>
               <li>Leave it running. This page notices by itself.</li>
             </ol>
             <p class="field-help">
-              Looking for it at <code>${settings?.backendUrl}</code>. The first start downloads a
-              speech model (about 170 MB), so it can take a minute.
+              Looking for it at <code>${settings?.backendUrl}</code>. It keeps its settings and
+              history in your user folder, and it prints where when it starts.
             </p>
           `}
       <div class="form-actions">
@@ -280,7 +286,7 @@ const ProviderStep = ({onNext, onBack}) => {
   return html`
     <${Card} title="Add an API key">
       <p class="lede">
-        The fact-checker needs an AI provider to find claims and check them against the web.
+        Doxa needs an AI provider to find claims and check them against the web.
         A typical check costs about a cent.
       </p>
       ${setup?.configured && !replacing

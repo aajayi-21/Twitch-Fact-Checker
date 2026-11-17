@@ -276,10 +276,7 @@ async def set_mode(body: ModeRequest, request: Request) -> dict[str, Any]:
     bot = _bot_of(request)
     if bot is None:
         raise HTTPException(status_code=409, detail="chat bot is not configured")
-    bot.policy = bot._policy_with(mode=body.mode)
-    await bot._db.upsert_chat_channel(
-        platform=bot.platform, channel=bot.channel, mode=body.mode
-    )
+    await bot.set_mode(body.mode, cleared_reason="cleared_by_panel_off")
     return _bot_status(request)
 
 
@@ -294,15 +291,14 @@ async def set_mute(body: MuteRequest, request: Request) -> dict[str, Any]:
     if bot is None:
         raise HTTPException(status_code=409, detail="chat bot is not configured")
     if not body.muted:
-        bot.muted_until = None
-        await bot._db.upsert_chat_channel(
-            platform=bot.platform, channel=bot.channel, muted_until=None
-        )
+        await bot.unmute()
         return _bot_status(request)
     duration = parse_mute_duration((body.duration,) if body.duration else ())
     if duration is None:
         raise HTTPException(status_code=400, detail="bad duration (5m..4h or rest)")
-    bot.muted_until = bot._now() + duration
+    # Persisted like !fc mute: the panel's MUTE is the kill switch, and a
+    # restart must not quietly undo it.
+    await bot.mute(duration, cleared_reason="cleared_by_panel_mute")
     return _bot_status(request)
 
 
@@ -335,8 +331,13 @@ async def approve_queued(
     bot = _bot_of(request)
     if bot is None:
         raise HTTPException(status_code=409, detail="chat bot is not configured")
-    posted = await bot.approve(post_id, approved_by=body.approved_by)
-    if not posted:
+    result = await bot.approve(post_id, approved_by=body.approved_by)
+    if result.status == "refused":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Not posted: the channel no longer allows it ({result.reason}).",
+        )
+    if not result.approved:
         raise HTTPException(status_code=404, detail="unknown or expired queue item")
     return _bot_status(request)
 

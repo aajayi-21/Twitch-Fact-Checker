@@ -881,3 +881,39 @@ describe("billed failures and missing models", () => {
     }
   });
 });
+
+describe("OpenRouter model check", () => {
+  const endpoints = (params) => ({data: {endpoints: params.map((list) => ({supported_parameters: list}))}});
+
+  it("finds a model and whether any endpoint offers strict JSON", async () => {
+    const {fetchImpl, calls} = fakeFetch(endpoints([["temperature"], ["structured_outputs", "response_format"]]));
+    assert.deepEqual(await openrouter.checkModel("deepseek/deepseek-v4.1-flash-1017", {fetchImpl}), {
+      exists: true,
+      strictJson: true,
+    });
+    assert.equal(calls[0].url, "https://openrouter.ai/api/v1/models/deepseek/deepseek-v4.1-flash-1017/endpoints");
+    assert.equal(calls[0].method, "GET");
+    assert.deepEqual(calls[0].headers, {}, "no key is sent");
+  });
+
+  it("reports a model with no strict JSON endpoint, and one that does not exist", async () => {
+    const noStrict = fakeFetch(endpoints([["temperature"], ["tools"]]));
+    assert.deepEqual(await openrouter.checkModel("some/model", {fetchImpl: noStrict.fetchImpl}), {
+      exists: true,
+      strictJson: false,
+    });
+    const missing = fakeFetch(errorResponse(404, {error: {message: "Not Found", code: 404}}));
+    assert.deepEqual(await openrouter.checkModel("some/typo", {fetchImpl: missing.fetchImpl}), {
+      exists: false,
+      strictJson: false,
+    });
+  });
+
+  it("lets other failures through, so the caller can save unchecked", async () => {
+    const down = fakeFetch(errorResponse(503, {error: {message: "busy"}}));
+    await assert.rejects(
+      openrouter.checkModel("some/model", {fetchImpl: down.fetchImpl}),
+      (error) => error.kind === ERROR_KIND.SERVER
+    );
+  });
+});

@@ -5,6 +5,7 @@ machinery, no sockets, no sleeps (engagement windows run at 0 s). The e2e
 wiring through a real app comes with the streamer app phase.
 """
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -268,9 +269,9 @@ class TestReviewMode:
         await bot.handle_verdict_event(make_event(make_verdict()))
         post_id = next(iter(bot.review_queue))
 
-        approved = await bot.approve(post_id, approved_by=BROADCASTER_ID)
+        result = await bot.approve(post_id, approved_by=BROADCASTER_ID)
 
-        assert approved is True
+        assert result.approved is True
         assert any("FALSE" in m for m in bot.transport.sent)
         rows = await db.fetch_chat_posts("twitch", CHANNEL, status="posted")
         assert rows[0]["approved_by_user_id"] == BROADCASTER_ID
@@ -282,9 +283,9 @@ class TestReviewMode:
         post_id = next(iter(bot.review_queue))
         clock.advance(300.0)  # past the 180 s TTL
 
-        approved = await bot.approve(post_id, approved_by=BROADCASTER_ID)
+        result = await bot.approve(post_id, approved_by=BROADCASTER_ID)
 
-        assert approved is False
+        assert result.status == "expired"
         assert bot.transport.sent == []
         rows = await db.fetch_chat_posts("twitch", CHANNEL, status="expired")
         assert len(rows) == 1
@@ -313,6 +314,127 @@ class TestReviewMode:
         assert bot.trusted is True
         row = await db.fetch_chat_channel("twitch", CHANNEL)
         assert row["trusted"] == 1
+
+
+async def queue_one(bot) -> str:
+    """Queue one postable verdict for review and return its post id."""
+    bot.policy = bot._policy_with(mode="review")
+    await bot.handle_verdict_event(make_event(make_verdict()))
+    return next(iter(bot.review_queue))
+
+
+class TestApprovalSafety:
+    """A post queued before the channel stopped allowing posts must never
+    reach chat after it. Approval re-runs the consent and operational gates,
+    and turning posting off, muting or disabling empties the queue."""
+
+    async def test_off_empties_the_queue_and_nothing_can_be_approved(
+        self, bot, db
+    ) -> None:
+        post_id = await queue_one(bot)
+        await bot.handle_chat_event(chat_message("!fc off", **MOD))
+
+        result = await bot.approve(post_id, approved_by=BROADCASTER_ID)
+
+        assert result.status == "unknown"
+        assert not any("FALSE" in m for m in bot.transport.sent)
+        skipped = await db.fetch_chat_posts("twitch", CHANNEL, status="skipped")
+        assert [row["reason"] for row in skipped] == ["cleared_by_off"]
+
+    async def test_mute_empties_the_queue(self, bot, db) -> None:
+        post_id = await queue_one(bot)
+        await bot.handle_chat_event(chat_message("!fc mute 30m", **MOD))
+
+        assert (await bot.approve(post_id, approved_by=BROADCASTER_ID)).status == (
+            "unknown"
+        )
+        assert not any("FALSE" in m for m in bot.transport.sent)
+        skipped = await db.fetch_chat_posts("twitch", CHANNEL, status="skipped")
+        assert [row["reason"] for row in skipped] == ["cleared_by_mute"]
+
+    async def test_disable_empties_the_queue(self, bot, db) -> None:
+        await queue_one(bot)
+        await bot.handle_chat_event(chat_message("!fc disable", **BROADCASTER))
+        assert bot.review_queue == {}
+        skipped = await db.fetch_chat_posts("twitch", CHANNEL, status="skipped")
+        assert [row["reason"] for row in skipped] == ["cleared_by_disable"]
+
+    async def test_a_demodded_bot_cannot_post_an_approved_item(self, bot, db) -> None:
+        """Losing mod status leaves the queue in place (it can come back), so
+        the approval itself must refuse."""
+        post_id = await queue_one(bot)
+        bot.transport.is_moderator = False
+
+        result = await bot.approve(post_id, approved_by=BROADCASTER_ID)
+
+        assert result.status == "refused"
+        assert result.reason
+        assert bot.transport.sent == []
+        rows = await db.fetch_chat_posts("twitch", CHANNEL, status="suppressed")
+        assert rows[0]["reason"] == f"{result.reason}_at_approval"
+        assert rows[0]["approved_by_user_id"] is None
+
+    @pytest.mark.parametrize(
+        ("change", "reason"),
+        [
+            ("muted_directly", "muted"),
+            ("latched", "posting_latched"),
+            ("session_ended", None),  # a consent proof: the live session
+            ("ban_notice", "channel_disabled"),
+        ],
+    )
+    async def test_every_gate_is_rechecked_at_approval(
+        self, bot, db, clock, change, reason
+    ) -> None:
+        post_id = await queue_one(bot)
+        if change == "muted_directly":
+            bot.muted_until = clock() + 600.0
+        elif change == "latched":
+            bot.latch.trip(60.0, "slow mode")
+        elif change == "session_ended":
+            for session in bot._registry.all():
+                bot._registry.unregister(session)
+        elif change == "ban_notice":
+            bot.disabled = True
+
+        result = await bot.approve(post_id, approved_by=BROADCASTER_ID)
+
+        assert result.status == "refused"
+        if reason is not None:
+            assert result.reason == reason
+        assert bot.transport.sent == []
+
+    async def test_a_ban_notice_empties_the_queue(self, bot, db) -> None:
+        from streamer.chat.transport import NoticeEvent
+
+        await queue_one(bot)
+        bot.handle_notice(NoticeEvent(msg_id="msg_banned", text="banned"))
+        await asyncio.gather(*bot._background)
+        assert bot.review_queue == {}
+        skipped = await db.fetch_chat_posts("twitch", CHANNEL, status="skipped")
+        assert [row["reason"] for row in skipped] == ["cleared_by_ban"]
+
+    async def test_a_dispute_auto_mute_empties_the_queue(self, bot, db, clock) -> None:
+        queued_id = await queue_one(bot)
+        # A different, posted verdict is the one chat disputes.
+        bot.policy = bot._policy_with(mode="auto")
+        disputed = make_verdict(claim="The Moon is 100,000 km from Earth.")
+        await bot.handle_verdict_event(make_event(disputed))
+        handle = verdict_handle(disputed)
+        for user_id in ("u1", "u2", "u3"):
+            clock.advance(10.0)
+            await bot.handle_chat_event(
+                chat_message(f"!fc dispute {handle}", user_id=user_id)
+            )
+        assert bot.muted_until is not None
+        assert queued_id not in bot.review_queue
+        skipped = await db.fetch_chat_posts("twitch", CHANNEL, status="skipped")
+        assert [row["reason"] for row in skipped] == ["cleared_by_auto_mute"]
+
+    async def test_review_and_on_keep_the_queue(self, bot) -> None:
+        await queue_one(bot)
+        await bot.handle_chat_event(chat_message("!fc review", **MOD))
+        assert len(bot.review_queue) == 1
 
 
 class TestCommands:

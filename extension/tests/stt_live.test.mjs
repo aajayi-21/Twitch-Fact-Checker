@@ -302,6 +302,18 @@ describe("LiveTranscriber", () => {
     assert.deepEqual(await slowWorker.pending, {loadMs: 100});
   });
 
+  it("resetStream starts a new stream on the same model and ignores the old one's last reply", async () => {
+    const {transcriber, transcripts, worker} = await start();
+    pushUtterance(transcriber, 1.5);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(worker.transcribeRequests.length, 1, "one utterance in flight");
+    transcriber.resetStream();
+    assert.equal(transcriber.stats.segmentsClosed, 0, "counts start again");
+    worker.reply("from the old stream");
+    assert.deepEqual(transcripts, [], "its reply is dropped");
+    assert.equal(FakeWorker.instances.at(-1), worker, "the same worker: no reload");
+  });
+
   it("rejects load() when the model cannot be loaded", async () => {
     const transcriber = new LiveTranscriber({onTranscript: () => {}});
     const loading = transcriber.load({repo: "x", device: "webgpu", dtype: "fp32", numThreads: 1});

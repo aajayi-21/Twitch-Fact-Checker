@@ -42,7 +42,12 @@
 import {BrowserPipeline} from "../engine/pipeline/browser_pipeline.mjs";
 import {getProvider} from "../engine/providers/index.mjs";
 import {LiveTranscriber} from "../engine/stt/live_transcriber.mjs";
-import {SPEECH_STATUS, SessionSpeech, isDownloadFailure} from "../engine/stt/session_speech.mjs";
+import {
+  SPEECH_STATUS,
+  SessionSpeech,
+  isDownloadFailure,
+  speechConfigKey,
+} from "../engine/stt/session_speech.mjs";
 import {GPU_LOCK_NAME} from "../engine/stt/speech_store.mjs";
 import {priceCall} from "../ledger/pricing.mjs";
 import {AdPauseGate, buildBoundarySilenceFrames} from "../shared/ad_pause.js";
@@ -63,6 +68,13 @@ let capture = null;
 let socket = null;
 /** @type {SessionSpeech|null} in-browser speech, when the viewer chose it */
 let speech = null;
+/**
+ * A loaded speech model kept between sessions, so the next one does not
+ * rebuild it (docs/live-settings-and-model-lifecycle.md §1). The service
+ * worker keeps this document open for a warm period while one is parked.
+ * @type {SessionSpeech|null}
+ */
+let parkedSpeech = null;
 /** @type {BrowserPipeline|null} in-browser claim checking (no backend) */
 let pipeline = null;
 let sessionSettings = null;
@@ -103,8 +115,10 @@ const writeSession = async (patch) => {
 
 const sendCaptureEnded = async (reason) => {
   try {
+    // keepWarm: a model is parked here, so the service worker keeps this
+    // document open for the warm period instead of closing it now.
     await chrome.runtime.sendMessage(
-      makeMsg(TARGET.BACKGROUND, MSG.CAPTURE_ENDED, {reason})
+      makeMsg(TARGET.BACKGROUND, MSG.CAPTURE_ENDED, {reason, keepWarm: parkedSpeech !== null})
     );
   } catch (error) {
     console.warn("[fact-checker] CAPTURE_ENDED delivery failed:", error);
@@ -128,6 +142,34 @@ const forwardBackendEvent = (frame) => {
 };
 
 /**
+ * Keep a session's loaded model for the next session, or release it if it
+ * cannot be reused (it failed, or never finished loading). Replaces any
+ * model parked before.
+ *
+ * @param {SessionSpeech|null} sessionSpeech
+ */
+const parkSpeech = (sessionSpeech) => {
+  if (!sessionSpeech) {
+    return;
+  }
+  if (!sessionSpeech.reusable) {
+    sessionSpeech.dispose();
+    return;
+  }
+  if (parkedSpeech && parkedSpeech !== sessionSpeech) {
+    parkedSpeech.dispose();
+  }
+  sessionSpeech.park();
+  parkedSpeech = sessionSpeech;
+};
+
+/** Release a parked model now (a different model is about to load). */
+const releaseParkedSpeech = () => {
+  parkedSpeech?.dispose();
+  parkedSpeech = null;
+};
+
+/**
  * Detach callbacks and release capture + socket. Callbacks are nulled FIRST
  * so teardown-triggered close events cannot re-enter the state machine.
  */
@@ -136,7 +178,7 @@ const teardown = async () => {
   const activeCapture = capture;
   socket = null;
   capture = null;
-  speech?.dispose();
+  parkSpeech(speech);
   speech = null;
   pipeline?.dispose();
   pipeline = null;
@@ -275,9 +317,7 @@ const reportGpuAttempt = async (attempt) => {
 };
 
 const startBrowserSpeech = (config) => {
-  speech = new SessionSpeech({
-    config,
-    createTranscriber: (callbacks, options) => new LiveTranscriber(callbacks, options),
+  const callbacks = {
     onTranscript: handleLocalTranscript,
     onStatus: handleSpeechStatus,
     onGpuAttempt: reportGpuAttempt,
@@ -298,6 +338,21 @@ const startBrowserSpeech = (config) => {
         console.error("[fact-checker] speech-failure handling failed:", error);
       });
     },
+  };
+  if (parkedSpeech?.reusable && parkedSpeech.configKey === speechConfigKey(config)) {
+    // The model the last session loaded: no load, ready at once.
+    speech = parkedSpeech;
+    parkedSpeech = null;
+    console.info("[fact-checker] reusing the loaded speech model");
+    speech.adopt(callbacks);
+    return;
+  }
+  releaseParkedSpeech(); // a different model (or none): free its memory first
+  speech = new SessionSpeech({
+    config,
+    createTranscriber: (transcriberCallbacks, options) =>
+      new LiveTranscriber(transcriberCallbacks, options),
+    ...callbacks,
   });
   // Not awaited: audio is already flowing, and frames wait in the worker's
   // queue while the model loads.
@@ -465,12 +520,14 @@ const handleEngineFrame = (frame) => {
  * the viewer's provider. `engine` comes from the service worker, which read
  * the keys from storage (this document cannot).
  */
+/** A step's plan from the service worker, as the pipeline wants it. */
+const stage = ({providerId, model, apiKey}) => ({
+  provider: getProvider(providerId),
+  model,
+  apiKey,
+});
+
 const startBrowserEngine = (engine) => {
-  const stage = ({providerId, model, apiKey}) => ({
-    provider: getProvider(providerId),
-    model,
-    apiKey,
-  });
   pipeline = new BrowserPipeline({
     gate: stage(engine.gate),
     verify: stage(engine.verify),
@@ -634,7 +691,7 @@ const handleStop = async ({reason = "user_stop"} = {}) => {
     // The viewer took the key away: not one more call is made with it. The
     // pipeline goes first, so nothing still being transcribed can reach it.
     activePipeline?.dispose();
-    activeSpeech?.dispose();
+    parkSpeech(activeSpeech);
   } else if (activeSpeech) {
     // The last utterance is still in the model: let it finish (bounded) so
     // its text reaches the backend before the final gate pass. `socket` is
@@ -662,7 +719,7 @@ const handleStop = async ({reason = "user_stop"} = {}) => {
         `[fact-checker] speech fell behind: dropped ${segmentsDropped} utterance(s), ${droppedSeconds.toFixed(1)} s`
       );
     }
-    activeSpeech.dispose();
+    parkSpeech(activeSpeech);
   }
   if (activePipeline && !keyRemoved) {
     // Look at the last words, finish the checks already under way (bounded),
@@ -715,7 +772,12 @@ const handleStop = async ({reason = "user_stop"} = {}) => {
  * handshakes with the current ones. (backendUrl changes take effect on the
  * next start — documented behavior.)
  */
-const handleConfigChange = ({sensitivity, topics} = {}) => {
+const handleConfigChange = ({sensitivity, topics, sendTranscripts} = {}) => {
+  if (typeof sendTranscripts === "boolean" && sessionSettings) {
+    // The live caption: transcripts this document produces are forwarded
+    // to the overlay from the next one on (handleLocalTranscript).
+    sessionSettings = {...sessionSettings, sendTranscripts};
+  }
   if (pipeline) {
     pipeline.applyConfig({sensitivity, topics});
     return;
@@ -732,6 +794,10 @@ const handleConfigChange = ({sensitivity, topics} = {}) => {
   if (Array.isArray(topics)) {
     sessionSettings = {...sessionSettings, topics: [...topics]};
     configFrame.enabled_topics = [...topics];
+  }
+  if (typeof sendTranscripts === "boolean") {
+    // The backend forwards what it transcribes only when asked.
+    configFrame.send_transcripts = sendTranscripts;
   }
   if (Object.keys(configFrame).length === 0) {
     return;
@@ -782,6 +848,15 @@ chrome.runtime.onMessage.addListener((message, sender) => {
       break;
     case MSG.OFFSCREEN_AD_STATE:
       handleAdState(message.payload ?? {});
+      break;
+    case MSG.OFFSCREEN_ENGINE:
+      // A step's provider, model or key changed in the app.
+      if (pipeline && message.payload?.gate && message.payload?.verify) {
+        pipeline.setStages({
+          gate: stage(message.payload.gate),
+          verify: stage(message.payload.verify),
+        });
+      }
       break;
     case MSG.OFFSCREEN_BUDGETS:
       // Only the browser engine has limits to apply; a backend session ignores this.

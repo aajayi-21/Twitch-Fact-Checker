@@ -839,6 +839,7 @@ class SessionPipeline:
             self.apply_live_config(
                 sensitivity=config.sensitivity,
                 enabled_topics=config.enabled_topics,
+                send_transcripts=config.send_transcripts,
             )
         elif frame_type == "frame":
             self._handle_video_frame(data)

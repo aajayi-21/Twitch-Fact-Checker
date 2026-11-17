@@ -4,7 +4,7 @@
 > the material for when the owner decides to go ahead.
 
 Everything the Developer Dashboard asks for, ready to paste. Where a field has a length
-limit, the text here is inside it. The upload itself is `dist/live-stream-fact-checker-chrome-<version>.zip`
+limit, the text here is inside it. The upload itself is `dist/doxa-chrome-<version>.zip`
 from `python scripts/build_extension.py`; the steps are in
 [`submission-checklist.md`](submission-checklist.md).
 
@@ -12,7 +12,7 @@ from `python scripts/build_extension.py`; the steps are in
 
 **Name** (75 max) — from the manifest:
 
-> Live Stream Fact-Checker
+> Doxa: Live Stream Fact-Checker
 
 **Summary** (132 max) — from the manifest `description`:
 
@@ -24,10 +24,10 @@ from `python scripts/build_extension.py`; the steps are in
 
 **Detailed description:**
 
-> Watching a stream where someone states "facts" at speed? Live Stream Fact-Checker
-> listens along with you and, when a checkable claim is made, puts a small card over the
-> player: TRUE, FALSE, MISLEADING or UNVERIFIED, with a two-sentence explanation and
-> links to the sources it used.
+> Watching a stream where someone states "facts" at speed? Doxa listens along with you
+> and, when a checkable claim is made, puts a small card over the player: TRUE, FALSE,
+> MISLEADING or UNVERIFIED, with a two-sentence explanation and links to the sources it
+> used.
 >
 > It is a referee, not an oracle. Every verdict shows its sources so you can check it
 > yourself. When the evidence is thin, it says UNVERIFIED rather than guess. Opinions,
@@ -38,9 +38,9 @@ from `python scripts/build_extension.py`; the steps are in
 >   between Start and Stop.
 > • The audio is turned into text on your own computer, by a speech model that runs
 >   inside the browser. The audio never leaves your machine.
-> • The text is sent to the AI provider whose API key you add — OpenRouter, Anthropic,
->   OpenAI or Google Gemini — which picks out factual claims and checks each one against
->   the web.
+> • The text is sent to the AI provider whose API key you add — OpenRouter or Anthropic,
+>   with OpenAI and Google Gemini offered as a preview — which picks out factual claims
+>   and checks each one against the web.
 > • Verdicts appear over the player and are saved to a history only you can see.
 >
 > WHAT YOU NEED
@@ -99,7 +99,7 @@ package; `scripts/build_extension.py` fails if the manifest and its list ever di
 | `storage` | Saves the user's settings, their API key(s), and the state of the current session. |
 | `unlimitedStorage` | The user's history of results is kept locally in IndexedDB, and the speech model (63–455 MB) is cached locally so it is downloaded only once. Both would otherwise be evicted under the default quota. |
 | `activeTab` | When the user clicks the toolbar button on a stream tab, reads that tab's address and title to label the session in the user's local history. |
-| `alarms` | Runs a once-a-day local clean-up that deletes history older than the period the user chose. |
+| `alarms` | Runs a once-a-day local clean-up that deletes history older than the period the user chose, and frees the speech model from memory ten minutes after the last session ends (a service worker's own timers do not survive it being suspended). |
 | `scripting` | When the user presses Start on a stream tab that was already open before the extension was installed or updated, adds the extension's own verdict overlay to that tab (the same files the manifest's content scripts load). It runs only on the supported stream sites, only on the tab the user started, and injects nothing but the extension's packaged files. |
 | Content scripts on `twitch.tv`, `youtube.com`, `kick.com`, `rumble.com` | Draws the verdict overlay inside the video player on the four supported sites, pauses checking during ad breaks, and reads the channel shown with the player to label the user's local history. No other site is touched. |
 | `https://generativelanguage.googleapis.com/*` (optional) | Requested only if the user adds a Google Gemini API key. Needed to send claim text to the Gemini API, which does not accept cross-origin requests otherwise. |

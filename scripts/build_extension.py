@@ -7,7 +7,7 @@ local backend's addresses granted up front. A store package needs something
 cleaner, so this script derives the store manifest from it, copies the files
 a release needs, checks the result, and zips it.
 
-    dist/chrome/     + dist/live-stream-fact-checker-chrome-<version>.zip
+    dist/chrome/     + dist/doxa-chrome-<version>.zip
 
 What changes in the store manifest:
 
@@ -51,7 +51,7 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parent.parent
 EXTENSION_DIR = REPO_ROOT / "extension"
 DEFAULT_OUT_DIR = REPO_ROOT / "dist"
-PACKAGE_STEM = "live-stream-fact-checker"
+PACKAGE_STEM = "doxa"
 #: The package directory under ``dist/`` and the browser in the zip's name.
 #: One package serves every Chromium browser.
 PACKAGE_TARGET = "chrome"

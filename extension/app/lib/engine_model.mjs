@@ -108,6 +108,40 @@ export const describeProviderError = (error, providerLabel) => {
 };
 
 /**
+ * What to do with a model name typed for a stage, given the provider's
+ * answer about it (providers/openrouter.mjs checkModel).
+ *
+ * @param {string} model
+ * @param {{exists: boolean, strictJson: boolean}|null} check - null: the
+ *   provider could not be asked
+ * @returns {{save: boolean, tone: "warn"|"error"|null, message: string|null}}
+ */
+export const judgeModelCheck = (model, check) => {
+  if (check === null) {
+    return {
+      save: true,
+      tone: "warn",
+      message: `Could not check "${model}" with OpenRouter just now, so it was saved unchecked.`,
+    };
+  }
+  if (!check.exists) {
+    return {
+      save: false,
+      tone: "error",
+      message: `OpenRouter has no model called "${model}". Copy the name from openrouter.ai/models, or leave the field empty for the default. Nothing was changed.`,
+    };
+  }
+  if (!check.strictJson) {
+    return {
+      save: true,
+      tone: "warn",
+      message: `Saved, but "${model}" does not offer strict JSON output on OpenRouter, which this app needs: checks with it will fail. Choose another model.`,
+    };
+  }
+  return {save: true, tone: null, message: null};
+};
+
+/**
  * The models in a plan whose calls this app cannot price, and which the
  * monthly spending limit therefore cannot count.
  *

@@ -42,6 +42,21 @@ export const LOAD_STALL_TIMEOUT_MS = 90_000;
  * @property {boolean} forced - cut by the length cap rather than a pause
  */
 
+/** @returns {object} the counters one stream accumulates */
+const freshStats = () => ({
+  framesReceived: 0,
+  samplesReceived: 0,
+  segmentsClosed: 0,
+  segmentsTranscribed: 0,
+  segmentsDropped: 0,
+  droppedSeconds: 0,
+  utteranceErrors: 0,
+  inferenceMs: 0,
+  transcribedSeconds: 0,
+  maxLagMs: 0,
+  maxBacklogS: 0,
+});
+
 export class LiveTranscriber {
   /**
    * @param {object} callbacks
@@ -63,6 +78,7 @@ export class LiveTranscriber {
     this.onFatal = onFatal ?? (() => {});
     this.maxBacklogS = maxBacklogS;
     this.loadStallMs = loadStallMs;
+    this.segmenterOptions = segmenter;
     this.segmenter = new StreamSegmenter(segmenter);
     this.worker = null;
     /** Utterances waiting for the model, oldest first. */
@@ -71,19 +87,22 @@ export class LiveTranscriber {
     this.inFlight = null;
     this.nextId = 1;
     this.idleResolvers = [];
-    this.stats = {
-      framesReceived: 0,
-      samplesReceived: 0,
-      segmentsClosed: 0,
-      segmentsTranscribed: 0,
-      segmentsDropped: 0,
-      droppedSeconds: 0,
-      utteranceErrors: 0,
-      inferenceMs: 0,
-      transcribedSeconds: 0,
-      maxLagMs: 0,
-      maxBacklogS: 0,
-    };
+    this.stats = freshStats();
+  }
+
+  /**
+   * Begin a new stream on the model already loaded: another session is
+   * reusing it. Segmentation and the stream clock start again, the queue is
+   * emptied and the counts zeroed. A transcript the worker is still
+   * producing for the old stream is ignored when it arrives (its id no
+   * longer matches).
+   */
+  resetStream() {
+    this.segmenter = new StreamSegmenter(this.segmenterOptions);
+    this.waiting = [];
+    this.inFlight = null;
+    this.idleResolvers.splice(0).forEach((resolve) => resolve());
+    this.stats = freshStats();
   }
 
   /**

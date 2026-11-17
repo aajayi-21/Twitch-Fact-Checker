@@ -166,8 +166,8 @@ export class BackendSocket {
 
   /**
    * Forward a mid-session config change ({"type":"config", ...}). Updated
-   * values (sensitivity, enabled_topics) are also folded into the hello so
-   * reconnects carry them.
+   * values (sensitivity, enabled_topics, send_transcripts) are also folded
+   * into the hello so reconnects carry them.
    *
    * @param {object} config - e.g. {sensitivity: "high",
    *   enabled_topics: ["politics", "other"]}
@@ -179,6 +179,9 @@ export class BackendSocket {
     }
     if (config.enabled_topics !== undefined) {
       this.hello.enabled_topics = config.enabled_topics;
+    }
+    if (config.send_transcripts !== undefined) {
+      this.hello.send_transcripts = config.send_transcripts;
     }
     if (this.socket?.readyState !== WebSocket.OPEN) {
       return false;

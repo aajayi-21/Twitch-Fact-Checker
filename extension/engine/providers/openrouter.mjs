@@ -120,6 +120,41 @@ const createCompletion = (apiKey, body, options) =>
   });
 
 /**
+ * Whether OpenRouter can run `model` the way this engine calls it: does the
+ * model exist, and does any of its endpoints offer strict JSON output (the
+ * engine asks for it with `require_parameters`, so without one every call
+ * fails). Public and free; no key needed.
+ *
+ * @param {string} model - e.g. "deepseek/deepseek-v4.1-flash-1017"
+ * @param {object} [options]
+ * @returns {Promise<{exists: boolean, strictJson: boolean}>}
+ * @throws {ProviderError} when OpenRouter cannot be reached or answers oddly
+ */
+export const checkModel = async (model, options = {}) => {
+  const path = String(model).split("/").map(encodeURIComponent).join("/");
+  try {
+    const body = await requestJson(`${API_ORIGIN}/api/v1/models/${path}/endpoints`, {
+      method: "GET",
+      headers: {},
+      signal: options.signal,
+      fetchImpl: options.fetchImpl,
+    });
+    const endpoints = body?.data?.endpoints ?? [];
+    return {
+      exists: true,
+      strictJson: endpoints.some((endpoint) =>
+        (endpoint.supported_parameters ?? []).includes("structured_outputs")
+      ),
+    };
+  } catch (error) {
+    if (error instanceof ProviderError && error.kind === ERROR_KIND.MODEL_UNAVAILABLE) {
+      return {exists: false, strictJson: false};
+    }
+    throw error;
+  }
+};
+
+/**
  * Check a key with a free call.
  *
  * @param {string} apiKey

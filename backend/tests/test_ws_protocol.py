@@ -678,6 +678,28 @@ class TestAudioToVerdict:
             {"url": "https://www.toureiffel.paris/x", "title": "Key figures"}
         ]
 
+    def test_the_live_caption_can_be_switched_on_mid_session(
+        self,
+        client,
+        fake_llm_client: FakeLLMClient,
+        fake_transcriber: FakeTranscriber,
+    ) -> None:
+        """The extension's "show what is heard" toggle sends send_transcripts
+        in a config frame; transcripts must start without a restart."""
+        fake_transcriber.segments_script.append([SEVEN_WORD_SEGMENT])
+        fake_llm_client.gate_results.append(make_gate_response([]))
+        with client.websocket_connect("/ws/audio") as session:
+            session.send_json(make_hello(send_transcripts=False))
+            assert session.receive_json()["type"] == "ready"
+            session.send_json({"type": "config", "send_transcripts": True})
+            for _ in range(4):
+                session.send_bytes(pcm_silence(0.25))
+            session.send_json({"type": "stop"})
+            frames, close_code = collect_frames_until_close(session)
+
+        assert close_code == 1000
+        assert "transcript" in {frame["type"] for frame in frames}
+
     def test_hello_can_opt_out_of_transcripts(
         self,
         client,

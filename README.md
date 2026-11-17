@@ -1,58 +1,100 @@
-# Live Stream Fact-Checker
+# Doxa
 
-A Chrome extension (Manifest V3, named **"Live Stream Fact-Checker"**) plus a local
-Python backend that fact-checks a live stream in real time. Supported sites: **Twitch,
-YouTube (watch pages and live), Kick, and Rumble**. The extension captures the tab's
-audio and streams it to a local FastAPI server, which transcribes it (with
-`faster-whisper`, or NVIDIA Parakeet on a GPU), extracts verifiable claims with an
-LLM "claim gate", verifies them with a web-search-grounded LLM call, and pushes
-**TRUE / FALSE / MISLEADING / UNVERIFIED** verdicts (with sources) back to a
-Shadow-DOM overlay rendered over the player.
+**Doxa** fact-checks a live stream while you watch it. It is a Chrome extension
+(Manifest V3; Chrome, Edge and other Chromium browsers) for **Twitch, YouTube (watch
+pages and live), Kick, and Rumble**: it listens to the stream tab, picks out checkable
+claims, checks each one against the web, and shows **TRUE / FALSE / MISLEADING /
+UNVERIFIED** verdicts, with sources, in a Shadow-DOM overlay over the player.
 
-The LLM layer runs on the **Anthropic API** by default (Claude Haiku 5.5, with
-Anthropic's own `web_search` tool for grounding — sign in with `ant auth login`, no key
-needed), or on **OpenRouter** (one key, any model, the `web` search plugin); the claim
-gate can optionally run on a local **Ollama** model. Connect a provider in the
-extension's app, which opens in a new tab when you install it — no file editing
-needed.
+By default everything runs inside the extension ("This browser"): speech is turned
+into text by a model on your own computer, and claims are found and checked by the AI
+provider whose API key you add (OpenRouter or Anthropic; OpenAI and Google Gemini are
+offered as a preview). An optional **local backend** (Python, FastAPI) does the same
+work on your machine with extra features: transcription with `faster-whisper` or
+NVIDIA Parakeet on a GPU, the **Anthropic API** by default (Claude Haiku 5.5 with
+Anthropic's own `web_search` tool — sign in with `ant auth login`, no key needed) or
+**OpenRouter**, an optional local **Ollama** model for claim detection, contradiction
+alerts and a streamer mode. Either way you connect a provider in the extension's app,
+which opens in a new tab when you install it — no file editing needed.
 
 ## Quickstart
 
-1. **Start the backend** (needs Python 3.11+; first run downloads a ~170 MB speech
-   model):
+1. **Load the extension** in Chrome 116+ or another Chromium browser (Edge, Brave).
+   From a copy of the project, first fetch the in-browser speech runtime once:
 
    ```bash
-   ./backend/run.sh
+   python scripts/vendor_stt_runtime.py
    ```
 
-   The server starts key-less in a "needs setup" state — the extension will walk you
-   through adding a key.
-
-2. **Load the extension** in Chrome 116+ or another Chromium browser (Edge, Brave):
-   open `chrome://extensions/`, enable **Developer mode** (top right), click
+   Then open `chrome://extensions/`, enable **Developer mode** (top right), click
    **Load unpacked**, and select `extension/`. Firefox is not supported: it has
    neither `tabCapture` nor offscreen documents.
 
-3. **Connect your AI provider**: the extension opens a welcome tab the first time
-   it is installed and walks you through it. To get back to it later, click the
-   toolbar icon → **Open dashboard** → **AI provider**. Then either:
-   - **Anthropic** (default): paste a key from
-     https://platform.claude.com/settings/keys → **Save and check key**.
-   - **OpenRouter**: paste your key (https://openrouter.ai/keys — hold a few
-     dollars of credit for web search) → **Save and check key**.
+2. **Follow the welcome tab** that opens: agree → **This browser** → paste an API key
+   from OpenRouter (https://openrouter.ai/keys — hold a few dollars of credit for web
+   search) or Anthropic (https://platform.claude.com/settings/keys) → download and test
+   a speech model → run the sample check. No key yet? Skip that step and play the
+   recorded example instead. To get back to it later, click the toolbar icon → **Open
+   dashboard** → **AI provider**.
 
-   Credentials are validated live against the provider; a key is stored only in
-   `backend/.env` on your machine, never in the browser.
+3. **Open a stream** on a supported site, click the toolbar icon, and press **Start**.
 
-   *Already use the [Anthropic CLI](https://platform.claude.com/docs/en/cli-sdks-libraries/cli/quickstart)?*
-   If you have run `ant auth login`, the backend picks that sign-in up by itself when
-   no key is stored — there is nothing to paste. To switch back to it from a stored
-   key, open **AI provider → Advanced → Use the sign-in instead of a key**.
+That's it: nothing else to install. See [Usage](#usage) for details, and
+[Running it with no backend](#running-it-with-no-backend-browser-engine) for what
+this mode does and costs.
 
-That's it — open a stream on a supported site, click the toolbar icon, and press
-**Start**. See [Usage](#usage) for details.
+### Optional: the local backend
+
+The backend is a program you run on the same computer; choose **Local backend** under
+**AI provider → Where it runs** to use it. It adds GPU transcription, the Anthropic
+sign-in, Ollama, contradiction alerts and streamer mode.
+
+Without cloning anything, with [uv](https://docs.astral.sh/uv/) installed:
+
+```bash
+uvx --from 'git+https://github.com/aajayi-21/Twitch-Fact-Checker#subdirectory=backend' doxa
+```
+
+This installs no speech engine, so the extension transcribes in the browser and sends
+the backend text. To transcribe on this computer instead, install the `stt` extra
+(adds about 200 MB; the first start then downloads a ~170 MB speech model):
+
+```bash
+uvx --from 'doxa-backend[stt] @ git+https://github.com/aajayi-21/Twitch-Fact-Checker#subdirectory=backend' doxa
+```
+
+An installed backend keeps its settings and history in your user data folder
+(`~/.local/share/doxa` on Linux, `~/Library/Application Support/doxa` on macOS,
+`%LOCALAPPDATA%\doxa` on Windows; `DOXA_DATA_DIR` overrides it) and prints the path
+when it starts. Add `--refresh` to pick up a newer version. `doxa-streamer` starts the
+streamer backend the same way.
+
+From a copy of the project (needs Python 3.11+; installs the speech engine and keeps
+settings in `backend/.env`):
+
+```bash
+./backend/run.sh
+```
+
+Either way the server starts key-less in a "needs setup" state, and the extension's
+**AI provider** screen walks you through connecting it:
+
+- **Anthropic** (the backend's default): paste a key → **Save and check key**.
+- **OpenRouter**: paste your key → **Save and check key**.
+
+Credentials are validated live against the provider; a backend key is stored only in
+the backend's settings file on your machine, never in the browser.
+
+*Already use the [Anthropic CLI](https://platform.claude.com/docs/en/cli-sdks-libraries/cli/quickstart)?*
+If you have run `ant auth login`, the backend picks that sign-in up by itself when no
+key is stored — there is nothing to paste. To switch back to it from a stored key,
+open **AI provider → Advanced → Use the sign-in instead of a key**.
 
 ## Architecture
+
+The diagram shows the local backend mode. With "This browser", the offscreen document
+also runs the speech model and calls the AI provider itself; see
+[Running it with no backend](#running-it-with-no-backend-browser-engine).
 
 ```
 Chrome (extension)                              Local backend (127.0.0.1:8710)
@@ -376,6 +418,13 @@ send the backend only text:
 With speech in the browser the backend no longer needs its own model. `STT_BACKEND=none`
 in `backend/.env` starts it without one — it comes up in a few seconds and uses far less
 memory, and it then accepts only sessions that send text.
+
+The model is loaded once: after Stop it stays in memory for 10 minutes, so starting
+again (on the same stream or another) is immediate, and it is released after that. A
+different model or device loads at the next Start. Settings changed during a session
+apply to it straight away where they can (sensitivity, topics, the live caption,
+spending limits, the AI provider, model and key); the ones that need a restart say so.
+See [`docs/live-settings-and-model-lifecycle.md`](docs/live-settings-and-model-lifecycle.md).
 
 Detection of music and noise is still basic; see the build guide.
 

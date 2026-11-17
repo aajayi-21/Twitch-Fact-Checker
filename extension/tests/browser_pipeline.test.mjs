@@ -804,6 +804,66 @@ test("pipeline: a model the monthly limit cannot price is pointed out once", asy
   assert.equal(noLimit.of("error").length, 0, "nothing to say without a monthly limit");
 });
 
+test("pipeline: a provider, model or key changed mid-session is used from the next call", async () => {
+  const harness = makePipeline({
+    gateScript: [{claims: [EIFFEL], usage: USAGE}],
+    verifyScript: [verdictFor()],
+  });
+  await hear(harness);
+  assert.equal(harness.calls.gate[0].model, "gate-model");
+
+  const replacementCalls = [];
+  const replacement = {
+    id: "anthropic",
+    label: "Anthropic",
+    runGate: async (request) => {
+      replacementCalls.push(["gate", request]);
+      return {claims: [EIFFEL], usage: USAGE};
+    },
+    runVerify: async (request) => {
+      replacementCalls.push(["verify", request]);
+      return verdictFor("TRUE");
+    },
+  };
+  harness.pipeline.setStages({
+    gate: {provider: replacement, apiKey: "new-key", model: "new-gate-model"},
+    verify: {provider: replacement, apiKey: "new-key", model: "new-verify-model"},
+  });
+  harness.advance(13_000);
+  await hear(harness, "brazil has won the world cup five times in total you know");
+
+  assert.equal(harness.calls.gate.length, 1, "the old provider is not called again");
+  const [gateCall] = replacementCalls.find(([stage]) => stage === "gate").slice(1);
+  assert.equal(gateCall.model, "new-gate-model");
+  assert.equal(gateCall.apiKey, "new-key");
+  // The duplicate memory carried over: the same claim is not checked twice.
+  assert.equal(replacementCalls.filter(([stage]) => stage === "verify").length, 0);
+});
+
+test("pipeline: a new provider is not held up by the old one's rate-limit pause", async () => {
+  const limited = new ProviderError(ERROR_KIND.RATE_LIMIT, "slow down", {retryAfterS: 600});
+  const harness = makePipeline({gateScript: [limited]});
+  await hear(harness);
+  assert.equal(harness.of("error")[0].code, "quota_cooldown");
+  let called = false;
+  const other = {
+    id: "openai",
+    label: "OpenAI",
+    runGate: async () => {
+      called = true;
+      return {claims: [], usage: USAGE};
+    },
+    runVerify: async () => verdictFor(),
+  };
+  harness.pipeline.setStages({
+    gate: {provider: other, apiKey: "k", model: "m"},
+    verify: {provider: other, apiKey: "k", model: "m"},
+  });
+  harness.advance(13_000);
+  await hear(harness);
+  assert.equal(called, true);
+});
+
 test("pipeline: stop looks at the last words and finishes the checks in hand", async () => {
   const harness = makePipeline({
     gateScript: [{claims: [EIFFEL], usage: USAGE}],

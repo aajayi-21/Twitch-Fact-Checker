@@ -14,12 +14,10 @@ exclusively through ``app.setup.upsert_env_values`` (atomic, 0600).
 
 from __future__ import annotations
 
-from pathlib import Path
+from app.config import Settings, data_dir
 
-from app.config import Settings
-
-_BACKEND_DIR = Path(__file__).resolve().parent.parent
-_DEFAULT_STREAMER_DB = _BACKEND_DIR / "streamer.db"
+# Beside the viewer backend's .env and database (app.config.data_dir).
+_DEFAULT_STREAMER_DB = data_dir() / "streamer.db"
 
 
 class StreamerSettings(Settings):

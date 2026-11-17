@@ -157,6 +157,14 @@ class TestViewerBackendAudioSocket:
         ) as session:
             session.send_json(make_hello())
             assert session.receive_json()["type"] == "ready"
+            # End it the way a client does. Leaving the block with the session
+            # still running makes the test client cancel the server task, which
+            # surfaces as a stray CancelledError now and then.
+            session.send_json({"type": "stop"})
+            with pytest.raises(WebSocketDisconnect) as closed:
+                while True:
+                    session.receive_json()
+        assert closed.value.code == 1000
 
     def test_a_website_cannot_end_the_live_session(self, client: TestClient) -> None:
         with client.websocket_connect(

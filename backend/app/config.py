@@ -9,11 +9,13 @@ Use :attr:`Settings.is_configured` to ask whether the active provider has a
 usable key.
 """
 
+import importlib.util
 import os
 import re
 from pathlib import Path
 from typing import Any, Literal
 
+import platformdirs
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -26,7 +28,36 @@ SERVER_VERSION: str = "0.1.0"
 # deterministic and unit-testable.
 SENSITIVITY_THRESHOLDS: dict[str, float] = {"low": 0.75, "medium": 0.55, "high": 0.35}
 
-_DEFAULT_ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
+_BACKEND_DIR = Path(__file__).resolve().parent.parent
+
+
+def running_from_checkout() -> bool:
+    """A source checkout has ``backend/pyproject.toml`` beside ``app/``; an
+    installed copy (uvx, pip) puts ``app/`` in site-packages, where it does
+    not."""
+    return (_BACKEND_DIR / "pyproject.toml").is_file()
+
+
+def data_dir() -> Path:
+    """Where ``.env`` and the databases live.
+
+    - ``DOXA_DATA_DIR``, when set;
+    - ``backend/`` in a source checkout, as it always was;
+    - otherwise the per-user data folder (``~/.local/share/doxa`` on Linux,
+      ``~/Library/Application Support/doxa`` on macOS,
+      ``%LOCALAPPDATA%\\doxa`` on Windows). Next to the installed code would
+      be inside uv's cache, where a clean-up would delete the API key and the
+      history.
+    """
+    override = os.environ.get("DOXA_DATA_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+    if running_from_checkout():
+        return _BACKEND_DIR
+    return Path(platformdirs.user_data_dir("doxa", appauthor=False))
+
+
+_DEFAULT_ENV_FILE = data_dir() / ".env"
 
 # OpenRouter model slugs shipped as defaults for both stages.
 # deepseek/deepseek-v4.1-flash-1017 (released 2026-10-17): the newest DeepSeek,
@@ -156,7 +187,14 @@ VAD_SPEECH_PAD_MS = 200
 
 # The analytics database lives next to `.env` by default; tests point DB_PATH
 # at temp files instead.
-_DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent / "fact_checker.db"
+_DEFAULT_DB_PATH = data_dir() / "fact_checker.db"
+
+
+def speech_engine_installed() -> bool:
+    """Whether faster-whisper (the ``stt`` extra) is importable. Every speech
+    engine needs it: faster-whisper itself, and its Silero VAD for the
+    others."""
+    return importlib.util.find_spec("faster_whisper") is not None
 
 
 def resolve_env_file() -> Path:
@@ -351,8 +389,13 @@ class Settings(BaseSettings):
     #     accepted: the extension transcribes in the browser and sends text
     #     (hello ``format: "transcript"``). Starts in a second and frees the
     #     memory a model would hold.
-    stt_backend: Literal["faster-whisper", "torch", "parakeet", "none"] = (
-        "faster-whisper"
+    #
+    # Default: "faster-whisper" when the speech engine is installed (always in
+    # a checkout), else "none" (an install without the ``stt`` extra).
+    stt_backend: Literal["faster-whisper", "torch", "parakeet", "none"] = Field(
+        default_factory=lambda: (
+            "faster-whisper" if speech_engine_installed() else "none"
+        )
     )
     # Hugging Face repo id for STT_BACKEND=parakeet. v3 is the Parakeet with
     # official transformers weights (25 European languages, auto-detected).
@@ -447,6 +490,19 @@ class Settings(BaseSettings):
         if self.resolved_stt_segmentation == "vad":
             return self.stt_vad_max_segment_s / 2
         return self.stt_hop_s
+
+    @model_validator(mode="after")
+    def validate_speech_engine_installed(self) -> "Settings":
+        """A speech engine chosen in ``.env`` without the ``stt`` extra fails
+        here, at startup, with the fix, instead of at the first session."""
+        if self.stt_backend != "none" and not speech_engine_installed():
+            raise ValueError(
+                f"STT_BACKEND={self.stt_backend} needs the speech engine, which is "
+                "not installed. Install the backend with its stt extra "
+                "(uvx --from 'doxa-backend[stt] @ …' doxa), or set STT_BACKEND=none "
+                "and let the extension transcribe in the browser."
+            )
+        return self
 
     @model_validator(mode="after")
     def validate_vad_segmentation(self) -> "Settings":

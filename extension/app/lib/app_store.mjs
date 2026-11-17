@@ -54,6 +54,17 @@ let state = {
 // Written by the service worker; see background/service_worker.js.
 const CAPTURE_SESSION_KEY = "captureSession";
 
+/** Session states in which a capture is under way (as the popup counts them). */
+const RUNNING_STATUSES = new Set(["starting", "capturing", "reconnecting", "stopping"]);
+
+/**
+ * @param {object|null} captureSession
+ * @returns {boolean} whether a session is running, so a setting that only
+ *   applies at the next Start should say so
+ */
+export const isSessionRunning = (captureSession) =>
+  RUNNING_STATUSES.has(captureSession?.status);
+
 const listeners = new Set();
 
 const setState = (patch) => {

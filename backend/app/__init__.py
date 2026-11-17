@@ -1,1 +1,1 @@
-"""Twitch Live Fact-Checker backend package."""
+"""Doxa backend package: the optional local engine for the Doxa extension."""

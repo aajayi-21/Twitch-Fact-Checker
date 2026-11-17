@@ -38,7 +38,6 @@ import {
   ENGINE_MODE,
   ENGINE_STORAGE_KEY,
   KEYS_STORAGE_KEY,
-  normalizeEngineState,
   normalizeKeys,
   planBrowserEngine,
 } from "../engine/engine_setup.mjs";
@@ -80,6 +79,11 @@ const CAPTURE_SESSION_KEY = "captureSession";
 const SESSION_PROVIDERS_KEY = "sessionProviders";
 const LEDGER_RECORDER_KEY = "ledgerRecorder";
 const RETENTION_ALARM = "ledger-retention";
+// After a session that parked a speech model, the offscreen document (and
+// the model in it) is kept for this long, so the next session does not
+// rebuild it; then the alarm closes it (docs/live-settings-and-model-lifecycle.md).
+const WARM_SPEECH_ALARM = "warm-speech-idle";
+const WARM_SPEECH_MINUTES = 10;
 // Set while verdicts cannot reach the captured tab's overlay (read by the
 // popup). Kept apart from captureSession, which only the offscreen document
 // writes: a full-object update from it would erase a field set here.
@@ -99,6 +103,7 @@ const EXTENSION_PAGE_MESSAGES = new Set([
   MSG.CAPTURE_ENDED,
   MSG.SPEECH_GPU_ATTEMPT,
   MSG.SPEECH_GPU_FAILED,
+  MSG.RELEASE_WARM_SPEECH,
 ]);
 // The stream sites the content scripts run on (manifest content_scripts).
 const CONTENT_SCRIPT = chrome.runtime.getManifest().content_scripts?.[0] ?? {matches: [], js: []};
@@ -359,11 +364,20 @@ const runStartSequence = async (tabId, offscreenSettings) => {
   );
 };
 
-const handleCaptureStart = async (tabId) => {
+/**
+ * @param {number} tabId
+ * @param {object} [options]
+ * @param {boolean} [options.afterSettingsChange] - an automatic restart after
+ *   the backend ended the session for a settings change; if it fails, the
+ *   popup keeps saying to press Start
+ */
+const handleCaptureStart = async (tabId, {afterSettingsChange = false} = {}) => {
   if (typeof tabId !== "number") {
     console.error("[fact-checker] CAPTURE_START without a numeric tabId");
     return;
   }
+  // A warm offscreen document is about to be used again.
+  await chrome.alarms.clear(WARM_SPEECH_ALARM);
   await writeCaptureSession({
     status: "starting",
     tabId,
@@ -487,7 +501,7 @@ const handleCaptureStart = async (tabId) => {
         status: "error",
         tabId: null,
         wsState: "closed",
-        lastError: ERR.ERR_STREAM_ID_EXPIRED,
+        lastError: afterSettingsChange ? ERR.ERR_CREDENTIALS_UPDATED : ERR.ERR_STREAM_ID_EXPIRED,
       });
       return;
     }
@@ -528,17 +542,35 @@ const handleCaptureStop = async (reason) => {
  * captureSession state BEFORE sending CAPTURE_ENDED), so the only work left
  * is releasing the document and clearing the routing state.
  */
-const handleCaptureEnded = async (reason) => {
+/**
+ * @param {string|undefined} reason
+ * @param {object} [options]
+ * @param {boolean} [options.keepWarm] - the offscreen document parked a
+ *   loaded speech model: keep it for the warm period instead of closing it
+ */
+const handleCaptureEnded = async (reason, {keepWarm = false} = {}) => {
   console.info(`[fact-checker] capture ended (reason: ${reason ?? "unknown"})`);
   recordSafely("capture end", recorder.captureEnded());
   const capturedTabId = await getCapturedTabId();
   await setCapturedTabId(null);
   await setToolbarIcon(false);
   await clearOverlayProblem();
+  await chrome.storage.session.set({[SESSION_PROVIDERS_KEY]: []});
   if (capturedTabId !== null) {
     await notifySessionState(capturedTabId, false);
   }
-  await closeOffscreenDocument();
+  if (keepWarm) {
+    await chrome.alarms.create(WARM_SPEECH_ALARM, {delayInMinutes: WARM_SPEECH_MINUTES});
+  } else {
+    await closeOffscreenDocument();
+  }
+  if (reason === "credentials_updated" && capturedTabId !== null) {
+    // The local backend rebuilt its provider stack after a key or model was
+    // saved, which ends every live session. Start again on the same tab, so
+    // the change applies without the viewer pressing Start.
+    console.info("[fact-checker] backend settings changed; restarting the session");
+    await handleCaptureStart(capturedTabId, {afterSettingsChange: true});
+  }
 };
 
 /**
@@ -789,7 +821,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         await persistSessionUpdate(message.payload?.session);
         break;
       case MSG.CAPTURE_ENDED:
-        await handleCaptureEnded(message.payload?.reason);
+        await handleCaptureEnded(message.payload?.reason, {
+          keepWarm: Boolean(message.payload?.keepWarm),
+        });
+        break;
+      case MSG.RELEASE_WARM_SPEECH:
+        // A speech self-test is starting in the app: an idle, parked model
+        // would only compete with it for GPU memory.
+        if ((await getCapturedTabId()) === null) {
+          await chrome.alarms.clear(WARM_SPEECH_ALARM);
+          await closeOffscreenDocument();
+        }
         break;
       case MSG.OPEN_OPTIONS:
         // Content scripts cannot open extension pages themselves.
@@ -851,20 +893,33 @@ const ensureRetentionAlarm = async () => {
 ensureRetentionAlarm().catch((error) => {
   console.error("[fact-checker] scheduling the history clean-up failed:", error);
 });
-chrome.alarms?.onAlarm.addListener((alarm) => {
-  if (alarm.name !== RETENTION_ALARM) {
-    return;
+/** Delete history older than the viewer's retention setting. */
+const runRetentionSweep = async () => {
+  const settings = await loadSettings();
+  const removed = await recorder.applyRetention(settings.historyRetentionDays);
+  if (removed > 0) {
+    console.info(`[fact-checker] history retention removed ${removed} session(s)`);
   }
-  loadSettings()
-    .then((settings) => recorder.applyRetention(settings.historyRetentionDays))
-    .then((removed) => {
-      if (removed > 0) {
-        console.info(`[fact-checker] history retention removed ${removed} session(s)`);
-      }
-    })
-    .catch((error) => {
-      console.error("[fact-checker] history retention sweep failed:", error);
-    });
+};
+
+/** The warm period is over: release the parked model, unless a session is using it. */
+const closeWarmOffscreenDocument = async () => {
+  if ((await getCapturedTabId()) === null) {
+    console.info("[fact-checker] speech model idle for the warm period; releasing it");
+    await closeOffscreenDocument();
+  }
+};
+
+chrome.alarms?.onAlarm.addListener((alarm) => {
+  const task =
+    alarm.name === RETENTION_ALARM
+      ? runRetentionSweep()
+      : alarm.name === WARM_SPEECH_ALARM
+        ? closeWarmOffscreenDocument()
+        : null;
+  task?.catch((error) => {
+    console.error(`[fact-checker] alarm ${alarm.name} failed:`, error);
+  });
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
@@ -874,12 +929,13 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 });
 
 /**
- * Relay live sensitivity and topic-filter changes from the app's Settings to
- * the offscreen document (offscreen docs cannot observe
- * chrome.storage.onChanged), which forwards them as a WS config frame.
- * Topics travel as the enabled-slug array (the OFFSCREEN_CONFIG payload
- * shape: {sensitivity?, topics?}). No offscreen document — i.e. no active
- * session — is the common case for options changes, not an error.
+ * Relay live sensitivity, topic-filter and live-caption changes from the
+ * app's Settings to the offscreen document (offscreen docs cannot observe
+ * chrome.storage.onChanged), which applies them or forwards them as a WS
+ * config frame. Topics travel as the enabled-slug array (the
+ * OFFSCREEN_CONFIG payload shape: {sensitivity?, topics?, sendTranscripts?}).
+ * No offscreen document — i.e. no active session — is the common case for
+ * options changes, not an error.
  */
 const relaySettingsChange = async (changes) => {
   const newSettings = changes.settings.newValue ?? {};
@@ -897,6 +953,9 @@ const relaySettingsChange = async (changes) => {
     if (newEnabledTopics.join(",") !== oldEnabledTopics.join(",")) {
       configPatch.topics = newEnabledTopics;
     }
+  }
+  if (Boolean(newSettings.showTranscript) !== Boolean(oldSettings.showTranscript)) {
+    configPatch.sendTranscripts = Boolean(newSettings.showTranscript);
   }
   if (Object.keys(configPatch).length === 0) {
     return;
@@ -918,47 +977,66 @@ const relaySettingsChange = async (changes) => {
  * A provider key was removed in the app. If a running session is using that
  * provider, end it now: "remove key" has to be an off-switch that works.
  */
+/** @returns {Promise<boolean>} whether it stopped the session */
 const stopSessionIfKeyRemoved = async (change) => {
   const before = normalizeKeys(change.oldValue);
   const after = normalizeKeys(change.newValue);
   const removed = Object.keys(before).filter((providerId) => !after[providerId]);
   if (removed.length === 0 || (await getCapturedTabId()) === null) {
-    return;
+    return false;
   }
   const stored = await chrome.storage.session.get(SESSION_PROVIDERS_KEY);
   const inUse = stored[SESSION_PROVIDERS_KEY] ?? [];
   if (!removed.some((providerId) => inUse.includes(providerId))) {
-    return;
+    return false;
   }
   console.info("[fact-checker] a provider key in use was removed; stopping the session");
   // The offscreen document records the reason when it writes the final state.
   await handleCaptureStop("key_removed");
+  return true;
+};
+
+/** @returns {Promise<boolean>} whether a browser-engine session is running now */
+const browserEngineSessionRunning = async () => {
+  const stored = await chrome.storage.session.get(SESSION_PROVIDERS_KEY);
+  return (
+    (stored[SESSION_PROVIDERS_KEY] ?? []).length > 0 &&
+    (await getCapturedTabId()) !== null &&
+    (await chrome.offscreen.hasDocument())
+  );
 };
 
 /**
- * A spending limit changed in the app. A running browser-engine session
- * applies it at once (offscreen documents cannot watch storage), so a higher
- * limit lets a paused session carry on and a lower one takes effect now.
+ * Spending limits, a step's provider or model, or an API key changed in the
+ * app. A running browser-engine session applies them at once (offscreen
+ * documents cannot watch storage): limits through OFFSCREEN_BUDGETS, the
+ * recomputed plan through OFFSCREEN_ENGINE, so the next provider call uses
+ * the new provider, model and key. Switching between this browser and the
+ * local backend applies at the next Start; a removed key in use is handled
+ * by stopSessionIfKeyRemoved, which ends the session instead.
  */
-const relayBudgetChange = async (change) => {
-  const before = normalizeEngineState(change.oldValue).budgets;
-  const after = normalizeEngineState(change.newValue).budgets;
-  if (JSON.stringify(before) === JSON.stringify(after)) {
+const relayEngineChange = async () => {
+  if (!(await browserEngineSessionRunning())) {
     return;
   }
-  const stored = await chrome.storage.session.get(SESSION_PROVIDERS_KEY);
-  const browserEngineRunning = (stored[SESSION_PROVIDERS_KEY] ?? []).length > 0;
-  if (!browserEngineRunning || !(await chrome.offscreen.hasDocument())) {
+  const engineState = await loadEngineState();
+  const send = (type, payload) =>
+    chrome.runtime.sendMessage(makeMsg(TARGET.OFFSCREEN, type, payload)).catch((error) => {
+      // The document can close between the check and delivery.
+      console.debug(`[fact-checker] ${type} not delivered:`, error);
+    });
+  await send(MSG.OFFSCREEN_BUDGETS, {budgets: engineState.budgets});
+  if (engineState.mode !== ENGINE_MODE.BROWSER) {
     return;
   }
-  try {
-    await chrome.runtime.sendMessage(
-      makeMsg(TARGET.OFFSCREEN, MSG.OFFSCREEN_BUDGETS, {budgets: after})
-    );
-  } catch (error) {
-    // The document can close between hasDocument() and delivery.
-    console.debug("[fact-checker] OFFSCREEN_BUDGETS not delivered:", error);
+  const plan = planBrowserEngine(engineState, await loadProviderKeys());
+  if (!plan.ready) {
+    return;
   }
+  await chrome.storage.session.set({
+    [SESSION_PROVIDERS_KEY]: [plan.gate.providerId, plan.verify.providerId],
+  });
+  await send(MSG.OFFSCREEN_ENGINE, {gate: plan.gate, verify: plan.verify});
 };
 
 // Content scripts run inside web pages: keep them out of storage.local,
@@ -967,14 +1045,16 @@ protectStorage();
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName === "local" && changes[ENGINE_STORAGE_KEY]) {
-    relayBudgetChange(changes[ENGINE_STORAGE_KEY]).catch((error) => {
-      console.error("[fact-checker] spending-limit relay failed:", error);
+    relayEngineChange().catch((error) => {
+      console.error("[fact-checker] engine settings relay failed:", error);
     });
   }
   if (areaName === "local" && changes[KEYS_STORAGE_KEY]) {
-    stopSessionIfKeyRemoved(changes[KEYS_STORAGE_KEY]).catch((error) => {
-      console.error("[fact-checker] stopping after key removal failed:", error);
-    });
+    stopSessionIfKeyRemoved(changes[KEYS_STORAGE_KEY])
+      .then((stopped) => (stopped ? null : relayEngineChange()))
+      .catch((error) => {
+        console.error("[fact-checker] key change handling failed:", error);
+      });
     return;
   }
   if (areaName !== "sync" || !changes.settings) {
@@ -983,4 +1063,12 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   relaySettingsChange(changes).catch((error) => {
     console.error("[fact-checker] settings relay failed:", error);
   });
+  const retentionBefore = changes.settings.oldValue?.historyRetentionDays;
+  const retentionAfter = changes.settings.newValue?.historyRetentionDays;
+  if (retentionAfter !== retentionBefore) {
+    // Applied now, not at the next daily alarm: History shows the result.
+    runRetentionSweep().catch((error) => {
+      console.error("[fact-checker] history retention sweep failed:", error);
+    });
+  }
 });

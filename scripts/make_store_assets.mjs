@@ -176,12 +176,15 @@ html, body { margin: 0; height: 100%; background: #08080c; font-family: "Segoe U
   display: flex; flex-direction: column; justify-content: center; gap: 14px; height: 100vh; box-sizing: border-box;
   padding: 0 34px; color: #efeff4;
   background:
-    radial-gradient(ellipse at 85% 15%, rgba(145, 71, 255, 0.45), transparent 60%),
-    linear-gradient(150deg, #1b1b2a, #0e0e14);
+    radial-gradient(ellipse at 88% 10%, rgba(145, 71, 255, 0.18), transparent 55%),
+    linear-gradient(150deg, #1d1d22, #0f0f12);
 }
-.promo-head { display: flex; align-items: center; gap: 14px; }
-.promo-head img { width: 56px; height: 56px; }
-.promo-name { font-size: 25px; font-weight: 800; line-height: 1.1; letter-spacing: -0.01em; }
+.promo-head { display: flex; align-items: center; gap: 16px; }
+.promo-head img { width: 64px; height: 64px; }
+.promo-wordmark { display: block; color: #efeff4; }
+.logo-ink { fill: none; stroke: currentColor; stroke-linecap: round; }
+.logo-accent { stroke: #9147ff; }
+.promo-name { margin-top: 4px; font-size: 15px; font-weight: 600; color: #c9c9da; letter-spacing: 0.01em; }
 .promo-line { font-size: 15.5px; line-height: 1.35; color: #c9c9da; }
 .chips { display: flex; gap: 8px; }
 .chip { padding: 3px 10px; border-radius: 5px; font-size: 12px; font-weight: 800; letter-spacing: 0.04em; color: #101018; }
@@ -204,7 +207,20 @@ const PROMO_HTML = `<!doctype html>
     <div class="promo">
       <div class="promo-head">
         <img src="../icons/icon128.png" alt="" />
-        <div class="promo-name">Live Stream<br />Fact-Checker</div>
+        <div>
+          <svg class="promo-wordmark" viewBox="0 13 229 80" width="138" height="48" role="img" aria-label="Doxa">
+            <g class="logo-ink" stroke-width="9">
+              <circle cx="30" cy="64" r="20" />
+              <path d="M50 22V84" />
+              <circle cx="89" cy="64" r="20" />
+              <path d="M126 44L162 84" />
+              <path class="logo-accent" d="M126 84L175 30" />
+              <circle cx="199" cy="64" r="20" />
+              <path d="M219 44V84" />
+            </g>
+          </svg>
+          <div class="promo-name">Live stream fact-checker</div>
+        </div>
       </div>
       <div class="promo-line">Sourced verdicts over the stream you are watching.</div>
       <div class="chips">

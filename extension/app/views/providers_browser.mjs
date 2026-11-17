@@ -9,6 +9,7 @@
 
 import {STAGES, modelFor} from "../../engine/engine_setup.mjs";
 import {DEFAULT_BUDGETS} from "../../engine/pipeline/budget.mjs";
+import * as openrouter from "../../engine/providers/openrouter.mjs";
 import {
   Button,
   Card,
@@ -30,6 +31,7 @@ import {
   BROWSER_PROVIDERS,
   browserProvider,
   describeProviderError,
+  judgeModelCheck,
   unpricedWarning,
 } from "../lib/engine_model.mjs";
 import {html, useEffect, useState} from "../lib/html.mjs";
@@ -113,30 +115,77 @@ const ProviderRow = ({provider, hint, inUse}) => {
   `;
 };
 
+/**
+ * Ask the provider whether a typed model exists, where it can say. Only
+ * OpenRouter has a public, keyless model list; for the others a wrong name
+ * shows up as "cannot run the model" when a session starts.
+ *
+ * @returns {Promise<{exists: boolean, strictJson: boolean}|null|undefined>}
+ *   undefined: no check for this provider; null: the check failed
+ */
+const checkTypedModel = async (providerId, model) => {
+  if (providerId !== "openrouter") {
+    return undefined;
+  }
+  try {
+    return await openrouter.checkModel(model, {signal: AbortSignal.timeout(8000)});
+  } catch (error) {
+    console.warn("[fact-checker] could not check the OpenRouter model:", error);
+    return null;
+  }
+};
+
 /** A model field that saves when you leave it; empty means the default. */
 const ModelField = ({providerId, stage, state}) => {
   const stored = state.models[providerId]?.[stage] ?? "";
   const [value, setValue] = useState(stored);
+  const [verdict, setVerdict] = useState(null);
+  const [checking, setChecking] = useState(false);
   useEffect(() => setValue(stored), [stored]);
   const id = `${stage}-model`;
+  const commit = async (next) => {
+    setVerdict(null);
+    if (next === "") {
+      await setStageModel(providerId, stage, next);
+      return;
+    }
+    setChecking(true);
+    const check = await checkTypedModel(providerId, next);
+    setChecking(false);
+    const judged = check === undefined ? {save: true, message: null} : judgeModelCheck(next, check);
+    if (judged.save) {
+      await setStageModel(providerId, stage, next);
+    } else {
+      setValue(stored);
+    }
+    setVerdict(judged.message ? judged : null);
+  };
   return html`
-    <input
-      id=${id}
-      type="text"
-      spellcheck=${false}
-      autocomplete="off"
-      value=${value}
-      placeholder=${browserProvider(providerId).defaultModels[stage]}
-      aria-label=${`${STAGE_LABELS[stage]} model`}
-      onInput=${(event) => setValue(event.currentTarget.value)}
-      onBlur=${(event) => {
-        const next = event.currentTarget.value.trim();
-        if (next !== stored) {
-          setStageModel(providerId, stage, next);
-        }
-      }}
-      onKeyDown=${(event) => event.key === "Enter" && event.currentTarget.blur()}
-    />
+    <div class="model-field">
+      <input
+        id=${id}
+        type="text"
+        spellcheck=${false}
+        autocomplete="off"
+        value=${value}
+        disabled=${checking}
+        placeholder=${browserProvider(providerId).defaultModels[stage]}
+        aria-label=${`${STAGE_LABELS[stage]} model`}
+        onInput=${(event) => setValue(event.currentTarget.value)}
+        onBlur=${(event) => {
+          const next = event.currentTarget.value.trim();
+          if (next !== stored) {
+            commit(next).catch((error) => {
+              setChecking(false);
+              setVerdict({tone: "error", message: String(error?.message ?? error)});
+            });
+          }
+        }}
+        onKeyDown=${(event) => event.key === "Enter" && event.currentTarget.blur()}
+      />
+      ${checking ? html`<p class="setting-help">Checking the model with OpenRouter…</p>` : null}
+      ${verdict ? html`<${Notice} tone=${verdict.tone}>${verdict.message}<//>` : null}
+    </div>
   `;
 };
 

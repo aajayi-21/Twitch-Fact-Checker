@@ -17,7 +17,7 @@ import {
 } from "../../engine/stt/speech_setup.mjs";
 import {FAIL_REASON, SKIP_REASON} from "../../engine/stt/stt_plan.mjs";
 import {Button, Card, ConfirmButton, Notice, Segmented, SettingRow} from "../components.mjs";
-import {useAppState} from "../lib/app_store.mjs";
+import {isSessionRunning, useAppState} from "../lib/app_store.mjs";
 import {ENGINE_MODE, useEngine} from "../lib/engine_actions.mjs";
 import {html} from "../lib/html.mjs";
 import {
@@ -154,6 +154,7 @@ const TestResult = ({result, model}) => {
 export const SpeechCard = () => {
   const speech = useSpeech();
   const health = useAppState((app) => app.health);
+  const captureSession = useAppState((app) => app.captureSession);
   // With the browser engine there is no backend to transcribe, so speech
   // runs here whatever this card's own switch says, and the switch is hidden.
   const browserEngine = useEngine().state.mode === ENGINE_MODE.BROWSER;
@@ -168,6 +169,12 @@ export const SpeechCard = () => {
 
   return html`
     <${Card} title="Speech recognition" id="section-speech">
+      ${isSessionRunning(captureSession)
+        ? html`<${Notice} tone="info">
+            A session is running: a different model or device applies when you next press Start,
+            since the new model has to load.
+          <//>`
+        : null}
       ${browserEngine
         ? html`<p class="setting-help">
             Speech is turned into text inside this browser, by a model that runs on this

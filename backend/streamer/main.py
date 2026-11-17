@@ -225,7 +225,7 @@ async def _token_refresh_loop(app: FastAPI) -> None:
 
 def create_app() -> FastAPI:
     application = FastAPI(
-        title="Live Stream Fact-Checker — streamer",
+        title="Doxa streamer backend",
         version=STREAMER_VERSION,
         lifespan=lifespan,
     )

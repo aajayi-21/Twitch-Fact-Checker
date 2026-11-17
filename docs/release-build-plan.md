@@ -47,10 +47,10 @@ Fixes with one obvious answer were not asked about and are planned directly.
 | 1 | Local backend security ✅ | 1–2 days | — |
 | 2 | Spending and error reporting (extension) ✅ | 2–3 days | — |
 | 3 | Lifecycle and small fixes (extension) ✅ | 1–2 days | — |
-| 4 | Streamer bot safety fix | half a day | — |
-| 5 | Provider live runs: DeepSeek, OpenAI, Gemini | 1 day | 0, 2; **your OpenAI and Gemini keys** |
-| 6 | Backend one-command install | 2 days | 1 |
-| 7 | Naming, docs, Edge | 1 day | 2, 3 |
+| 4 | Streamer bot safety fix ✅ | half a day | — |
+| 5 | Provider live runs: DeepSeek, OpenAI, Gemini ◐ | 1 day | 0, 2; **your OpenAI and Gemini keys** |
+| 6 | Backend one-command install ✅ | 2 days | 1 |
+| 7 | Naming, docs, Edge ◐ | 1 day | 2, 3 |
 | 8 | Real-stream validation week | 1 week (calendar) | 1–7 |
 | 9 | Owner steps and submission | yours | 8; **licence** |
 
@@ -338,7 +338,26 @@ nothing running; a stream tab opened before install shows verdicts after Start.
 
 ---
 
-## 7. Phase 4 — Streamer bot safety fix
+## 7. Phase 4 — Streamer bot safety fix ✅
+
+**Built 2026-11-16** on branch `feat/streamer-approve-safety`. Differences from the plan
+below:
+
+- **One shared gate.** Consent and the operational checks (mode off, muted, join
+  grace, latch) moved out of `decide()` into `policy.operational_block()`, which both
+  `decide()` and `approve()` call, so the two can never drift apart. A refused
+  approval is recorded as `suppressed` with reason `<gate>_at_approval`, and the
+  panel gets a 409 saying why (`approve()` now returns a status and reason).
+- **More things empty the queue** than the three commands planned: the panel's OFF
+  and MUTE, a ban-class notice, and a dispute auto-mute. Each dropped item is recorded
+  as `skipped` with `cleared_by_<what>`.
+- **Found on the way: the panel's MUTE was not persisted.** `!fc mute` saved an
+  absolute deadline; the panel button only set it in memory, so a restart undid the
+  kill switch. Both now go through `ChannelBot.mute()`, which saves it; mode changes
+  likewise go through `set_mode()`.
+- Verified by 20 new tests (approval after each kind of change, queue clearing, the
+  panel routes, and the transport refusing `/`, `.` and `!` behind spaces or invisible
+  characters). The streamer launch checklist lists them as invariants.
 
 Streamer mode isn't part of v1, but this one breaks a stated invariant ("every consent
 proof is checked on every post"), so it is fixed now.
@@ -356,7 +375,19 @@ proof is checked on every post"), so it is fixed now.
 
 ---
 
-## 8. Phase 5 — Provider live runs
+## 8. Phase 5 — Provider live runs ◐
+
+**Progress 2026-11-16** (branch `feat/provider-live-runs`). About $0.10 spent so far.
+
+| Run | Result |
+|---|---|
+| DeepSeek v4.1 Flash 1017, browser engine | **Passed, 31/31.** 3 of the 4 claims in the recorded stream found, all judged correctly (Eiffel Tower FALSE, speed of light TRUE, Great Wall FALSE); nothing that should not be checked was; 9 calls, $0.031. Gemini 3.5 Flash-Lite's first run also found 3 of 4 |
+| DeepSeek v4.1 Flash 1017, backend | `eval_verify.py --limit 10` on recorded claims: 10/10 strict JSON, 0 fallbacks, p50 3.6 s, p95 7.1 s, ~$0.07. Three labels moved from UNVERIFIED to a firm answer. Two are well sourced ("Alex Karp is Jewish", his own words); one is weaker: "Karp has said his number one fear is being killed by Christians" came back FALSE because he is quoted saying his biggest fear is fascism, which does not rule the other quote out. Worth watching in the Phase 8 review (absence of evidence should stay UNVERIFIED) |
+| OpenRouter model check at save time | **Built.** The AI provider screen asks OpenRouter's public `/api/v1/models/<id>/endpoints` (keyless, cross-origin): an unknown model is not saved; one with no strict-JSON endpoint is saved with a warning; if OpenRouter cannot be reached it is saved unchecked and the screen says so |
+| OpenAI | **Deferred by the owner (2026-11-16).** Run it, and add list prices, when a key is available; until then the app keeps its "not yet tested live" note |
+| Gemini | **Deferred by the owner (2026-11-16)**, as for OpenAI |
+
+The plan as written:
 
 Every run here is a paid call on a real key, so each is run by hand. About 5 cents each.
 
@@ -378,7 +409,35 @@ name, already measured at the gate) and record why here.
 
 ---
 
-## 9. Phase 6 — Backend one-command install
+## 9. Phase 6 — Backend one-command install ✅
+
+**Built 2026-11-16** on branch `feat/one-command-install`. Differences from the plan
+below:
+
+- **The package is `doxa-backend`, the commands are `doxa` and `doxa-streamer`.** A
+  distribution named `doxa` could collide with someone else's on PyPI, and `uvx doxa`
+  without `--from` would fetch it. Both commands refuse a non-loopback `--host`.
+- **The speech engine is declared twice:** as the `stt` extra (for uvx and pip), and as
+  a default dependency group, so a checkout's plain `uv sync` still installs it and
+  CI, `run.sh` and `install_stt_gpu.sh` are unchanged. The `gpu` extra includes it
+  too, since the torch and Parakeet engines use its Silero VAD.
+- **Data folder:** `backend/` in a checkout (unchanged), else the per-user folder
+  from `platformdirs`; `DOXA_DATA_DIR` overrides both. The streamer database follows.
+- **Floors** are the versions in `uv.lock` (fastapi ≥ 0.141, anthropic ≥ 2.8, …). The
+  lock itself did not change apart from the project's name.
+- **A flaky test fixed on the way:** `test_origins.py::…::test_the_extension_gets_a_session`
+  left its session running, and the test client's cancellation sometimes escaped as a
+  `CancelledError` (about 1 in 10 under load, with or without the session-end shield).
+  It now stops the session like every other test; 80 runs clean.
+- **Verified** by installing from a local build with uvx into an empty cache and a
+  scratch user folder: 36 packages and no speech engine; the extension's origin
+  accepted; a transcript session returned FALSE with 4 sources for the Eiffel Tower
+  claim (one check on the Anthropic sign-in); the settings file landed in the data
+  folder (mode 0600) and nothing in uv's cache; after deleting the whole cache and
+  reinstalling, the settings and history were still there. With `[stt]`: 49 packages,
+  faster-whisper detected, and it became the default engine. Not tried: the GitHub URL
+  itself (it serves this branch only once merged) and a container.
+
 
 The target is a stranger with `uv` installed running the companion with one command and
 no clone:
@@ -412,7 +471,31 @@ verdict, and a restart keeps the key.
 
 ---
 
-## 10. Phase 7 — Naming, docs, Edge
+## 10. Phase 7 — Naming, docs, Edge ◐
+
+**Built 2026-11-16** on branch `feat/doxa-naming`, except the Edge run:
+
+- **Renamed to Doxa:** README (title, and an intro and quickstart that now start with
+  the extension alone, the backend as an option), privacy policy, store listing and
+  checklist, the backend's API and console titles and start-up banner, the analytics,
+  streamer console and OBS overlay pages, the OpenRouter app title the backend sends,
+  the overlay's error prefix, the welcome flow's provider step and the history export
+  filename (`doxa-history-….json`).
+- **Kept on purpose:** the export file's `format` field
+  (`live-stream-fact-checker-export`, so files exported earlier stay recognisable), the
+  overlay's DOM id, the `[fact-checker]` console prefixes, the `fact-checker-ingest`
+  command, the streamer bot's chat wording ("Automated fact-checker"), and the
+  repository name.
+- **Package:** `dist/doxa-chrome-<version>.zip`.
+- **Listing:** the name matches the manifest; OpenAI and Gemini are described as a
+  preview, since their live runs were deferred; the `alarms` justification now covers
+  releasing the speech model ten minutes after the last session. "Open source" is
+  still left out.
+- **Store images** regenerated from the current extension; the promo tile carries the
+  mark and the "doxa" wordmark on graphite, purple only as the accent. Two missing
+  spaces in the welcome flow showed up in the screenshots and were fixed.
+- **Edge: not yet run.** Microsoft Edge is not installed on the build machine.
+- **Trademark search:** still the owner's call.
 
 - **Doxa everywhere user-facing.** The manifest says "Doxa: Live Stream Fact-Checker", but
   `docs/store/listing.md`, `docs/privacy-policy.md`, `README.md`, the backend page titles

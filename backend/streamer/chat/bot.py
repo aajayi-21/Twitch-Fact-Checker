@@ -30,6 +30,11 @@ Design notes with safety weight:
 - The review queue lives in memory with a TTL: a fact-check approved six
   minutes after the claim is confusing, not helpful. Expired items are
   recorded as such.
+- Approving a queued post re-runs the consent and operational gates
+  (:func:`~streamer.chat.policy.operational_block`) at that moment: a post
+  queued before ``!fc off``, a mute or a demod must not reach chat after it.
+  Turning posting off, muting and disabling also empty the queue, each
+  dropped item recorded as skipped with what cleared it.
 """
 
 from __future__ import annotations
@@ -63,6 +68,7 @@ from streamer.chat.policy import (
     PostContext,
     PostingPolicy,
     decide,
+    operational_block,
 )
 from streamer.chat.transport import (
     AuthFailed,
@@ -88,6 +94,24 @@ RECONNECT_BACKOFFS_S = (1.0, 2.0, 4.0, 8.0, 16.0, 30.0)
 REPLY_MIN_GAP_PER_USER_S = 3.0
 REPLY_CAP = 10
 REPLY_WINDOW_S = 300.0
+
+
+@dataclass(frozen=True)
+class ApprovalResult:
+    """What approving a queued post did.
+
+    ``status`` is ``approved`` (handed to posting; a dry run records it
+    rather than sending), ``unknown`` (no such item), ``expired`` (past the
+    review TTL) or ``refused`` (a consent or operational gate failed at the
+    moment of approval; ``reason`` names it).
+    """
+
+    status: str
+    reason: str | None = None
+
+    @property
+    def approved(self) -> bool:
+        return self.status == "approved"
 
 
 @dataclass
@@ -273,7 +297,10 @@ class ChannelBot:
             return
         await self._post(event, verdict, message, reason=decision.reason)
 
-    def _decide(self, verdict: Verdict, event: SessionEvent) -> Decision:
+    def _post_context(self) -> PostContext:
+        """The channel's state right now, as the policy sees it. Built fresh
+        for every decision, so a consent proof that has lapsed (demod,
+        disable, session ended) counts at once."""
         if self.disabled:
             failure: str | None = "channel_disabled"
         else:
@@ -287,18 +314,20 @@ class ChannelBot:
                     session.channel_key for session in self._registry.all()
                 ),
             )
-        context = PostContext(
+        return PostContext(
             consent_failure=failure,
             muted_until=self.muted_until,
             joined_at=self.joined_at,
             latched=self.latch.active,
             probation_active=not self.trusted,
         )
+
+    def _decide(self, verdict: Verdict, event: SessionEvent) -> Decision:
         return decide(
             verdict=verdict,
             check_worthiness=event.check_worthiness,
             claim_age_s=event.claim_age_s,
-            context=context,
+            context=self._post_context(),
             policy=self.policy,
             history=self.history,
             now=self._now(),
@@ -430,11 +459,17 @@ class ChannelBot:
             self._background.add(task)
             task.add_done_callback(self._background.discard)
 
-    async def approve(self, post_id: str, *, approved_by: str) -> bool:
-        """Panel click: post a queued item now. False = unknown or expired."""
+    async def approve(self, post_id: str, *, approved_by: str) -> ApprovalResult:
+        """Panel click: post a queued item now, if the channel still allows it.
+
+        The verdict passed every content gate when it was queued, and those do
+        not change. Consent and the operational state can, so they are checked
+        again here: a refusal is recorded (status ``suppressed``, reason
+        ``<gate>_at_approval``) and nothing is sent.
+        """
         pending = self.review_queue.pop(post_id, None)
         if pending is None:
-            return False
+            return ApprovalResult("unknown")
         if self._now() - pending.created_at > self._review_ttl_s:
             await self._record(
                 pending.event,
@@ -444,7 +479,23 @@ class ChannelBot:
                 message=pending.message,
                 post_id=post_id,
             )
-            return False
+            return ApprovalResult("expired")
+        blocked = operational_block(
+            context=self._post_context(), policy=self.policy, now=self._now()
+        )
+        if blocked is not None:
+            await self._record(
+                pending.event,
+                pending.verdict,
+                status="suppressed",
+                reason=f"{blocked}_at_approval",
+                message=pending.message,
+                post_id=post_id,
+            )
+            logger.warning(
+                "approval of %s refused: %s (nothing was posted)", post_id, blocked
+            )
+            return ApprovalResult("refused", blocked)
         await self._post(
             pending.event,
             pending.verdict,
@@ -453,7 +504,61 @@ class ChannelBot:
             approved_by=approved_by,
         )
         await self._register_approval()
-        return True
+        return ApprovalResult("approved")
+
+    async def clear_review_queue(self, reason: str) -> int:
+        """Drop every queued post, recording each as skipped with ``reason``
+        (what cleared it). Returns how many there were."""
+        cleared = list(self.review_queue.items())
+        self.review_queue.clear()
+        for post_id, pending in cleared:
+            await self._record(
+                pending.event,
+                pending.verdict,
+                status="skipped",
+                reason=reason,
+                message=pending.message,
+                post_id=post_id,
+            )
+        if cleared:
+            logger.info(
+                "review queue for #%s cleared (%s): %d item(s)",
+                self.channel,
+                reason,
+                len(cleared),
+            )
+        return len(cleared)
+
+    async def set_mode(self, mode: str, *, cleared_reason: str) -> None:
+        """Change the posting mode (``!fc on/review/off`` and the panel) and
+        persist it. Turning posting off also empties the review queue."""
+        await self._persist_mode(mode)
+        if mode == "off":
+            await self.clear_review_queue(cleared_reason)
+
+    async def mute(self, duration_s: float, *, cleared_reason: str) -> None:
+        """Mute for ``duration_s`` (``inf``: the rest of the stream), persisted
+        as an ABSOLUTE deadline so a restart cannot resurrect posting before
+        the human-chosen time, and empty the review queue."""
+        self.muted_until = self._now() + duration_s
+        if duration_s == float("inf"):
+            persisted = "rest"
+        else:
+            from datetime import datetime, timedelta, timezone
+
+            persisted = (
+                datetime.now(timezone.utc) + timedelta(seconds=duration_s)
+            ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        await self._db.upsert_chat_channel(
+            platform=self.platform, channel=self.channel, muted_until=persisted
+        )
+        await self.clear_review_queue(cleared_reason)
+
+    async def unmute(self) -> None:
+        self.muted_until = None
+        await self._db.upsert_chat_channel(
+            platform=self.platform, channel=self.channel, muted_until=None
+        )
 
     async def skip(self, post_id: str, *, skipped_by: str) -> bool:
         pending = self.review_queue.pop(post_id, None)
@@ -565,6 +670,11 @@ class ChannelBot:
                 self.channel,
                 action.note,
             )
+            # approve() refuses while disabled anyway; emptying the queue
+            # keeps the panel from offering posts that can never go out.
+            task = asyncio.ensure_future(self.clear_review_queue("cleared_by_ban"))
+            self._background.add(task)
+            task.add_done_callback(self._background.discard)
         elif action.kind == "drop":
             logger.info("Twitch dropped a message (%s)", action.note or notice.msg_id)
 
@@ -732,50 +842,32 @@ class ChannelBot:
                 len(disputers),
                 handle,
             )
+            await self.clear_review_queue("cleared_by_auto_mute")
 
     # -- moderator verbs --------------------------------------------------- #
 
     async def _cmd_on(self, message: ChatMessage, args: tuple[str, ...]) -> None:
-        self.muted_until = None
-        await self._persist_mode("auto")
-        await self._db.upsert_chat_channel(
-            platform=self.platform, channel=self.channel, muted_until=None
-        )
+        await self.unmute()
+        await self.set_mode("auto", cleared_reason="cleared_by_on")
         await self._reply(message, cmd.reply_mode("auto"))
 
     async def _cmd_off(self, message: ChatMessage, args: tuple[str, ...]) -> None:
-        await self._persist_mode("off")
+        await self.set_mode("off", cleared_reason="cleared_by_off")
         await self._reply(message, cmd.reply_mode("off"))
 
     async def _cmd_review(self, message: ChatMessage, args: tuple[str, ...]) -> None:
-        await self._persist_mode("review")
+        await self.set_mode("review", cleared_reason="cleared_by_review")
         await self._reply(message, cmd.reply_mode("review"))
 
     async def _cmd_mute(self, message: ChatMessage, args: tuple[str, ...]) -> None:
         duration = cmd.parse_mute_duration(args)
         if duration is None:
             return
-        self.muted_until = self._now() + duration
-        if duration == float("inf"):
-            persisted = "rest"
-        else:
-            from datetime import datetime, timedelta, timezone
-
-            persisted = (
-                datetime.now(timezone.utc) + timedelta(seconds=duration)
-            ).strftime("%Y-%m-%dT%H:%M:%SZ")
-        # Persisted as an ABSOLUTE deadline so a restart cannot resurrect
-        # posting before the human-chosen time.
-        await self._db.upsert_chat_channel(
-            platform=self.platform, channel=self.channel, muted_until=persisted
-        )
+        await self.mute(duration, cleared_reason="cleared_by_mute")
         await self._reply(message, cmd.reply_muted(duration))
 
     async def _cmd_unmute(self, message: ChatMessage, args: tuple[str, ...]) -> None:
-        self.muted_until = None
-        await self._db.upsert_chat_channel(
-            platform=self.platform, channel=self.channel, muted_until=None
-        )
+        await self.unmute()
         await self._reply(message, cmd.reply_unmuted(self.policy))
 
     async def _cmd_cap(self, message: ChatMessage, args: tuple[str, ...]) -> None:
@@ -861,6 +953,7 @@ class ChannelBot:
         )
         self.policy = self._policy_with(mode="off")
         await self.refresh_channel_record()
+        await self.clear_review_queue("cleared_by_disable")
         await self._reply(message, cmd.reply_disabled())
         # Consent revoked: leave the room entirely.
         self.stop()

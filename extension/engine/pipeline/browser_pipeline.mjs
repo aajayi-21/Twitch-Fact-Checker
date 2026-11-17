@@ -264,6 +264,27 @@ export class BrowserPipeline {
     this.#announceBudget();
   }
 
+  /**
+   * The viewer changed a step's provider, model or key mid-session. Later
+   * calls use the new ones (a call already under way finishes with the old);
+   * what was heard, the duplicate memory and the spending counts carry over.
+   * A rate-limit pause belonged to the old provider, so a change of provider
+   * ends it.
+   *
+   * @param {{gate: StageConfig, verify: StageConfig}} stages
+   */
+  setStages({gate, verify}) {
+    const providerChanged =
+      gate.provider.id !== this.gate.provider.id || verify.provider.id !== this.verify.provider.id;
+    this.gate = gate;
+    this.verify = verify;
+    this.gateFailures = 0;
+    if (providerChanged) {
+      this.cooldownUntilMs = 0;
+      this.cooldownReason = null;
+    }
+  }
+
   /** Run the gate if it is due. Called by the timer; tests call it directly. */
   tick() {
     if (this.stopping || this.disposed || this.gateRun) {
